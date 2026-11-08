@@ -33,6 +33,8 @@ _MET, _NOT_MET, _NO_EVIDENCE, _NOT_APPLICABLE = "MET", "NOT_MET", "NO_EVIDENCE",
 _NOT_OPTED_IN = "Project has not opted in (config.gate.overrides)"
 _DISABLED = "Disabled by config.gate.overrides (%s)"
 _SOURCE_CHECKOUT = "kernel manifest applies to vendored copies (milestone 2)"
+_TREE_CHANGED = ("the working tree changed since the execution %s was recorded; "
+                 "files a run leaves in the tree count unless they are git-ignored")
 
 _STRENGTHS = ("claimed", "attested", "exit_code", "structured")
 _INDEPENDENCE = ("I0", "I1", "I2", "I3")
@@ -164,7 +166,11 @@ def _on_target(record: dict, target: Optional[str]) -> bool:
 
 
 def _on_this_tree(record: dict, ctx: GateContext) -> bool:
-    """A run followed by another uncommitted edit is evidence about different code (T16-R5)."""
+    """A run followed by another uncommitted edit is evidence about different code (T16-R5).
+
+    The hash is taken before the command runs, so a run that writes an untracked file also reads as an edit. That fails
+    safe, and ``_TREE_CHANGED`` tells the reader what to do about it (T16-R18).
+    """
     return ctx.diff_hash is None or record["git"]["diff_hash"] == ctx.diff_hash
 
 
@@ -205,7 +211,7 @@ def _suite_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     qualifying = [record for record in runs if _on_this_tree(record, ctx)]
     if not qualifying:
         if runs:
-            return _NO_EVIDENCE, "the working tree changed since the execution %s" % runs[-1]["id"], []
+            return _NO_EVIDENCE, _TREE_CHANGED % runs[-1]["id"], []
         return _NO_EVIDENCE, _none_qualified(c, ctx), []
     latest = qualifying[-1]
     detail, evidence = _described(latest), [latest["id"]]
@@ -337,8 +343,8 @@ def evaluate(ws: Workspace, actor: ledger.Actor, *, profile: Optional[str] = Non
         risks = _accepted_risks(st, ctx.now)
         return ledger.append(ws, actor, "gate.evaluated", {
             "id": ledger.next_human_id(ws, "GATE"), "profile": policy["profile"], "policy_hash": policy_hash,
-            "state_hash": state.state_hash(st), "target": {"commit": ctx.target_commit}, "criteria": criteria,
-            "independence": actor.independence, "verdict": verdict(criteria, risks),
+            "state_hash": state.state_hash(st), "target": {"commit": ctx.target_commit}, "diff_hash": ctx.diff_hash,
+            "criteria": criteria, "independence": actor.independence, "verdict": verdict(criteria, risks),
             "conditions": _conditions(criteria, risks, st), "heads": ledger.heads(ws), "evaluated_at": ids.format_ts(ctx.now),
         })
 

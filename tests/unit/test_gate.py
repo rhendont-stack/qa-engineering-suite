@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from helpers import WRITE_JUNIT, WRITE_SARIF, base, req
-from qa import KERNEL_VERSION, config, execution, findings, gate, ids, integrity, ledger, resource_dir, schema, state, vocab
+from qa import KERNEL_VERSION, config, execution, findings, gate, gitinfo, ids, integrity, ledger, resource_dir, schema, state, vocab
 from qa.errors import QaError
 from qa.ledger import Problem
 from qa.workspace import Workspace
@@ -666,6 +666,50 @@ def test_with_an_explicit_target_clean_tree_still_governs(repo_ws, actor, py):
     assert se["outcome"] == "NO_EVIDENCE"
 
 
+# --------------------------------------------------------------------------- T16-R18: what a tree mismatch means
+
+TREE_CHANGED = ("the working tree changed since the execution %s was recorded; "
+                "files a run leaves in the tree count unless they are git-ignored")
+
+
+def _run_leaving(ws, actor, py, name):
+    """A passing run that also writes ``name`` into the tree, as a coverage tool does."""
+    code = "import pathlib; pathlib.Path(%r).write_text('<coverage/>')\n%s" % (name, WRITE_JUNIT)
+    return execution.execute(ws, actor, req(py, code, "{evidence}/junit.xml", "pass"))["execution"]
+
+
+def test_a_tree_mismatch_says_what_it_means_and_what_to_do():
+    r = _suite(_st(_exe()), context=_context(diff_hash=OTHER_TREE))
+    assert (r["outcome"], r["detail"], r["evidence"]) == ("NO_EVIDENCE", TREE_CHANGED % "EXE-1", [])
+
+
+def test_a_tree_mismatch_names_the_latest_run_it_rules_out():
+    r = _suite(_st(_exe("EXE-1"), _exe("EXE-2")), context=_context(diff_hash=OTHER_TREE))
+    assert r["detail"] == TREE_CHANGED % "EXE-2"
+
+
+def test_a_run_disqualified_for_another_reason_is_not_blamed_on_the_tree():
+    r = _suite(_st(_exe()), suite_executed={"params": {"scope": "full"}}, context=_context(diff_hash=OTHER_TREE))
+    assert "no execution qualified" in r["detail"] and "working tree" not in r["detail"]
+
+
+def test_a_run_that_leaves_an_untracked_file_says_what_to_do(repo_ws, actor, py):
+    exe = _run_leaving(repo_ws, actor, py, "coverage.xml")
+    g = gate.evaluate(repo_ws, actor, profile="change")
+    se = _criterion(g, "suite_executed")
+    assert (g["data"]["verdict"], se["outcome"], se["detail"], se["evidence"]) == (
+        "INSUFFICIENT_EVIDENCE", "NO_EVIDENCE", TREE_CHANGED % exe, [])
+
+
+def test_a_run_that_leaves_a_git_ignored_file_counts(repo_ws, actor, py):
+    (repo_ws.root / ".gitignore").write_text("coverage.xml\n")
+    _git(repo_ws, "add", ".gitignore")
+    _git(repo_ws, "commit", "-q", "-m", "ignore what the run leaves")
+    exe = _run_leaving(repo_ws, actor, py, "coverage.xml")
+    se = _criterion(gate.evaluate(repo_ws, actor, profile="change"), "suite_executed")
+    assert (se["outcome"], se["evidence"]) == ("MET", [exe])
+
+
 # --------------------------------------------------------------------------- T16-R6: the target
 
 @pytest.mark.parametrize("bad", ["abc123", "A" * 40, "a" * 39, "a" * 41, "g" * 40, "a" * 40 + "\n", "", 7])
@@ -684,7 +728,8 @@ def test_an_explicit_target_is_recorded(repo_ws, actor):
 def test_no_git_facts_is_a_null_target_and_the_evaluation_still_runs(trusted, actor):
     e = gate.evaluate(trusted, actor, profile="change")
     se = _criterion(e, "suite_executed")
-    assert e["data"]["target"] == {"commit": None} and se["outcome"] == "NO_EVIDENCE" and "not_a_git_repo" in se["detail"]
+    limitation = "not_a_git_repo" if shutil.which("git") else "git_unavailable"   # the Linux images ship no git
+    assert e["data"]["target"] == {"commit": None} and se["outcome"] == "NO_EVIDENCE" and limitation in se["detail"]
 
 
 def test_the_default_profile_comes_from_config(trusted, actor):
@@ -835,13 +880,31 @@ def test_the_event_holds_the_brief_fields_and_evaluated_at(trusted, actor, froze
     e = gate.evaluate(trusted, actor, profile="change")
     d = e["data"]
     assert e["type"] == "gate.evaluated" and e["id"].startswith("EVT-") and set(d) == {
-        "id", "profile", "policy_hash", "state_hash", "target", "criteria", "independence", "verdict", "conditions", "heads", "evaluated_at"}
+        "id", "profile", "policy_hash", "state_hash", "target", "diff_hash", "criteria", "independence", "verdict", "conditions", "heads",
+        "evaluated_at"}
     assert (d["id"], d["profile"], d["independence"]) == ("GATE-001", "change", actor.independence)
     assert d["heads"] == heads and ledger.heads(trusted)[actor.session]["seq"] == heads[actor.session]["seq"] + 1
     assert d["evaluated_at"] == ids.format_ts(frozen_now())
     assert d["policy_hash"] == gate.load_policy("change", config.load_config(trusted))[1]
     assert d["state_hash"] == state.state_hash(state.load(trusted))
     assert [x["id"] for x in d["criteria"]] == [x["id"] for x in _file("change")["criteria"]]
+
+
+def test_the_event_records_the_hash_of_the_tree_it_evaluated(repo_ws, actor):
+    clean = gate.evaluate(repo_ws, actor, profile="change")["data"]["diff_hash"]
+    assert clean == gitinfo.git_info(repo_ws.root)[0]["diff_hash"]
+    (repo_ws.root / "a.txt").write_text("2")
+    edited = gate.evaluate(repo_ws, actor, profile="change")["data"]["diff_hash"]
+    assert edited == gitinfo.git_info(repo_ws.root)[0]["diff_hash"] != clean
+
+
+def test_an_explicit_target_records_no_tree(repo_ws, actor):
+    (repo_ws.root / "a.txt").write_text("2")
+    assert gate.evaluate(repo_ws, actor, profile="change", target_commit=_head(repo_ws))["data"]["diff_hash"] is None
+
+
+def test_no_git_facts_records_no_tree(trusted, actor):
+    assert gate.evaluate(trusted, actor, profile="change")["data"]["diff_hash"] is None
 
 
 def test_gate_ids_count_up(trusted, actor):
@@ -897,7 +960,7 @@ def test_an_edit_the_user_accepted_applies(trusted, actor):
 
 
 def _evaluated(**changes):
-    data = {"id": "GATE-001", "profile": "change", "policy_hash": TREE, "state_hash": TREE, "target": {"commit": None},
+    data = {"id": "GATE-001", "profile": "change", "policy_hash": TREE, "state_hash": TREE, "target": {"commit": None}, "diff_hash": None,
             "criteria": [{"id": "x", "type": "suite_executed", "blocking": True, "outcome": "MET", "detail": "d", "evidence": []},
                          {"id": "y", "type": "mutation_score_min", "blocking": False, "outcome": "NOT_APPLICABLE", "detail": "w", "evidence": [], "justification": "w"}],
             "independence": "I1", "verdict": "READY", "conditions": [], "heads": {"S-" + "0" * 26: {"seq": 1, "hash": TREE}},
@@ -908,12 +971,15 @@ def _evaluated(**changes):
 
 def test_the_recorded_shape_fits_its_schema():
     schema.validate(_evaluated(), EVALUATED)
+    schema.validate(_evaluated(diff_hash=TREE), EVALUATED)
 
 
 @pytest.mark.parametrize("break_it", [
     lambda d: d.update(extra=1),
     lambda d: d.pop("evaluated_at"),
     lambda d: d.pop("heads"),
+    lambda d: d.pop("diff_hash"),
+    lambda d: d.update(diff_hash="abc"),
     lambda d: d.update(target={"commit": None, "tag": "v1"}),
     lambda d: d.update(target={}),
     lambda d: d.update(verdict="MAYBE"),

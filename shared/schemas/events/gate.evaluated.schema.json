@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "gate.evaluated event data",
-  "description": "One gate evaluation (Appendix A.5). evaluated_at is recorded because an accepted risk's expiry depends on the time, and section 11.2 requires the verdict to be recomputable. heads anchors the ledger chains as they stood before this event. Free-text strings carry no pattern because they may hold redaction markers.",
+  "description": "One gate evaluation (Appendix A.5). evaluated_at and diff_hash are recorded because the verdict depends on them, an accepted risk's expiry on the time and suite_executed and flaky_rate_max on the tree, and section 11.2 requires the verdict to be recomputable. diff_hash is null when the working tree is not what was evaluated: an explicit target commit, or no git facts. heads anchors the ledger chains as they stood before this event. Free-text strings carry no pattern because they may hold redaction markers.",
   "type": "object",
   "properties": {
     "id": {"$ref": "defs.schema.json#/$defs/gate_id"},
@@ -14,6 +14,7 @@
       "required": ["commit"],
       "additionalProperties": false
     },
+    "diff_hash": {"anyOf": [{"$ref": "defs.schema.json#/$defs/sha256"}, {"type": "null"}]},
     "criteria": {"type": "array", "items": {"$ref": "#/$defs/criterion"}, "minItems": 1},
     "independence": {"$ref": "defs.schema.json#/$defs/independence"},
     "verdict": {"enum": ["READY", "READY_WITH_CONDITIONS", "INSUFFICIENT_EVIDENCE", "NOT_READY"]},
@@ -22,8 +23,8 @@
     "evaluated_at": {"$ref": "defs.schema.json#/$defs/timestamp"}
   },
   "required": [
-    "id", "profile", "policy_hash", "state_hash", "target", "criteria", "independence", "verdict", "conditions", "heads",
-    "evaluated_at"
+    "id", "profile", "policy_hash", "state_hash", "target", "diff_hash", "criteria", "independence", "verdict", "conditions",
+    "heads", "evaluated_at"
   ],
   "additionalProperties": false,
   "$defs": {
