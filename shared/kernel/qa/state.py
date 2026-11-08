@@ -42,22 +42,40 @@ def _config_drift_detected(state: dict, event: dict) -> None:
                                      "accepted_hash": data["accepted_hash"]})
 
 
+# Fold-internal: {AUTH id: [(revocation event, its unknown_authorization violation), ...]} for
+# revocations folded before any grant of their id. The fold sorts by ts first, so a revocation can
+# come first: one in the same millisecond from a session id that sorts first, or one recorded after
+# the clock stepped back. The grant settles them when it folds; fold drops the key before it returns.
+_EARLY_REVOCATIONS = "_early_revocations"
+
+
+def _revoke(grant: dict, revocation: dict) -> None:
+    if grant["revoked_at"] is None:  # a repeated revocation keeps the first
+        grant["revoked_at"] = revocation["ts"]
+        grant["revoke_reason"] = revocation["data"]["reason"]
+
+
 def _authorization_granted(state: dict, event: dict) -> None:
     data = event["data"]
     grants = state["authorizations"]
     if data["id"] in grants:  # the first grant stays, so a revoked one never becomes valid again
         state["violations"].append({"event": event["id"], "kind": "duplicate_id"})
         return
-    grants[data["id"]] = dict(copy.deepcopy(data), revoked_at=None, revoke_reason=None)
+    grant = grants[data["id"]] = dict(copy.deepcopy(data), revoked_at=None, revoke_reason=None)
+    for revocation, violation in state.get(_EARLY_REVOCATIONS, {}).pop(data["id"], []):
+        state["violations"].remove(violation)  # the ledger holds a grant of this id after all
+        _revoke(grant, revocation)
 
 
 def _authorization_revoked(state: dict, event: dict) -> None:
-    grant = state["authorizations"].get(event["data"]["id"])
-    if grant is None:
-        state["violations"].append({"event": event["id"], "kind": "unknown_authorization"})
-    elif grant["revoked_at"] is None:  # a repeated revocation keeps the first
-        grant["revoked_at"] = event["ts"]
-        grant["revoke_reason"] = event["data"]["reason"]
+    auth_id = event["data"]["id"]
+    grant = state["authorizations"].get(auth_id)
+    if grant is not None:
+        _revoke(grant, event)
+        return
+    violation = {"event": event["id"], "kind": "unknown_authorization"}  # unless a grant of the id folds later
+    state["violations"].append(violation)
+    state.setdefault(_EARLY_REVOCATIONS, {}).setdefault(auth_id, []).append((event, violation))
 
 
 # Later tasks add their event types here.
@@ -86,6 +104,7 @@ def fold(events: Iterable[dict]) -> dict:
             state["violations"].append({"event": event["id"], "kind": "invalid_data"})
             continue
         reducer(state, event)
+    state.pop(_EARLY_REVOCATIONS, None)  # its violations stay: no grant in the ledger holds those ids
     return state
 
 

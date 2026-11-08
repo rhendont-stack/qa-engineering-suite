@@ -6,8 +6,9 @@
 2. ``db-write`` and ``dast-active`` on a ``production`` environment are ``policy_denied``;
 3. a ``ci`` environment is ``policy_denied``: ci environments arrive in milestone 4;
 4. ``static-analysis`` is allowed by default;
-5. ``test-execution-local`` on a ``local`` environment is allowed for a trusted project and
-   ``not_authorized`` for an untrusted one;
+5. ``test-execution-local`` runs the tests on this machine whatever the environment's class, so
+   an untrusted project is ``not_authorized`` on every class (its tests run only in a container,
+   §12.2); a trusted one is allowed on a ``local`` environment and otherwise goes on to 6 and 7;
 6. a standing authorization in config.json for the environment and the activity allows it;
 7. so does a grant that is not revoked, has not expired (it covers a check while
    ``now < expires_at``) and covers the environment, the activity and every host;
@@ -16,9 +17,11 @@
 Grants are ``authorization.granted`` events in the Appendix A.4 shape. ``grant`` records them
 (``qa authorize``) and ``revoke`` withdraws them (``qa auth revoke``); editing config.json never
 creates one. A target is a bare host (with an optional port, or a bracketed IPv6 address) or an
-http(s) URL, stored as given, and it must be a declared host of the grant's own environment.
-Targets and hosts compare by hostname, case-insensitively: a URL gives its ``urlsplit``
-hostname, as the guard reports hosts, and a bare host is read as ``config.resolve_host`` reads it.
+http(s) URL, stored as given. It must name a host, a URL target must carry no userinfo (§12.5),
+and it must be a declared host of the grant's own environment. Targets and hosts compare by
+hostname, case-insensitively: a URL gives its ``urlsplit`` hostname, as the guard reports hosts,
+and a bare host is read as ``config.resolve_host`` reads it. ``write-tests`` paths follow the
+rules ``write_scopes`` follow (§12.4), and the stored expiry, given or default, is after the grant time.
 """
 from __future__ import annotations
 
@@ -35,9 +38,9 @@ from .errors import QaError
 from .workspace import Workspace
 
 # QaError codes raised here: approval_required, unknown_environment, ci_unsupported,
-# invalid_activity, undeclared_target, invalid_limits, invalid_expiry (build_grant, and so grant);
-# unknown_authorization, already_revoked (revoke); plus whatever config.load_config and
-# ledger.append raise.
+# invalid_activity, invalid_target, undeclared_target, invalid_limits, invalid_expiry (build_grant,
+# and so grant); unknown_authorization, already_revoked (revoke); plus whatever
+# config.load_config and ledger.append raise.
 
 _NEVER_ON_PRODUCTION = ("db-write", "dast-active")
 _HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
@@ -116,10 +119,11 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
         return _deny("policy_denied", "ci environments arrive in milestone 4")
     if activity == "static-analysis":
         return _allow("default:static-analysis", "static analysis is allowed by default")
-    if activity == "test-execution-local" and env_class == "local":
-        if cfg["project"]["trust"] == "trusted":
+    if activity == "test-execution-local":  # on every class: the tests run on this machine
+        if cfg["project"]["trust"] != "trusted":
+            return _deny("not_authorized", _UNTRUSTED)
+        if env_class == "local":
             return _allow("trusted:local", "the project is trusted to run its tests on this machine")
-        return _deny("not_authorized", _UNTRUSTED)
     for standing in cfg["standing_authorizations"]:
         if standing["environment"] == env_id and activity in standing["activities"]:
             return _allow("standing:%s" % env_id, "standing authorization in config.json")
@@ -162,8 +166,10 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     """Check a grant request against ``cfg`` and return its record, every A.4 field but ``id``.
 
     Refusals, checked in this order: approval_required, unknown_environment, ci_unsupported,
-    invalid_activity, undeclared_target, invalid_limits, invalid_expiry. ``expires_at`` None means
-    the end of the local day; a given one must be timezone-aware and after ``now``.
+    invalid_activity, invalid_target, undeclared_target, invalid_limits, invalid_expiry.
+    ``expires_at`` None means the end of the local day; a given one must be timezone-aware. Given
+    or default, the expiry as stored (to the millisecond) must be after ``now``, so in the last
+    second of a local day a grant needs a given ``expires_at``.
     """
     if not isinstance(approval, str) or not approval.strip():
         raise QaError("approval_required", "a grant needs the user's approval quote")
@@ -175,11 +181,16 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     _check_activities(env, activities)
     _check_targets(cfg, environment_id, targets)
     _check_limits(env, activities, limits)
-    if expires_at is None:
+    default = expires_at is None
+    if default:
         expires_at = default_expiry(now)
-    elif (not isinstance(expires_at, datetime) or expires_at.tzinfo is None
-          or expires_at.utcoffset() is None or expires_at <= now):
-        raise QaError("invalid_expiry", "expires_at must be a timezone-aware time after the grant")
+    elif not isinstance(expires_at, datetime) or expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        raise QaError("invalid_expiry", "expires_at must be a timezone-aware datetime")
+    stored = ids.format_ts(expires_at)
+    if not now < ids.parse_ts(stored):  # as check reads it: the grant must cover a check made now
+        late = ("the local day ends at %s, so the grant needs a given expires_at" if default
+                else "expires_at %s is not after the grant time")
+        raise QaError("invalid_expiry", late % stored, expires_at=stored)
     return {
         "environment": environment_id,
         "targets": list(targets),
@@ -188,7 +199,7 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
         "granted_by": "user",
         "approval_quote": approval,
         "granted_at": ids.format_ts(now),
-        "expires_at": ids.format_ts(expires_at),
+        "expires_at": stored,
     }
 
 
@@ -204,10 +215,23 @@ def _check_activities(env: dict, activities: List[str]) -> None:
             raise QaError("invalid_activity", "%s is never performed on production" % activity, activity=activity)
 
 
+def _target_problem(target: Any) -> Optional[str]:
+    """Why ``target`` cannot be a grant target, or None when it can."""
+    if _hostname(target) is None:  # empty, or a URL that urlsplit refuses or that has no hostname
+        return "a target must name a host"
+    text = target.strip()
+    if _HTTP_URL.match(text) and "@" in urllib.parse.urlsplit(text).netloc:
+        return "a URL target must not carry userinfo: secrets stay out of arguments (§12.5)"
+    return None
+
+
 def _check_targets(cfg: dict, environment_id: str, targets: List[str]) -> None:
+    for index, target in enumerate(targets):  # every target names a host before any is resolved
+        problem = _target_problem(target)
+        if problem is not None:  # the details leave the target out, since it may carry a secret
+            raise QaError("invalid_target", problem, index=index, environment=environment_id)
     for target in targets:
-        name = _hostname(target)
-        env = config.resolve_host(cfg, name) if name is not None else None
+        env = config.resolve_host(cfg, _hostname(target))
         if env is None or env["id"] != environment_id:
             raise QaError("undeclared_target", "target is not a declared host of environment %r" % environment_id,
                           target=target, environment=environment_id)
@@ -228,6 +252,12 @@ def _check_limits(env: dict, activities: List[str], limits: Any) -> None:
             if not valid(given.get(key)):
                 raise QaError("invalid_limits", "%s needs limit %s.%s, %s" % (activity, activity, key, what),
                               activity=activity, limit=key)
+        if activity == "write-tests":  # the rules write_scopes follow (§12.4): never record what is never done
+            for path in given["paths"]:
+                errors = config._scope_errors(path)
+                if errors:
+                    raise QaError("invalid_limits", "write-tests.paths follow the write_scopes rules: " + errors[0],
+                                  activity=activity, limit="paths", path=path)
 
 
 def grant(ws: Workspace, actor: ledger.Actor, *, now: Optional[datetime] = None, **build_grant_kwargs: Any) -> dict:

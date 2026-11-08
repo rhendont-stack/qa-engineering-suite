@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
@@ -15,7 +16,10 @@ LOCAL = workspace.default_config("x")["environments"][0]
 NOON = datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc)
 STAGING = {"id": "staging", "class": "staging", "base_urls": ["https://staging.shop.example"]}
 PROD = {"id": "prod", "class": "production", "base_urls": ["https://shop.example"]}
+EPH = {"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": []}
+CI = {"id": "ci", "class": "ci"}
 LOAD = {"max_vus": 50, "max_rps": 100, "max_duration_s": 600}
+UNTRUSTED = "untrusted project: container runs arrive in milestone 2, or approve `qa config set project.trust trusted`"
 
 
 def chk(st, cfg, activity, env=LOCAL, hosts=()):
@@ -112,7 +116,8 @@ def test_grant_used_then_expires(ws, actor, frozen_now):
     assert chk(state.load(ws), cfg, "load-test").reason == "not_authorized"
 
 
-def test_revoked_grant_not_used(ws, actor):
+def test_revoked_grant_not_used(ws, actor, frozen_now):
+    frozen_now.set(NOON)   # T10-R1: with T10-R7, a default-expiry grant in the last second of a local day is refused
     authz.grant(ws, actor, environment_id="local", targets=["localhost"], activities=["db-readonly"], limits={}, approval="ok", expires_at=None)
     authz.revoke(ws, actor, "AUTH-001", "done")
     assert chk(state.load(ws), config.load_config(ws), "db-readonly", hosts=("localhost",)).reason == "not_authorized"
@@ -187,9 +192,24 @@ def test_a_given_expiry_is_stored_in_utc():
 
 
 @pytest.mark.parametrize("expires_at", [datetime(2026, 11, 7, 18, 0), NOON, NOON - timedelta(seconds=1),
-                                        "2026-11-07T18:00:00.000Z"])
+                                        "2026-11-07T18:00:00.000Z", NOON + timedelta(microseconds=500)])
 def test_invalid_expiry(expires_at):
-    assert _refusal(expires_at=expires_at) == "invalid_expiry"   # naive, equal to now, before now, not a datetime
+    # naive, equal to now, before now, not a datetime, and stored as now (T10-R7: the stored expiry has milliseconds)
+    assert _refusal(expires_at=expires_at) == "invalid_expiry"
+
+
+def test_a_default_expiry_that_is_not_after_now_is_refused(ws, actor, frozen_now, monkeypatch, restore_tz):
+    monkeypatch.setenv("TZ", "UTC0")   # T10-R7: pin the zone, so these times are local too
+    time.tzset()
+    last = datetime(2026, 11, 7, 23, 59, 59, 500000, tzinfo=timezone.utc)
+    assert _refusal(now=last) == "invalid_expiry"
+    assert _refusal(now=last.replace(microsecond=0)) == "invalid_expiry"   # the end of the day is not after it
+    assert _build(now=last - timedelta(milliseconds=501))["expires_at"] == "2026-11-07T23:59:59.000Z"
+    frozen_now.set(last)
+    with pytest.raises(QaError) as e:
+        _grant(ws, actor)
+    assert e.value.code == "invalid_expiry"
+    assert "authorization.granted" not in [event["type"] for event in ledger.iter_all_events(ws)]
 
 
 # --------------------------------------------------------------------------- targets (T10-R2)
@@ -202,9 +222,16 @@ def test_targets_may_be_hosts_or_http_urls_and_are_stored_as_given():
 
 
 @pytest.mark.parametrize("target", ["db.example.com", "https://staging.shop.example", "ftp://localhost",
-                                    "http://[::1", "http://", "", "localhost/app"])
+                                    "localhost/app"])
 def test_a_target_must_be_a_declared_host_of_the_grant_environment(target):
     assert _refusal(_cfg(STAGING), targets=[target]) == "undeclared_target"   # a staging host is not a local one
+
+
+@pytest.mark.parametrize("target", ["", "  ", ":8080", "http://[::1", "http://", "https://:8080/",   # names no host
+                                    "http://admin@localhost", "http://admin:hunter22x@localhost:8080/",
+                                    "HTTP://@localhost/"])                                       # carries userinfo
+def test_a_target_must_name_a_host_without_userinfo(target):
+    assert _refusal(targets=["localhost", target]) == "invalid_target"   # T10-R6
 
 
 def test_check_compares_hostnames_case_insensitively(ws, actor, frozen_now):
@@ -254,7 +281,8 @@ def test_revoke_refusals_and_revoked_at_is_the_event_ts(ws, actor, frozen_now):
 
 # --------------------------------------------------------------------------- integrity and edge cases (T10-R4)
 
-def test_concurrent_grants_never_share_an_id(ws, actor, monkeypatch):
+def test_concurrent_grants_never_share_an_id(ws, actor, monkeypatch, frozen_now):
+    frozen_now.set(NOON)   # T10-R1 and T10-R7
     real, took_id, taken = ledger.next_human_id, threading.Event(), []
 
     def slow_next_id(w, prefix):
@@ -273,7 +301,8 @@ def test_concurrent_grants_never_share_an_id(ws, actor, monkeypatch):
     assert sorted(taken) == ["AUTH-001", "AUTH-002"]
 
 
-def test_concurrent_revocations_record_one_event(ws, actor, monkeypatch):
+def test_concurrent_revocations_record_one_event(ws, actor, monkeypatch, frozen_now):
+    frozen_now.set(NOON)   # T10-R1 and T10-R7
     _grant(ws, actor)
     real, loaded, outcomes = state.load, threading.Event(), []
 
@@ -304,6 +333,7 @@ def test_a_revocation_of_an_unknown_grant_is_a_violation(ws, actor):
     e = ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-009", "reason": "x"})
     st = state.load(ws)
     assert st["violations"] == [{"event": e["id"], "kind": "unknown_authorization"}] and st["authorizations"] == {}
+    assert set(st) == set(state.empty_state())   # T10-R5: no fold-internal key survives the fold
 
 
 def test_a_duplicate_grant_id_is_a_violation_and_never_revives_a_revoked_grant(ws, actor):
@@ -325,6 +355,57 @@ def test_a_repeated_revocation_keeps_the_first(ws, actor, frozen_now):
     st = state.load(ws)
     held = st["authorizations"]["AUTH-001"]
     assert (held["revoked_at"], held["revoke_reason"], st["violations"]) == (first["ts"], "first", [])
+
+
+# --------------------------------------------------------------------------- fold order (T10-R5)
+
+def _folds_first_then_stays_revoked(ws, revocation):
+    """The revocation folds before its grant, and the folded state still holds the grant revoked."""
+    assert [e["type"] for e in ledger.iter_all_events(ws)][-2:] == ["authorization.revoked", "authorization.granted"]
+    st = state.load(ws)
+    held = st["authorizations"]["AUTH-001"]
+    assert (held["revoked_at"], held["revoke_reason"], st["violations"]) == (revocation["ts"], "done", [])
+    assert set(st) == set(state.empty_state())   # no fold-internal key survives the fold
+    assert chk(st, config.load_config(ws), "db-readonly").reason == "not_authorized"
+
+
+def test_a_revocation_in_the_same_millisecond_from_a_session_that_sorts_first_still_revokes(ws, actor, frozen_now):
+    frozen_now.set(NOON)
+    _grant(ws, dataclasses.replace(actor, session="S-" + "1" * 26))
+    _folds_first_then_stays_revoked(ws, authz.revoke(ws, actor, "AUTH-001", "done"))   # actor's S-000… sorts first
+
+
+def test_a_revocation_recorded_after_the_clock_stepped_back_still_revokes(ws, actor, frozen_now):
+    frozen_now.set(NOON + timedelta(seconds=1))
+    _grant(ws, actor)
+    frozen_now.set(NOON)   # the clock steps back 1 s within one session
+    _folds_first_then_stays_revoked(ws, authz.revoke(ws, actor, "AUTH-001", "done"))
+
+
+def test_the_first_revocation_in_fold_order_wins_even_before_the_grant(ws, actor, frozen_now):
+    frozen_now.set(NOON)
+    ledger.append(ws, actor, "authorization.granted", _granted("AUTH-001"))
+    frozen_now.set(NOON - timedelta(seconds=2))
+    first = ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "first"})
+    frozen_now.set(NOON - timedelta(seconds=1))
+    ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "second"})
+    frozen_now.set(NOON + timedelta(seconds=1))
+    ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "third"})
+    st = state.load(ws)
+    held = st["authorizations"]["AUTH-001"]
+    assert (held["revoked_at"], held["revoke_reason"], st["violations"]) == (first["ts"], "first", [])
+
+
+def test_only_a_revocation_whose_id_no_grant_holds_is_unknown(ws, actor, frozen_now):
+    frozen_now.set(NOON)
+    ledger.append(ws, actor, "authorization.granted", _granted("AUTH-001"))
+    frozen_now.set(NOON - timedelta(seconds=1))
+    ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "early"})
+    unknown = ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-009", "reason": "typo"})
+    st = state.load(ws)
+    assert st["violations"] == [{"event": unknown["id"], "kind": "unknown_authorization"}]
+    assert list(st["authorizations"]) == ["AUTH-001"] and st["authorizations"]["AUTH-001"]["revoke_reason"] == "early"
+    assert set(st) == set(state.empty_state())
 
 
 @pytest.mark.parametrize("activity,limits", [("db-write", {"db-write": {"backup_statement": "snapshot taken at 11:50"}}),
@@ -363,6 +444,14 @@ def test_limit_rules(env_id, activity, limits):
     assert _refusal(_cfg(PROD), environment_id=env_id, targets=targets, activities=[activity], limits=limits) == "invalid_limits"
 
 
+@pytest.mark.parametrize("path", ["/abs/**", "~/tests/**", "../x/**", "tests/../../x", ".", ".claude/**",
+                                  "**/CLAUDE.md", ".vscode/settings.json", "**"])
+def test_write_tests_paths_follow_the_write_scope_rules(path):
+    # T10-R9: absolute, '..', selects nothing, or §12.4's protected agent and IDE configuration
+    limits = {"write-tests": {"paths": ["tests/**", path]}}
+    assert _refusal(activities=["write-tests"], limits=limits) == "invalid_limits"
+
+
 def test_limits_that_meet_the_rules_are_stored_as_given():
     prod = {"load-test": {**LOAD, "coordination": "ops on call, window 02:00-03:00 UTC"}}
     g = _build(_cfg(PROD), environment_id="prod", targets=["https://shop.example"], activities=["load-test"], limits=prod)
@@ -379,6 +468,9 @@ def test_build_grant_refusal_order():
     assert _refusal(cfg, environment_id="nope", activities=["deploy"]) == "unknown_environment"
     assert _refusal(cfg, environment_id="ci", activities=["deploy"]) == "ci_unsupported"
     assert _refusal(cfg, activities=["deploy"], targets=["db.example.com"]) == "invalid_activity"
+    assert _refusal(cfg, activities=["deploy"], targets=[""]) == "invalid_activity"
+    # every target must name a host before any is resolved
+    assert _refusal(cfg, activities=["load-test"], targets=["db.example.com", ""]) == "invalid_target"
     assert _refusal(cfg, activities=["load-test"], targets=["db.example.com"]) == "undeclared_target"
     assert _refusal(cfg, activities=["load-test"], expires_at=NOON) == "invalid_limits"
 
@@ -390,8 +482,28 @@ def test_standing_authorization_covers_only_its_environment_and_activities():
     assert (d.allowed, d.reason, d.authorization) == (True, None, "standing:local")
     d = chk(state.empty_state(), cfg, "install-tools")
     assert (d.allowed, d.reason, d.authorization) == (False, "not_authorized", None)
-    eph = {"id": "eph", "class": "ephemeral", "base_urls": []}
-    assert chk(state.empty_state(), cfg, "install-dependencies", eph).reason == "not_authorized"
+    assert chk(state.empty_state(), cfg, "install-dependencies", EPH).reason == "not_authorized"
+
+
+@pytest.mark.parametrize("trust,env,expected", [
+    ("untrusted", EPH, ("not_authorized", None)),       # a standing authorization covers eph
+    ("untrusted", STAGING, ("not_authorized", None)),   # a grant covers staging
+    ("untrusted", CI, ("policy_denied", None)),         # steps (1)-(4) come first
+    ("trusted", EPH, (None, "standing:eph")),
+    ("trusted", STAGING, (None, "AUTH-001")),
+    ("trusted", PROD, ("not_authorized", None)),        # nothing covers prod
+])
+def test_trust_decides_local_test_runs_on_every_class(ws, actor, frozen_now, trust, env, expected):
+    # T10-R8: the tests run on this machine whatever the run environment's class
+    frozen_now.set(NOON)
+    ledger.append(ws, actor, "authorization.granted",
+                  _granted("AUTH-001", environment="staging", activities=["test-execution-local"]))
+    cfg = _cfg(EPH, STAGING, PROD, CI)
+    cfg["project"]["trust"] = trust
+    cfg["standing_authorizations"] = [{"environment": "eph", "activities": ["test-execution-local"]}]
+    d = chk(state.load(ws), cfg, "test-execution-local", env)
+    assert (d.reason, d.authorization) == expected
+    assert (d.detail == UNTRUSTED) == (trust == "untrusted" and env is not CI)
 
 
 def test_a_grant_covers_only_its_environment_and_activities(ws, actor, frozen_now):
@@ -423,12 +535,13 @@ def test_a_stored_grant_whose_expiry_names_no_real_time_covers_nothing(ws, actor
 
 
 def test_redacted_text_still_folds_and_the_grant_still_works(ws, actor, frozen_now):
-    # Python 3.15's urlsplit refuses a netloc whose userinfo holds brackets, so the redacted URL
-    # target names no host there (it covers nothing, which fails safe); the bare target still matches.
+    # T10-R6 refuses URL targets with userinfo, so the redacted text sits in the approval quote and a limit.
     frozen_now.set(NOON)
-    g = _grant(ws, actor, targets=["http://admin:hunter22x@localhost:8080/", "localhost"], activities=["dast-passive"],
+    g = _grant(ws, actor, targets=["http://localhost:8080/"], activities=["db-write"],
+               limits={"db-write": {"backup_statement": "pg_dump run with pwd=hunter22x"}},
                approval="yes; the password=hunter22x login is a test account")
     assert "hunter22x" not in json.dumps(g["data"]) and g["redactions"] >= 2
     st = state.load(ws)
-    assert st["violations"] == [] and st["authorizations"]["AUTH-001"]["targets"] == g["data"]["targets"]
-    assert chk(st, config.load_config(ws), "dast-passive", hosts=("localhost",)).authorization == "AUTH-001"
+    assert st["violations"] == [] and st["authorizations"]["AUTH-001"]["limits"] == g["data"]["limits"]
+    assert st["authorizations"]["AUTH-001"]["approval_quote"] == g["data"]["approval_quote"]
+    assert chk(st, config.load_config(ws), "db-write", hosts=("localhost",)).authorization == "AUTH-001"
