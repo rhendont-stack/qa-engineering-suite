@@ -72,3 +72,12 @@ def actor():
     from qa.ledger import Actor
 
     return Actor(role="verifier", skill="qa-test-execution", session="S-" + "0" * 26, independence="I1")
+
+
+@pytest.fixture
+def trusted(ws, actor):
+    from qa import config
+
+    config.record_initialized(ws, actor)
+    config.set_value(ws, actor, "project.trust", "trusted", "test approval")
+    return ws

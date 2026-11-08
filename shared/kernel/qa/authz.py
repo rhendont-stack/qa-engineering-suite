@@ -59,8 +59,6 @@ from .workspace import Workspace
 # redact.load_redactor and ledger.append raise.
 
 _NEVER_ON_PRODUCTION = ("db-write", "dast-active")
-# §12.2: network-download "Requires a grant listing hosts" and DAST "Requires a grant per target".
-_PER_TARGET = ("network-download", "dast-passive", "dast-active")
 _HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
 # The bare target forms (T10-R10). An IPv6 address holds hex digits, colons and dots, and its zone,
 # if any, is a name: ipaddress alone would also read a zone such as "a@b".
@@ -212,7 +210,7 @@ def _covers(grant: dict, env_id: Any, activity: str, names: List[Optional[str]],
             return False
     except QaError:  # fits the timestamp pattern but names no real time
         return False
-    if activity in _PER_TARGET and not names:  # a check that names no host cannot show its target is granted
+    if activity in vocab.PER_TARGET_ACTIVITIES and not names:  # a check that names no host cannot show its target is granted
         return False
     targets = {_read_target(t)[0] for t in grant["targets"]}   # None for a target of no target form
     return all(name is not None and name in targets for name in names)
@@ -249,7 +247,7 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     if env["class"] == "ci":
         raise QaError("ci_unsupported", "ci environments arrive in milestone 4", environment=environment_id)
     _check_activities(env, activities)
-    per_target = [a for a in activities if a in _PER_TARGET]
+    per_target = [a for a in activities if a in vocab.PER_TARGET_ACTIVITIES]
     if per_target and not targets:
         raise QaError("targets_required", "%s needs a grant that lists its targets (§12.2)" % per_target[0],
                       activity=per_target[0])

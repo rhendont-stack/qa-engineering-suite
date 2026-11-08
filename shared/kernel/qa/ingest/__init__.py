@@ -1,7 +1,8 @@
 """Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0) into counted results and alerts."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -82,6 +83,8 @@ from qa.ingest import junit as _junit  # noqa: E402
 from qa.ingest import sarif as _sarif  # noqa: E402
 
 _PARSERS = {"junit": _junit.parse, "ctrf": _ctrf.parse, "sarif": _sarif.parse}
+# What each format counts, so a request mixing kinds is refused before anything runs.
+FORMAT_KINDS = {"junit": "tests", "ctrf": "tests", "sarif": "alerts"}
 
 
 def parse_report(fmt: str, path: Path, max_bytes: int) -> ReportSummary:
@@ -97,7 +100,13 @@ def parse_report(fmt: str, path: Path, max_bytes: int) -> ReportSummary:
         raise ReportInvalid("unreadable", str(exc)) from exc
     if len(data) > max_bytes:
         raise ReportInvalid("too_large", max_bytes=max_bytes)
-    return parser(data)
+    try:
+        summary = parser(data)
+        # JSON can spell a lone surrogate (\ud800) or nest too deep to dump; the ledger could store neither.
+        json.dumps(asdict(summary), ensure_ascii=False).encode("utf-8")
+    except (UnicodeEncodeError, RecursionError) as exc:
+        raise ReportInvalid("not_storable", type(exc).__name__) from exc
+    return summary
 
 
 def merge(summaries: List[ReportSummary]) -> ReportSummary:

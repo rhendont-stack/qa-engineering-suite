@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
-from typing import Callable, Dict, Iterable
+from typing import Callable, Dict, Iterable, Optional
 
 from . import ledger, schema
 from .canonical import hash_obj
 from .errors import QaError
+from .status import can_reclassify
 from .workspace import Workspace, config_bytes, write_atomic
 
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
@@ -78,6 +79,129 @@ def _authorization_revoked(state: dict, event: dict) -> None:
     state.setdefault(_EARLY_REVOCATIONS, {}).setdefault(auth_id, []).append((event, violation))
 
 
+# Fold-internal: events whose effect depends on a record that may fold after them. The fold sorts by
+# ts first, so after a clock step or in the same millisecond an event can precede what it refers to,
+# and a lost downgrade would leave a result passed. _settle applies them; its queue never leaves fold.
+_SETTLE = "_settle"
+
+
+def _violation(state: dict, event: dict, kind: str) -> None:
+    state["violations"].append({"event": event["id"], "kind": kind})
+
+
+def _queue(state: dict, event: dict) -> None:
+    state.setdefault(_SETTLE, []).append(event)
+
+
+def _execution_recorded(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["executions"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    state["executions"][data["id"]] = dict(copy.deepcopy(data), ingested=[])
+
+
+def _result_recorded(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["results"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    state["results"][data["id"]] = dict(copy.deepcopy(data), reclassifications=[])
+    _queue(state, event)
+
+
+def _command_blocked(state: dict, event: dict) -> None:
+    state["blocked_commands"].append(dict(copy.deepcopy(event["data"]), event=event["id"]))
+
+
+def _settle_result(state: dict, event: dict) -> None:
+    if event["data"]["execution"] not in state["executions"]:
+        _violation(state, event, "unknown_execution")
+
+
+def _settle_reclassification(state: dict, event: dict) -> None:
+    data = event["data"]
+    result = state["results"].get(data["result"])
+    if result is None:
+        _violation(state, event, "unknown_result")
+    elif not can_reclassify(result["status"], data["new_status"]):
+        _violation(state, event, "reclassify_not_allowed")
+    else:
+        result["reclassifications"].append({"event": event["id"], "from": result["status"], "to": data["new_status"],
+                                            "reason": data["reason"], "evidence": list(data["evidence"])})
+        result["status"] = data["new_status"]
+
+
+def _settle_ingest(state: dict, event: dict) -> None:
+    execution = state["executions"].get(event["data"]["execution"])
+    if execution is None:
+        _violation(state, event, "unknown_execution")
+    else:
+        execution["ingested"].append(dict(copy.deepcopy(event["data"]), event=event["id"]))
+
+
+_SETTLERS = {"result.recorded": _settle_result, "result.reclassified": _settle_reclassification,
+             "report.ingested": _settle_ingest}
+
+
+def chain_root(st: dict, execution_id: str) -> str:
+    """Follow ``attempt_of`` while the parent exists; a repeated id ends the walk, so a hand-made cycle ends."""
+    seen = {execution_id}
+    current = execution_id
+    while True:
+        parent = st["executions"].get(current, {}).get("attempt_of")
+        if parent is None or parent in seen or parent not in st["executions"]:
+            return current
+        seen.add(parent)
+        current = parent
+
+
+def _worst(current: Optional[str], status: str) -> str:
+    """A test repeated in one execution counts once: any failure wins, then any pass."""
+    if "failed" in (current, status):
+        return "failed"
+    if "passed" in (current, status):
+        return "passed"
+    return status
+
+
+def _test_entry(chain: dict) -> dict:
+    counted = [outcome for outcome in chain["outcomes"].values() if outcome in ("passed", "failed")]
+    attempts, passes = len(counted), counted.count("passed")
+    flaky = 0 < passes < attempts or chain["flaky"]
+    latest = chain["latest"]
+    if flaky or (attempts > 0 and passes == 0):
+        status = "failed"
+    elif attempts > 0:
+        status = "passed"
+    else:
+        status = latest["status"]
+    return {"result": latest["id"], "execution": latest["execution"], "attempts": attempts, "passes": passes,
+            "ratio": passes / attempts if attempts else None, "flaky": flaky, "status": status,
+            "reproducible": attempts >= 2 and passes == 0}
+
+
+def _build_tests(state: dict) -> None:
+    chains: Dict[str, Dict[str, dict]] = {}
+    for result in state["results"].values():
+        execution = result["execution"]
+        if execution not in state["executions"]:
+            continue
+        chain = chains.setdefault(result["test_id"], {}).setdefault(
+            chain_root(state, execution), {"outcomes": {}, "flaky": False, "latest": result})
+        chain["latest"] = result
+        chain["flaky"] = chain["flaky"] or result["flaky"]
+        chain["outcomes"][execution] = _worst(chain["outcomes"].get(execution), result["status"])
+    state["tests"] = {test_id: {root: _test_entry(chain) for root, chain in by_root.items()}
+                      for test_id, by_root in chains.items()}
+
+
+def _settle(state: dict) -> None:
+    for event in state.pop(_SETTLE, []):
+        _SETTLERS[event["type"]](state, event)
+    _build_tests(state)
+
+
 # Later tasks add their event types here.
 REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "workspace.initialized": _workspace_initialized,
@@ -86,6 +210,11 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "config.drift_detected": _config_drift_detected,
     "authorization.granted": _authorization_granted,
     "authorization.revoked": _authorization_revoked,
+    "execution.recorded": _execution_recorded,
+    "result.recorded": _result_recorded,
+    "result.reclassified": _queue,
+    "command.blocked": _command_blocked,
+    "report.ingested": _queue,
 }
 
 
@@ -105,6 +234,7 @@ def fold(events: Iterable[dict]) -> dict:
             continue
         reducer(state, event)
     state.pop(_EARLY_REVOCATIONS, None)  # its violations stay: no grant in the ledger holds those ids
+    _settle(state)
     return state
 
 

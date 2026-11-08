@@ -11,6 +11,8 @@ ACTIVITIES = (
     "git-history-scan", "deploy",
 )
 NEVER_ACTIVITIES = ("credential-use", "deploy")
+# §12.2: network-download "Requires a grant listing hosts" and DAST "Requires a grant per target".
+PER_TARGET_ACTIVITIES = ("network-download", "dast-passive", "dast-active")
 # Activities a `ci` class may use: those confined to the runner (§12.2 Unattended CI).
 RUNNER_CONFINED = ("static-analysis", "test-execution-local", "install-dependencies",
                    "network-download", "db-ephemeral")

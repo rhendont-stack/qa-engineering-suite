@@ -1,0 +1,639 @@
+"""The evidence-recording run pipeline: one command in, one recorded execution out.
+
+``execute`` checks the request, then walks the stages (§8.3, §8.4, §9.5):
+
+1-4. ``_gate``: guard, config drift, authorization and attempt rules. All of them run, so
+     ``status.decide`` applies rule 1's order whatever the combination. A run stopped here has
+     no evidence directory and is recorded by ``_record_blocked``.
+5-9. ``_run_command``: create the evidence directory, snapshot the declared reports, run,
+     redact and store what came out, decide the status, record the execution and its results.
+
+Everything stored or recorded goes through one redactor built from the run's own environment,
+and is hashed after redaction.
+"""
+from __future__ import annotations
+
+import glob
+import math
+import os
+import shlex
+import stat
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
+
+from . import (KERNEL_VERSION, authz, config, envinfo, gitinfo, guard, ids, ingest, integrity, ledger, redact, runner,
+               schema, state, status, vocab)
+from .canonical import dumps, loads, sha256_bytes, sha256_file
+from .errors import QaError
+from .workspace import Workspace, write_atomic
+
+EVIDENCE_TOKEN = "{evidence}"
+_SCOPES = ("targeted", "full")
+_ATTEMPT_ACTIVITY = "test-execution-local"
+_ENV_VALUE_NAMES = ("CI", "NODE_ENV")
+_STDERR_TAIL = 64 * 1024
+_MIB = 2 ** 20
+_CATEGORY = {"$ref": "defs.schema.json#/$defs/category"}
+_UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production": a real environment may hold that id
+_MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json"}
+_FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
+_Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
+
+
+@dataclass(frozen=True)
+class RunRequest:
+    command: Union[List[str], str]
+    shell: bool = False
+    cwd: Optional[Path] = None
+    reports: Tuple[Tuple[str, str], ...] = ()
+    timeout_s: Optional[float] = None
+    attempt_of: Optional[str] = None
+    activity: str = "test-execution-local"
+    environment: str = "local"
+    scope: str = "targeted"
+    allow_empty: bool = False
+    category: str = "functional"
+
+
+@dataclass
+class _Run:
+    """What every stage of one ``execute`` call shares."""
+    ws: Workspace
+    actor: ledger.Actor
+    req: RunRequest
+    cfg: dict
+    environment: dict
+    cwd: str
+    command: dict  # as recorded: it keeps the {evidence} token
+    environ: Dict[str, str]
+    redactor: redact.Redactor
+    execution_id: str
+    st: dict
+    config_hash: str
+    kernel: dict
+    limitations: List[str] = field(default_factory=list)
+
+    @property
+    def max_bytes(self) -> int:
+        return self.cfg["defaults"]["max_log_mb"] * _MIB
+
+    def note(self, text: str) -> None:
+        if text not in self.limitations:
+            self.limitations.append(text)
+
+
+@dataclass
+class _Gate:
+    """What stages 1-4 decided."""
+    decision: guard.GuardDecision
+    git: Optional[dict]
+    policy_denied: bool = False
+    config_drift: bool = False
+    not_authorized: bool = False
+    authorization: Optional[str] = None
+    authorizations: List[dict] = field(default_factory=list)
+
+    @property
+    def blocked(self) -> bool:
+        return self.policy_denied or self.config_drift or self.not_authorized
+
+
+class _Recorded(NamedTuple):
+    verdict: status.StatusDecision
+    evidence: Optional[str]
+    summary: Optional[ingest.ReportSummary]
+    limitations: List[str]
+
+
+class _Reports(NamedTuple):
+    entries: List[dict]  # the event's "reports" list, one per declared pair
+    error: Optional[str]
+    summary: Optional[ingest.ReportSummary]
+    manifest: Dict[str, dict]
+
+
+# --------------------------------------------------------------------------- the request
+
+def _check_request(req: RunRequest) -> None:
+    command = req.command
+    well_formed = bool(command) if isinstance(command, str) else (
+        isinstance(command, list) and bool(command) and all(isinstance(a, str) for a in command) and not req.shell)
+    if not well_formed:
+        raise QaError("invalid_command", "command must be a non-empty list of strings, or a non-empty shell string")
+    if req.scope not in _SCOPES:
+        raise QaError("invalid_scope", "scope must be targeted or full", scope=req.scope)
+    if schema.errors(req.category, _CATEGORY):
+        raise QaError("invalid_category", "unknown category", category=req.category)
+    timeout = req.timeout_s
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                or not 0 < timeout < math.inf):
+        raise QaError("invalid_timeout", "timeout_s must be a positive number of seconds", timeout_s=timeout)
+    for fmt, _pattern in req.reports:
+        if fmt not in ingest.FORMAT_KINDS:
+            raise ingest.ReportInvalid("unknown_format", format=fmt)
+    if len({ingest.FORMAT_KINDS[fmt] for fmt, _pattern in req.reports}) > 1:
+        raise QaError("kind_mismatch", "one request cannot mix test reports and alert reports")
+
+
+def _resolve_cwd(ws: Workspace, cwd: Optional[Path]) -> Tuple[str, str]:
+    """(the real directory, the path recorded for it relative to the workspace root)."""
+    root = os.path.realpath(str(ws.root))
+    try:
+        where = root if cwd is None else os.path.realpath(os.path.join(root, str(cwd)))
+        inside = os.path.isdir(where) and os.path.commonpath([root, where]) == root
+    except ValueError:  # a NUL in the path
+        inside = False
+    if not inside:
+        raise QaError("invalid_cwd", "cwd must be an existing directory inside the workspace", cwd=str(cwd))
+    return where, Path(os.path.relpath(where, root)).as_posix()
+
+
+def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Optional[Mapping[str, str]] = None,
+            grace_s: float = 5.0) -> dict:
+    """Decide about ``req``, run it if it may run, and record what happened."""
+    _check_request(req)
+    cfg = config.load_config(ws)
+    environment = next((e for e in cfg["environments"] if e["id"] == req.environment), None)
+    if environment is None:
+        raise QaError("unknown_environment", "config.json declares no such environment", environment=req.environment)
+    cwd, recorded_cwd = _resolve_cwd(ws, req.cwd)
+    run_environ = dict(os.environ if environ is None else environ)
+    argv = [req.command] if isinstance(req.command, str) else list(req.command)
+    kernel = integrity.kernel_integrity()
+    run = _Run(ws=ws, actor=actor, req=req, cfg=cfg, environment=environment, cwd=cwd,
+               command={"argv": argv, "shell": req.shell, "cwd": recorded_cwd}, environ=run_environ,
+               redactor=redact.load_redactor(ws, environ=run_environ), execution_id=ids.new_id("EXE"),
+               st=state.load(ws), config_hash=config.current_hash(ws),
+               kernel={"version": KERNEL_VERSION, "manifest": kernel["manifest_sha256"]})
+    if kernel["status"] == "modified":
+        run.note("kernel_modified")
+    gate = _gate(run)
+    recorded = _record_blocked(run, gate) if gate.blocked else _run_command(run, gate, grace_s)
+    return {
+        "execution": run.execution_id,
+        "status": recorded.verdict.status,
+        "reason": recorded.verdict.reason,
+        "strength": recorded.verdict.strength,
+        "anomalies": list(recorded.verdict.anomalies),
+        "tests": _counts(recorded.summary),
+        "flaky": flaky_view(state.load(ws), run.execution_id) if req.attempt_of is not None else {},
+        "evidence": recorded.evidence,
+        "findings": {"opened": 0, "updated": 0},
+        "limitations": recorded.limitations,
+    }
+
+
+def _counts(summary: Optional[ingest.ReportSummary]) -> Dict[str, int]:
+    if summary is None:
+        return dict.fromkeys(("total", "passed", "failed", "errors", "skipped"), 0)
+    return {"total": summary.total, "passed": summary.passed, "failed": summary.failed,
+            "errors": summary.errors, "skipped": summary.skipped}
+
+
+# --------------------------------------------------------------------------- stages 1-4
+
+def _gate(run: _Run) -> _Gate:
+    req = run.req
+    decision = guard.classify(req.command, shell=req.shell, ws_root=run.ws.root, qa_dir=run.ws.qa_dir, config=run.cfg,
+                              declared_activity=req.activity, cwd=req.cwd)
+    git, git_limitation = gitinfo.git_info(run.ws.root)
+    if git_limitation is not None:
+        run.note(git_limitation)
+    gate = _Gate(decision, git)
+    if decision.decision == "deny":
+        gate.policy_denied = True
+        run.note("guard rule %s denied the command: %s" % (decision.rule_id, decision.reason))
+    _check_drift(run, gate)
+    _authorize(run, gate)
+    refusal = _attempt_refusal(run, gate) if req.attempt_of is not None else None
+    if refusal is not None:
+        gate.policy_denied = True
+        run.note("attempt_of %s refused: %s" % (req.attempt_of, refusal))
+    return gate
+
+
+def _check_drift(run: _Run, gate: _Gate) -> None:
+    drifted = [a for a in gate.decision.required_activities
+               if config.check_drift(run.ws, run.st, run.actor, a) is not None]
+    if drifted:
+        gate.config_drift = True
+        run.note("config_drift: config.json differs from the accepted configuration, needed for %s" % ", ".join(drifted))
+
+
+def _authorization_groups(cfg: dict, run_environment: dict, hosts: Tuple[str, ...]) -> List[Tuple[dict, List[str]]]:
+    """The run's environment, each other environment a host resolves to, then the hosts nobody declared."""
+    groups: Dict[str, Tuple[dict, List[str]]] = {run_environment["id"]: (run_environment, [])}
+    undeclared: List[str] = []
+    for host in dict.fromkeys(hosts):
+        environment = config.resolve_host(cfg, host)
+        if environment is None:
+            undeclared.append(host)
+        else:
+            groups.setdefault(environment["id"], (environment, []))[1].append(host)
+    return list(groups.values()) + ([(_UNDECLARED, undeclared)] if undeclared else [])
+
+
+def _authorize(run: _Run, gate: _Gate) -> None:
+    """Every required activity against every group, each with that group's hosts only."""
+    groups = _authorization_groups(run.cfg, run.environment, gate.decision.hosts)
+    now = ids.now_utc()
+    # A grant never covers a per-target activity with no host, so checking one on an environment
+    # no host resolves to would deny a run that the host's own environment authorizes.
+    checks = [(activity, environment, hosts) for activity in gate.decision.required_activities
+              for environment, hosts in groups
+              if hosts or activity not in vocab.PER_TARGET_ACTIVITIES or len(groups) == 1]
+    for position, (activity, environment, hosts) in enumerate(checks):
+        verdict = authz.check(run.st, run.cfg, activity=activity, environment=environment, hosts=tuple(hosts), now=now)
+        if position == 0:
+            gate.authorization = verdict.authorization
+        if verdict.allowed:
+            entry = {"activity": activity, "environment": environment["id"], "authorization": verdict.authorization}
+            if entry not in gate.authorizations:
+                gate.authorizations.append(entry)
+            continue
+        gate.policy_denied = gate.policy_denied or verdict.reason == "policy_denied"
+        gate.not_authorized = gate.not_authorized or verdict.reason == "not_authorized"
+        run.note("%s on environment %s: %s: %s" % (activity, environment["id"], verdict.reason, verdict.detail))
+
+
+def _git_identity(git: Optional[dict]) -> Tuple[Optional[str], Optional[str]]:
+    return (None, None) if git is None else (git["commit"], git["diff_hash"])
+
+
+def _attempt_refusal(run: _Run, gate: _Gate) -> Optional[str]:
+    """Why ``req.attempt_of`` may not be retried now, or None."""
+    req, st = run.req, run.st
+    parent = st["executions"].get(req.attempt_of)
+    if parent is None:
+        return "it names no recorded execution"
+    if parent["status"] == "blocked":
+        return "that execution was blocked"
+    if req.activity != _ATTEMPT_ACTIVITY or parent["activity"] != _ATTEMPT_ACTIVITY:
+        return "attempts are limited to %s" % _ATTEMPT_ACTIVITY
+    if req.environment != parent["environment_id"]:
+        return "that execution ran on environment %s" % parent["environment_id"]
+    if _git_identity(gate.git) != _git_identity(parent["git"]):
+        return "the commit or diff differs from that execution's"
+    root = state.chain_root(st, req.attempt_of)
+    length = sum(1 for e in st["executions"].values() if e["status"] != "blocked" and state.chain_root(st, e["id"]) == root)
+    if length >= 1 + run.cfg["defaults"]["flaky_reruns"]:
+        return "the chain already has %d attempts" % length
+    return None
+
+
+def _append(run: _Run, event_type: str, data: dict) -> dict:
+    """Redact with the run's own environment first: a secret that exists only there must not reach the ledger."""
+    clean = run.redactor.obj(data)[0]
+    ledger.append(run.ws, run.actor, event_type, clean)
+    return clean
+
+
+def _execution_data(run: _Run, gate: _Gate, verdict: status.StatusDecision, facts: dict) -> dict:
+    """The event's data: ``facts`` holds what differs between a run that started and one that did not."""
+    req, actor = run.req, run.actor
+    return dict(
+        facts,
+        id=run.execution_id, command=run.command, git=gate.git, environment_id=req.environment,
+        env_names=sorted(run.environ),
+        env_values={name: run.environ[name] for name in _ENV_VALUE_NAMES if name in run.environ},
+        isolation="host", status=verdict.status, reason=verdict.reason, strength=verdict.strength,
+        anomalies=list(verdict.anomalies), classification=verdict.classification,
+        authorization=gate.authorization, authorizations=gate.authorizations, activity=req.activity, scope=req.scope,
+        category=req.category, attempt_of=req.attempt_of, config_hash=run.config_hash, kernel=run.kernel,
+        actor={"role": actor.role, "skill": actor.skill, "session": actor.session}, independence=actor.independence,
+        limitations=run.limitations,
+    )
+
+
+def _record_blocked(run: _Run, gate: _Gate) -> _Recorded:
+    req = run.req
+    verdict = status.decide(status.StatusInputs(
+        guard_denied=gate.policy_denied, not_authorized=gate.not_authorized, config_drift=gate.config_drift))
+    now = ids.format_ts(ids.now_utc())
+    record = _execution_data(run, gate, verdict, {
+        "started_at": now, "ended_at": now, "duration_ms": 0, "exit_code": None, "signal": None, "timed_out": False,
+        "environment": dict(envinfo.host_facts(), tools={}, **{"class": run.environment["class"]}),
+        "evidence_manifest": None,
+        "reports": [{"format": fmt, "pattern": pattern, "files": [], "error": None} for fmt, pattern in req.reports],
+        "report": None, "redactions": 0,
+    })
+    with run.ws.lock():
+        if gate.decision.decision == "deny":
+            _append(run, "command.blocked", {"execution": run.execution_id, "activity": req.activity,
+                                             "rule_id": gate.decision.rule_id, "reason": gate.decision.reason,
+                                             "command": run.command})
+        clean = _append(run, "execution.recorded", record)
+    return _Recorded(verdict, None, None, clean["limitations"])
+
+
+# --------------------------------------------------------------------------- report resolution
+
+def _matches(pattern: str, directory: str, cwd: str) -> List[str]:
+    """The regular, non-symlink files ``pattern`` names, as sorted real paths."""
+    literal = os.path.join(cwd, pattern.replace(EVIDENCE_TOKEN, directory))
+    if os.path.lexists(literal):
+        candidates = [literal]
+    else:  # both directories can hold glob characters: "My [x] Skills" is a legal path
+        candidates = glob.glob(os.path.join(glob.escape(cwd), pattern.replace(EVIDENCE_TOKEN, glob.escape(directory))),
+                               recursive=True)
+    found = set()
+    for path in candidates:
+        try:
+            if stat.S_ISREG(os.lstat(path).st_mode):
+                found.add(os.path.realpath(path))
+        except OSError:
+            continue
+    return sorted(found)
+
+
+def _fingerprint(path: str) -> Optional[Tuple[int, str]]:
+    try:
+        return os.stat(path).st_mtime_ns, sha256_file(Path(path))
+    except OSError:
+        return None
+
+
+def _snapshot(reports: Tuple[Tuple[str, str], ...], directory: str, cwd: str) -> _Snapshot:
+    return {path: _fingerprint(path) for _fmt, pattern in reports for path in _matches(pattern, directory, cwd)}
+
+
+def _produced(run: _Run, directory: str, snapshot: _Snapshot) -> List[List[str]]:
+    """For each declared report, the files this run wrote or changed."""
+    produced = []
+    for _fmt, pattern in run.req.reports:
+        matched = _matches(pattern, directory, run.cwd)
+        produced.append([path for path in matched if path not in snapshot or snapshot[path] != _fingerprint(path)])
+    return produced
+
+
+def _free_name(name: str, taken: Set[str]) -> str:
+    """``name``, or ``name`` with -2, -3, ... before its extension. Compared without case, as some filesystems do."""
+    stem, extension = os.path.splitext(name)
+    candidate, number = name, 1
+    while candidate.lower() in taken:
+        number += 1
+        candidate = "%s-%d%s" % (stem, number, extension)
+    taken.add(candidate.lower())
+    return candidate
+
+
+def _store_file(directory: Path, name: str, data: bytes, media_type: str, redactions: int) -> dict:
+    write_atomic(directory / name, data)
+    return {"sha256": sha256_bytes(data), "size": len(data), "media_type": media_type, "redactions": redactions}
+
+
+def _read_report(run: _Run, source: str) -> Optional[bytes]:
+    name = os.path.basename(source)
+    try:
+        if os.lstat(source).st_size > run.max_bytes:
+            run.note("report_invalid: %s is over the defaults.max_log_mb cap and was not stored" % name)
+            return None
+        return Path(source).read_bytes()
+    except OSError as exc:
+        run.note("report_invalid: %s could not be read (%s)" % (name, type(exc).__name__))
+        return None
+
+
+def _discard_raw_reports(run: _Run, directory: Path, sources: List[str], names: Dict[str, str]) -> None:
+    """A tool may write into the evidence directory; its unredacted file must not stay there (§9.5)."""
+    inside = os.path.realpath(str(directory)) + os.sep
+    copies = {os.path.realpath(str(directory / "reports" / name)) for name in names.values()}
+    for source in sources:
+        if source.startswith(inside) and source not in copies:
+            try:
+                os.unlink(source)
+            except OSError as exc:
+                run.note("unredacted report left in the evidence directory: %s (%s)"
+                         % (os.path.basename(source), type(exc).__name__))
+
+
+def _copy_reports(run: _Run, directory: Path, produced: List[List[str]]) -> Tuple[Dict[str, str], Dict[str, dict]]:
+    """Store each produced file once, redacted. Returns {source: stored name} and the files' manifest entries."""
+    formats: Dict[str, str] = {}
+    for (fmt, _pattern), sources in zip(run.req.reports, produced):
+        for source in sources:
+            formats.setdefault(source, fmt)
+    home = directory / "reports"
+    real_home = os.path.realpath(str(home))
+    names: Dict[str, str] = {}
+    manifest: Dict[str, dict] = {}
+    taken: Set[str] = set()
+    # A file the tool wrote straight into reports/ goes first, so it keeps its own name.
+    for source in sorted(formats, key=lambda s: (os.path.dirname(s) != real_home, s)):
+        data = _read_report(run, source)
+        if data is None:
+            continue
+        name = _free_name(run.redactor.text(os.path.basename(source))[0], taken)  # manifest keys stay clean
+        clean, count = run.redactor.bytes_(data)
+        try:
+            home.mkdir(mode=0o700, exist_ok=True)
+            manifest["reports/" + name] = _store_file(directory, "reports/" + name, clean, _MEDIA_TYPES[formats[source]], count)
+        except OSError as exc:  # the tool can write anything here, even a file named reports
+            run.note("report_invalid: %s could not be stored (%s)" % (name, type(exc).__name__))
+            continue
+        names[source] = name
+    _discard_raw_reports(run, directory, sorted(formats), names)
+    return names, manifest
+
+
+def _parse_copy(run: _Run, fmt: str, copy: Path) -> Optional[ingest.ReportSummary]:
+    try:
+        return ingest.parse_report(fmt, copy, run.max_bytes)
+    except ingest.ReportInvalid as exc:
+        run.note("report_invalid: reports/%s is not a valid %s report (%s)" % (copy.name, fmt, exc.details["detail"]))
+        return None
+
+
+def _store_reports(run: _Run, directory: Path, snapshot: _Snapshot) -> _Reports:
+    produced = _produced(run, str(directory), snapshot)
+    names, manifest = _copy_reports(run, directory, produced)
+    parsed: Dict[Tuple[str, str], Optional[ingest.ReportSummary]] = {}  # a file two patterns match counts once
+    entries = []
+    for (fmt, pattern), sources in zip(run.req.reports, produced):
+        files: List[str] = []
+        error = None
+        if not sources:
+            error = "report_missing"
+            run.note("report_missing: no file this run produced matches %s" % pattern)
+        for source in sources:
+            if source not in names:
+                error = error or "report_invalid"
+                continue
+            files.append("reports/" + names[source])
+            if (fmt, source) not in parsed:
+                parsed[(fmt, source)] = _parse_copy(run, fmt, directory / "reports" / names[source])
+            if parsed[(fmt, source)] is None:
+                error = error or "report_invalid"
+        entries.append({"format": fmt, "pattern": pattern, "files": files, "error": error})
+    summaries = [s for s in parsed.values() if s is not None]
+    first_error = next((e["error"] for e in entries if e["error"] is not None), None)
+    return _Reports(entries, first_error, ingest.merge(summaries) if summaries else None, manifest)
+
+
+def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
+    if summary is None:
+        return None
+    if summary.kind == "alerts":
+        return {"format": summary.format, "kind": "alerts", "alerts": len(summary.alerts), "runs": summary.runs}
+    return {"format": summary.format, "kind": "tests", "tests": summary.total, "failures": summary.failed,
+            "errors": summary.errors, "skipped": summary.skipped}
+
+
+# --------------------------------------------------------------------------- stages 5-9
+
+def _concrete_command(req: RunRequest, directory: str) -> Union[List[str], str]:
+    if req.shell:  # the path can hold spaces ("My Skills")
+        return req.command.replace(EVIDENCE_TOKEN, shlex.quote(directory))
+    return [argument.replace(EVIDENCE_TOKEN, directory) for argument in req.command]
+
+
+def _with_marker(data: bytes, dropped: int) -> bytes:
+    return data + b"\n[TRUNCATED: %d bytes omitted by qa]\n" % dropped if dropped else data
+
+
+def _write_evidence(run: _Run, directory: Path, streams: Dict[str, Tuple[bytes, int]], timeout_s: float,
+                    report_entries: Dict[str, dict]) -> Tuple[dict, int]:
+    """Write the logs, ``command.json`` and ``manifest.json``; returns (evidence_manifest, total redactions)."""
+    req = run.req
+    document, redactions = run.redactor.obj(dict(
+        run.command, reports=[{"format": fmt, "pattern": pattern} for fmt, pattern in req.reports], timeout_s=timeout_s,
+        activity=req.activity, environment=req.environment, scope=req.scope, category=req.category,
+        allow_empty=req.allow_empty, attempt_of=req.attempt_of))
+    manifest = dict(report_entries)
+    manifest["command.json"] = _store_file(directory, "command.json", dumps(document) + b"\n", "application/json", redactions)
+    for name, (data, count) in streams.items():
+        manifest[name] = _store_file(directory, name, data, "text/plain", count)
+    manifest_bytes = dumps(manifest) + b"\n"
+    write_atomic(directory / "manifest.json", manifest_bytes)
+    evidence_manifest = {"sha256": sha256_bytes(manifest_bytes), "files": sorted(manifest),
+                         "ids": {name: ids.ev_id(entry["sha256"]) for name, entry in manifest.items()}}
+    return evidence_manifest, sum(entry["redactions"] for entry in manifest.values())
+
+
+def _result_data(case: ingest.CaseResult, execution_id: str) -> dict:
+    return {"id": ids.new_id("RES"), "execution": execution_id, "test_id": case.test_id, "status": case.status,
+            "failure_kind": case.failure_kind, "skip_reason": case.skip_reason, "flaky": case.flaky,
+            "duration_ms": case.duration_ms}
+
+
+def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
+    req = run.req
+    directory = run.ws.path("evidence", run.execution_id)
+    directory.mkdir(mode=0o700, parents=True)
+    fingerprint = envinfo.environment_fingerprint()
+    timeout_s = req.timeout_s if req.timeout_s is not None else run.cfg["defaults"]["timeout_seconds"]
+    snapshot = _snapshot(req.reports, str(directory), run.cwd)
+    outcome = runner.run_process(_concrete_command(req, str(directory)), shell=req.shell, cwd=Path(run.cwd), env=run.environ,
+                                 timeout_s=timeout_s, max_bytes=run.max_bytes, grace_s=grace_s)
+    stdout, stdout_redactions = run.redactor.bytes_(outcome.stdout)
+    stderr, stderr_redactions = run.redactor.bytes_(outcome.stderr)
+    reports = _store_reports(run, directory, snapshot)
+    verdict = status.decide(status.StatusInputs(
+        spawn_error=outcome.spawn_error, shell=req.shell, exit_code=outcome.exit_code, timed_out=outcome.timed_out,
+        report_declared=bool(req.reports), report_error=reports.error, summary=reports.summary,
+        allow_empty=req.allow_empty, stderr_tail=stderr[-_STDERR_TAIL:].decode("utf-8", "replace"),
+        orphaned_output=outcome.orphaned_output))
+    for flag, limitation in ((outcome.orphaned_output, "orphaned_output"), (outcome.stdout_dropped, "stdout_truncated"),
+                             (outcome.stderr_dropped, "stderr_truncated")):
+        if flag:
+            run.note(limitation)
+    streams = {"stdout.log": (_with_marker(stdout, outcome.stdout_dropped), stdout_redactions),
+               "stderr.log": (_with_marker(stderr, outcome.stderr_dropped), stderr_redactions)}
+    evidence_manifest, redactions = _write_evidence(run, directory, streams, timeout_s, reports.manifest)
+    record = _execution_data(run, gate, verdict, {
+        "started_at": outcome.started_at, "ended_at": outcome.ended_at, "duration_ms": outcome.duration_ms,
+        "exit_code": outcome.exit_code, "signal": outcome.signal, "timed_out": outcome.timed_out,
+        "environment": dict(fingerprint, **{"class": run.environment["class"]}),
+        "evidence_manifest": evidence_manifest, "reports": reports.entries, "report": _report_block(reports.summary),
+        "redactions": redactions,
+    })
+    with run.ws.lock():
+        clean = _append(run, "execution.recorded", record)
+        for case in reports.summary.cases if reports.summary is not None else ():
+            _append(run, "result.recorded", _result_data(case, run.execution_id))
+    return _Recorded(verdict, directory.relative_to(run.ws.root).as_posix(), reports.summary, clean["limitations"])
+
+
+# --------------------------------------------------------------------------- after the run
+
+def flaky_view(st: dict, execution_id: str) -> Dict[str, dict]:
+    root = state.chain_root(st, execution_id)
+    return {test_id: {key: chains[root][key] for key in _FLAKY_KEYS}
+            for test_id, chains in st["tests"].items() if root in chains}
+
+
+def _ingest_strength(ws: Workspace, record: dict, file_sha256: str) -> str:
+    """``structured`` only for a file the execution's manifest lists, and only while that manifest is intact."""
+    recorded = record["evidence_manifest"]
+    if recorded is None:
+        return "attested"
+    try:
+        raw = ws.path("evidence", record["id"], "manifest.json").read_bytes()
+    except OSError:
+        return "attested"
+    if sha256_bytes(raw) != recorded["sha256"]:
+        return "attested"
+    return "structured" if any(entry["sha256"] == file_sha256 for entry in loads(raw).values()) else "attested"
+
+
+def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, from_execution: str,
+                category: str = "security") -> dict:
+    """Attach a report file to an existing execution, as a redacted copy under its ``ingested/``."""
+    if schema.errors(category, _CATEGORY):
+        raise QaError("invalid_category", "unknown category", category=category)
+    record = state.load(ws)["executions"].get(from_execution)
+    if record is None:
+        raise QaError("unknown_execution", "no such execution", execution=from_execution)
+    path = Path(path)
+    summary = ingest.parse_report(fmt, path, config.load_config(ws)["defaults"]["max_log_mb"] * _MIB)
+    original = path.read_bytes()
+    strength = _ingest_strength(ws, record, sha256_bytes(original))
+    redactor = redact.load_redactor(ws)
+    clean = redactor.bytes_(original)[0]
+    digest = sha256_bytes(clean)
+    total = len(summary.cases) if summary.kind == "tests" else len(summary.alerts)
+    with ws.lock():
+        folder = ws.path("evidence", from_execution, "ingested")
+        folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        folder.mkdir(mode=0o700, exist_ok=True)
+        name = _free_name(redactor.text(path.name)[0], {entry.name.lower() for entry in folder.iterdir()})
+        write_atomic(folder / name, clean)
+        event = ledger.append(ws, actor, "report.ingested", {
+            "execution": from_execution, "format": fmt, "kind": summary.kind, "total": total, "file": "ingested/" + name,
+            "sha256": digest, "ev_id": ids.ev_id(digest), "strength": strength, "category": category})
+    return {"event": event["id"], "execution": from_execution, "strength": strength, "kind": summary.kind, "total": total}
+
+
+def _known_references(st: dict) -> Set[str]:
+    """Every ``EXE-`` and ``EV-`` id the state can resolve."""
+    known: Set[str] = set(st["executions"])
+    for record in st["executions"].values():
+        if record["evidence_manifest"] is not None:
+            known.update(record["evidence_manifest"]["ids"].values())
+        known.update(item["ev_id"] for item in record["ingested"])
+    return known
+
+
+def reclassify(ws: Workspace, actor: ledger.Actor, result_id: str, new_status: str, reason: str,
+               evidence: List[str]) -> dict:
+    """Change a result's status within §8.3's limits, citing evidence the state can resolve."""
+    with ws.lock():
+        st = state.load(ws)
+        result = st["results"].get(result_id)
+        why = None
+        if result is None:
+            why = "unknown_result"
+        elif not status.can_reclassify(result["status"], new_status):
+            why = "not_allowed"
+        elif not isinstance(reason, str) or not reason.strip():
+            why = "blank_reason"
+        elif not evidence:
+            why = "no_evidence"
+        elif not set(evidence) <= _known_references(st):
+            why = "unknown_reference"
+        if why is not None:
+            raise QaError("reclassify_refused", "the reclassification was refused", why=why, result=result_id)
+        event = ledger.append(ws, actor, "result.reclassified",
+                              {"result": result_id, "new_status": new_status, "reason": reason, "evidence": list(evidence)})
+    return {"event": event["id"], "id": result_id, "status": new_status}
