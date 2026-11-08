@@ -3,3 +3,7 @@ __pycache__/
 .venv*/
 .tools/
 .DS_Store
+tests/corpus/producers/**/node_modules/
+tests/corpus/producers/**/build/
+tests/corpus/producers/**/.gradle/
+tests/corpus/producers/**/target/

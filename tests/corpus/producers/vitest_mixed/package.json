@@ -1,0 +1,10 @@
+{
+  "name": "vitest-mixed-producer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "devDependencies": {
+    "vitest": "3.2.7",
+    "vitest-ctrf-json-reporter": "0.0.3"
+  }
+}

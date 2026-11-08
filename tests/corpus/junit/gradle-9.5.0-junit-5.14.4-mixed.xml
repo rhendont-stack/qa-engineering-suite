@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="corpus.MixedTest" tests="5" skipped="1" failures="2" errors="0" timestamp="1970-01-01T00:00:00.000+00:00" hostname="HOST" time="0.016">
+  <properties/>
+  <testcase name="isDisabled()" classname="corpus.MixedTest" time="0.001">
+    <skipped/>
+  </testcase>
+  <testcase name="throwsAnException()" classname="corpus.MixedTest" time="0.005">
+    <failure message="java.lang.IllegalStateException: boom" type="java.lang.IllegalStateException">java.lang.IllegalStateException: boom
+	at corpus.MixedTest.throwsAnException(MixedTest.java:26)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:569)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+</failure>
+  </testcase>
+  <testcase name="passesOnAddition()" classname="corpus.MixedTest" time="0.001"/>
+  <testcase name="failsAnAssertion()" classname="corpus.MixedTest" time="0.001">
+    <failure message="org.opentest4j.AssertionFailedError: expected: &lt;5&gt; but was: &lt;4&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;5&gt; but was: &lt;4&gt;
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:145)
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:531)
+	at corpus.MixedTest.failsAnAssertion(MixedTest.java:21)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:569)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+</failure>
+  </testcase>
+  <testcase name="passesOnStringLength()" classname="corpus.MixedTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

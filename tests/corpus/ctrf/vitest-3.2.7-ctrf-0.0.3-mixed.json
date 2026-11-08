@@ -1,0 +1,72 @@
+{
+  "results": {
+    "tool": {
+      "name": "vitest"
+    },
+    "summary": {
+      "tests": 5,
+      "passed": 3,
+      "failed": 1,
+      "pending": 0,
+      "skipped": 1,
+      "other": 0,
+      "start": 1794135967459,
+      "stop": 1794135967723
+    },
+    "tests": [
+      {
+        "name": "passes on addition",
+        "duration": 0.5082500000000039,
+        "status": "passed",
+        "message": "",
+        "trace": "",
+        "rawStatus": "pass",
+        "type": "unit",
+        "filePath": "mixed.test.mjs",
+        "retries": 0
+      },
+      {
+        "name": "passes on string length",
+        "duration": 0.06595799999999485,
+        "status": "passed",
+        "message": "",
+        "trace": "",
+        "rawStatus": "pass",
+        "type": "unit",
+        "filePath": "mixed.test.mjs",
+        "retries": 0
+      },
+      {
+        "name": "fails an assertion",
+        "duration": 3.2995420000000024,
+        "status": "failed",
+        "message": "expected 4 to be 5 // Object.is equality",
+        "rawStatus": "fail",
+        "type": "unit",
+        "filePath": "mixed.test.mjs",
+        "retries": 0
+      },
+      {
+        "name": "is skipped",
+        "duration": 0,
+        "status": "skipped",
+        "message": "",
+        "trace": "",
+        "rawStatus": "skip",
+        "type": "unit",
+        "filePath": "mixed.test.mjs",
+        "retries": 0
+      },
+      {
+        "name": "fails first and passes on retry",
+        "duration": 0.33091699999999946,
+        "status": "passed",
+        "message": "expected 1 to be greater than 1",
+        "rawStatus": "pass",
+        "type": "unit",
+        "filePath": "mixed.test.mjs",
+        "retries": 1
+      }
+    ]
+  }
+}

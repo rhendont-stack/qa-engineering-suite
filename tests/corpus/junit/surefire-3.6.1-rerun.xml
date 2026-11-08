@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report.xsd" version="3.0.2" name="corpus.RerunTest" time="0.009" tests="3" errors="0" skipped="0" failures="1" flakes="1">
+  <properties>
+    <property name="java.specification.version" value="{PROPERTY}"/>
+    <property name="sun.jnu.encoding" value="{PROPERTY}"/>
+    <property name="java.class.path" value="{PROPERTY}"/>
+    <property name="java.vm.vendor" value="{PROPERTY}"/>
+    <property name="sun.arch.data.model" value="{PROPERTY}"/>
+    <property name="java.vendor.url" value="{PROPERTY}"/>
+    <property name="os.name" value="{PROPERTY}"/>
+    <property name="java.vm.specification.version" value="{PROPERTY}"/>
+    <property name="sun.java.launcher" value="{PROPERTY}"/>
+    <property name="user.country" value="{PROPERTY}"/>
+    <property name="sun.boot.library.path" value="{PROPERTY}"/>
+    <property name="sun.java.command" value="{PROPERTY}"/>
+    <property name="jdk.debug" value="{PROPERTY}"/>
+    <property name="surefire.test.class.path" value="{PROPERTY}"/>
+    <property name="sun.cpu.endian" value="{PROPERTY}"/>
+    <property name="user.home" value="{PROPERTY}"/>
+    <property name="user.language" value="{PROPERTY}"/>
+    <property name="java.specification.vendor" value="{PROPERTY}"/>
+    <property name="java.version.date" value="{PROPERTY}"/>
+    <property name="java.home" value="{PROPERTY}"/>
+    <property name="file.separator" value="{PROPERTY}"/>
+    <property name="basedir" value="{PROPERTY}"/>
+    <property name="java.vm.compressedOopsMode" value="{PROPERTY}"/>
+    <property name="line.separator" value="{PROPERTY}"/>
+    <property name="java.specification.name" value="{PROPERTY}"/>
+    <property name="java.vm.specification.vendor" value="{PROPERTY}"/>
+    <property name="surefire.real.class.path" value="{PROPERTY}"/>
+    <property name="sun.management.compiler" value="{PROPERTY}"/>
+    <property name="java.runtime.version" value="{PROPERTY}"/>
+    <property name="user.name" value="{PROPERTY}"/>
+    <property name="stdout.encoding" value="{PROPERTY}"/>
+    <property name="path.separator" value="{PROPERTY}"/>
+    <property name="os.version" value="{PROPERTY}"/>
+    <property name="java.runtime.name" value="{PROPERTY}"/>
+    <property name="file.encoding" value="{PROPERTY}"/>
+    <property name="java.vm.name" value="{PROPERTY}"/>
+    <property name="java.vendor.version" value="{PROPERTY}"/>
+    <property name="localRepository" value="{PROPERTY}"/>
+    <property name="java.vendor.url.bug" value="{PROPERTY}"/>
+    <property name="java.io.tmpdir" value="{PROPERTY}"/>
+    <property name="java.version" value="{PROPERTY}"/>
+    <property name="surefire.rerunFailingTestsCount" value="{PROPERTY}"/>
+    <property name="user.dir" value="{PROPERTY}"/>
+    <property name="os.arch" value="{PROPERTY}"/>
+    <property name="java.vm.specification.name" value="{PROPERTY}"/>
+    <property name="native.encoding" value="{PROPERTY}"/>
+    <property name="java.library.path" value="{PROPERTY}"/>
+    <property name="java.vm.info" value="{PROPERTY}"/>
+    <property name="stderr.encoding" value="{PROPERTY}"/>
+    <property name="java.vendor" value="{PROPERTY}"/>
+    <property name="java.vm.version" value="{PROPERTY}"/>
+    <property name="sun.io.unicode.encoding" value="{PROPERTY}"/>
+    <property name="java.class.version" value="{PROPERTY}"/>
+    <property name="maven.test.failure.ignore" value="{PROPERTY}"/>
+  </properties>
+  <testcase name="alwaysFails" classname="corpus.RerunTest" time="0.04">
+    <failure message="expected: &lt;5&gt; but was: &lt;4&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: expected: <5> but was: <4>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:145)
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:531)
+	at corpus.RerunTest.alwaysFails(RerunTest.java:25)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+]]></failure>
+    <rerunFailure message="expected: &lt;5&gt; but was: &lt;4&gt;" type="org.opentest4j.AssertionFailedError">
+      <stackTrace><![CDATA[org.opentest4j.AssertionFailedError: expected: <5> but was: <4>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:145)
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:531)
+	at corpus.RerunTest.alwaysFails(RerunTest.java:25)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+]]></stackTrace>
+    </rerunFailure>
+    <rerunFailure message="expected: &lt;5&gt; but was: &lt;4&gt;" type="org.opentest4j.AssertionFailedError">
+      <stackTrace><![CDATA[org.opentest4j.AssertionFailedError: expected: <5> but was: <4>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:145)
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:531)
+	at corpus.RerunTest.alwaysFails(RerunTest.java:25)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+]]></stackTrace>
+    </rerunFailure>
+  </testcase>
+  <testcase name="passes" classname="corpus.RerunTest" time="0.001"/>
+  <testcase name="failsFirstAndPassesOnRerun" classname="corpus.RerunTest" time="0.003">
+    <flakyFailure message="first run fails ==&gt; expected: &lt;true&gt; but was: &lt;false&gt;" type="org.opentest4j.AssertionFailedError">
+      <stackTrace><![CDATA[org.opentest4j.AssertionFailedError: first run fails ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:63)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:36)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:214)
+	at corpus.RerunTest.failsFirstAndPassesOnRerun(RerunTest.java:20)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
+]]></stackTrace>
+    </flakyFailure>
+  </testcase>
+</testsuite>

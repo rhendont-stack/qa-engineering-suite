@@ -20,5 +20,60 @@
     "kind": "alerts",
     "normalizations": ["temporary directory path", "absolute path", "timestamp", "user name"],
     "expected": {"alerts": 1, "runs": 1}
+  },
+  {
+    "file": "junit/vitest-3.2.7-mixed.xml",
+    "format": "junit",
+    "producer": "vitest",
+    "version": "3.2.7",
+    "command": "python3 tests/corpus/producers/vitest_mixed/generate.py (runs: npm ci --ignore-scripts; npx vitest run --reporter=default --reporter=junit --reporter=vitest-ctrf-json-reporter --outputFile.junit=junit.xml, in <tmp> with npm_config_cache=<tmp>/npm-cache, Node v25.5.0, vitest-ctrf-json-reporter 0.0.3)",
+    "date": "2026-11-08",
+    "kind": "tests",
+    "normalizations": ["hostname", "timestamp"],
+    "expected": {"total": 5, "passed": 3, "failed": 1, "errors": 0, "skipped": 1}
+  },
+  {
+    "file": "ctrf/vitest-3.2.7-ctrf-0.0.3-mixed.json",
+    "format": "ctrf",
+    "producer": "vitest-ctrf-json-reporter",
+    "version": "0.0.3",
+    "command": "python3 tests/corpus/producers/vitest_mixed/generate.py (runs: npm ci --ignore-scripts; npx vitest run --reporter=default --reporter=junit --reporter=vitest-ctrf-json-reporter --outputFile.junit=junit.xml, in <tmp> with npm_config_cache=<tmp>/npm-cache, Node v25.5.0, vitest 3.2.7)",
+    "date": "2026-11-08",
+    "kind": "tests",
+    "normalizations": [],
+    "expected": {"total": 5, "passed": 3, "failed": 1, "errors": 0, "skipped": 1}
+  },
+  {
+    "file": "junit/gradle-9.5.0-junit-5.14.4-mixed.xml",
+    "format": "junit",
+    "producer": "gradle",
+    "version": "9.5.0",
+    "command": "python3 tests/corpus/producers/gradle_junit5/generate.py (runs: gradle --no-daemon test, in <tmp> with JAVA_HOME=$(/usr/libexec/java_home -v 17) [Zulu 17.0.18] and GRADLE_USER_HOME=<tmp>/gradle-home, JUnit BOM 5.14.4)",
+    "date": "2026-11-08",
+    "kind": "tests",
+    "normalizations": ["hostname", "timestamp", "errors counted from <error> elements: Gradle's console has no errors count and writes none"],
+    "expected": {"total": 5, "passed": 2, "failed": 2, "errors": 0, "skipped": 1}
+  },
+  {
+    "file": "junit/surefire-3.6.1-rerun.xml",
+    "format": "junit",
+    "producer": "maven-surefire-plugin",
+    "version": "3.6.1",
+    "command": "python3 tests/corpus/producers/surefire_rerun/generate.py (runs: docker run --rm -v <tmp>/project:{WORK} -v <tmp>/m2:{CONTAINER_HOME}/.m2 -w {WORK} maven@sha256:9673eef9ed503146591667ffb92eaaa22f1b8899ed60d9df0df4da3f3a1214a6 mvn -B test -Dsurefire.rerunFailingTestsCount=2 -Dmaven.test.failure.ignore=true; Maven 3.10.0, Temurin 21.0.13, JUnit BOM 5.14.4)",
+    "date": "2026-11-08",
+    "kind": "tests",
+    "normalizations": ["Surefire property values", "container home and working directory paths", "temporary directory path", "timestamp", "hostname"],
+    "expected": {"total": 3, "passed": 2, "failed": 1, "errors": 0, "skipped": 0}
+  },
+  {
+    "file": "sarif/semgrep-1.184.0.sarif",
+    "format": "sarif",
+    "producer": "semgrep",
+    "version": "1.184.0",
+    "command": "python3 tests/corpus/producers/semgrep_sample/generate.py (runs: .venv-semgrep/bin/semgrep scan --config tests/corpus/producers/semgrep_sample/rules.yml --metrics=off --disable-version-check --sarif --output <tmp>/semgrep.sarif <tmp>/scan, with SEMGREP_ENABLE_VERSION_CHECK=0 and SEMGREP_SEND_METRICS=off)",
+    "date": "2026-11-08",
+    "kind": "alerts",
+    "normalizations": ["temporary directory path"],
+    "expected": {"alerts": 3, "runs": 1}
   }
 ]

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="5" failures="1" errors="0" time="0.004679375">
+    <testsuite name="mixed.test.mjs" timestamp="1970-01-01T00:00:00.000+00:00" hostname="HOST" tests="5" failures="1" errors="0" skipped="1" time="0.004679375">
+        <testcase classname="mixed.test.mjs" name="mixed outcomes &gt; passes on addition" time="0.00050825">
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="mixed outcomes &gt; passes on string length" time="0.000065958">
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="mixed outcomes &gt; fails an assertion" time="0.003299542">
+            <failure message="expected 4 to be 5 // Object.is equality" type="AssertionError">
+AssertionError: expected 4 to be 5 // Object.is equality
+
+- Expected
++ Received
+
+- 5
++ 4
+
+ ❯ mixed.test.mjs:16:19
+            </failure>
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="mixed outcomes &gt; is skipped" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="mixed outcomes &gt; fails first and passes on retry" time="0.000330917">
+        </testcase>
+    </testsuite>
+</testsuites>

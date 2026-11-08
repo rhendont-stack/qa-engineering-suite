@@ -1,0 +1,11 @@
+rules:
+  - id: corpus-eval-call
+    languages: [python]
+    severity: ERROR
+    message: eval() runs arbitrary code
+    pattern: eval(...)
+  - id: corpus-subprocess-shell-true
+    languages: [python]
+    severity: WARNING
+    message: subprocess called with shell=True
+    pattern: subprocess.$FUNC(..., shell=True, ...)
