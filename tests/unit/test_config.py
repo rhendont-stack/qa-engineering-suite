@@ -198,12 +198,15 @@ def test_semantic_standing_authorization_rules():
     "**", "*.md", ".github/**", ".claude/*.json", "./.claude/x", "././.vscode/settings.json",
     "CLAUDE.md", "claude.MD", "agents.md", ".GitHub/Copilot-Instructions.md", ".github/agents/x.md",
     ".mcp.json", "mcp.json", ".cursor/rules", ".claude", "*",
+    "**/CLAUDE.md", "**/.claude/**", "**/.vscode/*.json", "**/**/agents.md",
+    ".github/./agents/x.md", ".github/./copilot-instructions.md", ".github//agents/x.md",
+    ".", "./", "", "./.", "//",
 ])
 def test_semantic_refuses_write_scope(scope):
     assert config.semantic_errors(_with(write_scopes=[scope]))
 
 
-@pytest.mark.parametrize("scope", ["tests/**", "./tests/unit/*.py", "src/app/test_*.py", ".github/workflows/*.yml"])
+@pytest.mark.parametrize("scope", ["tests/**", "./tests/unit/*.py", "**/tests/**", "tests/./unit/*.py", "src/app/test_*.py", ".github/workflows/*.yml"])
 def test_semantic_allows_write_scope(scope):
     assert config.semantic_errors(_with(write_scopes=[scope])) == []
 

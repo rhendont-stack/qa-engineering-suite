@@ -52,11 +52,7 @@ def load_config(ws: Workspace) -> dict:
     return cfg
 
 
-def _protected(scope: str) -> bool:
-    glob = scope
-    while glob.startswith("./"):
-        glob = glob[2:]
-    glob = glob.lower()
+def _matches_protected(glob: str) -> bool:
     for entry in vocab.PROTECTED_PATHS:
         entry = entry.lower()
         if entry.endswith("/"):
@@ -68,12 +64,21 @@ def _protected(scope: str) -> bool:
     return False
 
 
+def _protected(segments: List[str]) -> bool:
+    """Check the normalized scope as written and with ``**/`` collapsed to zero directories."""
+    collapsed = [s for i, s in enumerate(segments) if not (s == "**" and i < len(segments) - 1)]
+    return any(_matches_protected("/".join(segs).lower()) for segs in (segments, collapsed))
+
+
 def _scope_errors(scope: str) -> List[str]:
     if scope.startswith(("/", "\\", "~")) or _DRIVE_RE.match(scope):
         return ["write scope %r must be project-relative" % scope]
     if ".." in re.split(r"[/\\]", scope):
         return ["write scope %r must not contain '..'" % scope]
-    if _protected(scope):
+    segments = [s for s in scope.replace("\\", "/").split("/") if s not in ("", ".")]
+    if not segments:
+        return ["write scope %r selects nothing" % scope]
+    if _protected(segments):
         return ["write scope %r covers agent or IDE configuration (§12.4)" % scope]
     return []
 
