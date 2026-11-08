@@ -173,9 +173,43 @@ def _settle_finding_state_changed(state: dict, event: dict) -> None:
                        expires_at=data["expires_at"], duplicate_of=data["duplicate_of"])
 
 
+def _gate_evaluated(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["gates"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    state["gates"][data["id"]] = copy.deepcopy(data)
+
+
+def _gate_policy_proposed(state: dict, event: dict) -> None:
+    data = event["data"]
+    state["config"]["history"].append({"event": event["id"], "kind": "gate_policy_proposed", "criterion": data["criterion"],
+                                       "override": copy.deepcopy(data["override"]), "rationale": data["rationale"]})
+
+
+def _gate_policy_accepted(state: dict, event: dict) -> None:
+    # Takes effect in fold order, or a config change folded after it would stop being the accepted one; settling undoes
+    # it when the proposal never appears (a proposal can fold after its acceptance when clocks step back).
+    data = event["data"]
+    state["config"]["accepted_hash"] = data["config_hash"]
+    state["config"]["history"].append({"event": event["id"], "kind": "gate_policy_accepted", "proposal": data["proposal"],
+                                       "hash": data["config_hash"]})
+    _queue(state, event)
+
+
+def _settle_gate_policy_accepted(state: dict, event: dict) -> None:
+    config, proposal = state["config"], event["data"]["proposal"]
+    if any(entry["kind"] == "gate_policy_proposed" and entry["event"] == proposal for entry in config["history"]):
+        return
+    _violation(state, event, "unknown_proposal")
+    config["history"] = [entry for entry in config["history"] if entry["event"] != event["id"]]
+    config["accepted_hash"] = next((entry["hash"] for entry in reversed(config["history"]) if "hash" in entry), None)
+
+
 _SETTLERS = {"result.recorded": _settle_result, "result.reclassified": _settle_reclassification,
              "report.ingested": _settle_ingest, "finding.updated": _settle_finding_updated,
-             "finding.state_changed": _settle_finding_state_changed}
+             "finding.state_changed": _settle_finding_state_changed,
+             "gate.policy_accepted": _settle_gate_policy_accepted}
 
 
 def known_references(st: dict) -> Set[str]:
@@ -262,6 +296,9 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "finding.opened": _finding_opened,
     "finding.updated": _queue,
     "finding.state_changed": _queue,
+    "gate.evaluated": _gate_evaluated,
+    "gate.policy_proposed": _gate_policy_proposed,
+    "gate.policy_accepted": _gate_policy_accepted,
 }
 
 

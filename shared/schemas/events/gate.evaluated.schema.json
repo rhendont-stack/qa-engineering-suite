@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gate.evaluated event data",
+  "description": "One gate evaluation (Appendix A.5). evaluated_at is recorded because an accepted risk's expiry depends on the time, and section 11.2 requires the verdict to be recomputable. heads anchors the ledger chains as they stood before this event. Free-text strings carry no pattern because they may hold redaction markers.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/gate_id"},
+    "profile": {"enum": ["change", "fix", "audit", "release"]},
+    "policy_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "state_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "target": {
+      "type": "object",
+      "properties": {"commit": {"type": ["string", "null"]}},
+      "required": ["commit"],
+      "additionalProperties": false
+    },
+    "criteria": {"type": "array", "items": {"$ref": "#/$defs/criterion"}, "minItems": 1},
+    "independence": {"$ref": "defs.schema.json#/$defs/independence"},
+    "verdict": {"enum": ["READY", "READY_WITH_CONDITIONS", "INSUFFICIENT_EVIDENCE", "NOT_READY"]},
+    "conditions": {"type": "array", "items": {"type": "string"}},
+    "heads": {"type": "object", "propertyNames": {"$ref": "defs.schema.json#/$defs/session_id"}, "additionalProperties": {"$ref": "#/$defs/head"}},
+    "evaluated_at": {"$ref": "defs.schema.json#/$defs/timestamp"}
+  },
+  "required": [
+    "id", "profile", "policy_hash", "state_hash", "target", "criteria", "independence", "verdict", "conditions", "heads",
+    "evaluated_at"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "criterion": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"$ref": "gate-policy.schema.json#/$defs/criterion_type"},
+        "blocking": {"type": "boolean"},
+        "outcome": {"enum": ["MET", "NOT_MET", "NO_EVIDENCE", "NOT_APPLICABLE"]},
+        "detail": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "justification": {"type": "string", "minLength": 1}
+      },
+      "required": ["id", "type", "blocking", "outcome", "detail", "evidence"],
+      "additionalProperties": false,
+      "if": {"properties": {"outcome": {"const": "NOT_APPLICABLE"}}, "required": ["outcome"]},
+      "then": {"required": ["justification"]},
+      "else": {"not": {"required": ["justification"]}}
+    },
+    "head": {
+      "type": "object",
+      "properties": {
+        "seq": {"type": "integer", "minimum": 1},
+        "hash": {"$ref": "defs.schema.json#/$defs/sha256"}
+      },
+      "required": ["seq", "hash"],
+      "additionalProperties": false
+    }
+  }
+}
