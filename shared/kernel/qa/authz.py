@@ -16,16 +16,25 @@
 
 Grants are ``authorization.granted`` events in the Appendix A.4 shape. ``grant`` records them
 (``qa authorize``) and ``revoke`` withdraws them (``qa auth revoke``); editing config.json never
-creates one. A target is a bare host (with an optional port, or a bracketed IPv6 address) or an
-http(s) URL, stored as given. It must name a host, a URL target must carry no userinfo (§12.5),
-and it must be a declared host of the grant's own environment. Targets and hosts compare by
-hostname, case-insensitively: a URL gives its ``urlsplit`` hostname, as the guard reports hosts,
-and a bare host is read as ``config.resolve_host`` reads it. ``write-tests`` paths follow the
-rules ``write_scopes`` follow (§12.4), and the stored expiry, given or default, is after the grant time.
+creates one. A target is stored as given and has one of these forms:
+
+- a URL (text with ``://``): an http(s) URL that names a host and carries no userinfo (§12.5);
+- a bare target: a host name of ASCII letters, digits, ``.``, ``-`` and ``_`` (an IPv4 address
+  fits) or an IPv6 address in brackets, either optionally followed by ``:`` and 1-5 digits, or
+  an IPv6 address without brackets or port, as ``ipaddress.ip_address`` reads it, with a zone,
+  if any, that is a name.
+
+Each target must also be a declared host of the grant's own environment. A refusal gives the
+target's index, never its text, which may carry a secret. Targets and hosts compare by hostname,
+case-insensitively: a URL gives its ``urlsplit`` hostname, as the guard reports hosts, and a
+bare host is read as ``config.resolve_host`` reads it. A stored target of no target form covers
+nothing. ``write-tests`` paths follow the rules ``write_scopes`` follow (§12.4), and the stored
+expiry, given or default, is after the grant time.
 """
 from __future__ import annotations
 
 import copy
+import ipaddress
 import re
 import time
 import urllib.parse
@@ -44,6 +53,11 @@ from .workspace import Workspace
 
 _NEVER_ON_PRODUCTION = ("db-write", "dast-active")
 _HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
+# The bare target forms (T10-R10). An IPv6 address holds hex digits, colons and dots, and its zone,
+# if any, is a name: ipaddress alone would also read a zone such as "a@b".
+_BARE_NAME = re.compile(r"([A-Za-z0-9._-]+)(?::[0-9]{1,5})?")
+_BARE_BRACKETED = re.compile(r"\[([^\]]*)\](?::[0-9]{1,5})?")
+_IPV6_TEXT = re.compile(r"[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?")
 _UNTRUSTED = ("untrusted project: container runs arrive in milestone 2, "
               "or approve `qa config set project.trust trusted`")
 
@@ -90,11 +104,15 @@ def _deny(reason: str, detail: str) -> AuthzDecision:
     return AuthzDecision(False, reason, None, detail)
 
 
-def _hostname(target: Any) -> Optional[str]:
-    """The lower-case name a target or a host compares by; None when it names no host."""
-    if not isinstance(target, str):
+def _host_name(host: Any) -> Optional[str]:
+    """The lower-case name a host given to ``check`` compares by; None when it names no host.
+
+    Hosts are the hostnames the guard reports: an http(s) URL gives its ``urlsplit`` hostname,
+    and other text is read as ``config.resolve_host`` reads it.
+    """
+    if not isinstance(host, str):
         return None
-    text = target.strip()
+    text = host.strip()
     if _HTTP_URL.match(text):
         try:
             name = urllib.parse.urlsplit(text).hostname
@@ -103,6 +121,47 @@ def _hostname(target: Any) -> Optional[str]:
     else:
         name = config._bare_host(text)
     return name or None
+
+
+def _ipv6(text: str) -> Optional[str]:
+    if not _IPV6_TEXT.fullmatch(text):
+        return None
+    try:
+        version = ipaddress.ip_address(text).version
+    except ValueError:
+        return None
+    return text.lower() if version == 6 else None
+
+
+def _read_target(target: Any) -> Tuple[Optional[str], str]:
+    """``(hostname, "")`` for a target of a target form (see the module docstring), else ``(None, why)``.
+
+    The hostname is lower-case, and an IPv6 address keeps its text, as ``urlsplit`` keeps it.
+    """
+    if not isinstance(target, str):
+        return None, "a target is text"
+    if "://" in target:
+        text = target.strip()
+        if not _HTTP_URL.match(text):
+            return None, "a URL target must be an http or https URL"
+        try:
+            parts = urllib.parse.urlsplit(text)
+        except ValueError:  # e.g. an unclosed IPv6 bracket
+            return None, "a URL target must name a host"
+        if not parts.hostname:
+            return None, "a URL target must name a host"
+        if "@" in parts.netloc:
+            return None, "a URL target must not carry userinfo: secrets stay out of arguments (§12.5)"
+        return parts.hostname, ""
+    match = _BARE_NAME.fullmatch(target)
+    if match:
+        return match.group(1).lower(), ""
+    match = _BARE_BRACKETED.fullmatch(target)
+    name = _ipv6(match.group(1) if match else target)
+    if name is None:
+        return None, ("a bare target is a host name, an IPv4 address or a bracketed IPv6 address, with an "
+                      "optional port of 1-5 digits, or an IPv6 address alone")
+    return name, ""
 
 
 # --------------------------------------------------------------------------- decisions
@@ -127,7 +186,7 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
     for standing in cfg["standing_authorizations"]:
         if standing["environment"] == env_id and activity in standing["activities"]:
             return _allow("standing:%s" % env_id, "standing authorization in config.json")
-    names = [_hostname(h) for h in hosts]
+    names = [_host_name(h) for h in hosts]
     for grant in sorted(st["authorizations"].values(), key=lambda g: int(g["id"][len("AUTH-"):])):
         if _covers(grant, env_id, activity, names, now):
             return _allow(grant["id"], "%s, valid until %s" % (grant["id"], grant["expires_at"]))
@@ -144,7 +203,7 @@ def _covers(grant: dict, env_id: Any, activity: str, names: List[Optional[str]],
             return False
     except QaError:  # fits the timestamp pattern but names no real time
         return False
-    targets = {_hostname(t) for t in grant["targets"]}
+    targets = {_read_target(t)[0] for t in grant["targets"]}   # None for a target of no target form
     return all(name is not None and name in targets for name in names)
 
 
@@ -215,26 +274,19 @@ def _check_activities(env: dict, activities: List[str]) -> None:
             raise QaError("invalid_activity", "%s is never performed on production" % activity, activity=activity)
 
 
-def _target_problem(target: Any) -> Optional[str]:
-    """Why ``target`` cannot be a grant target, or None when it can."""
-    if _hostname(target) is None:  # empty, or a URL that urlsplit refuses or that has no hostname
-        return "a target must name a host"
-    text = target.strip()
-    if _HTTP_URL.match(text) and "@" in urllib.parse.urlsplit(text).netloc:
-        return "a URL target must not carry userinfo: secrets stay out of arguments (§12.5)"
-    return None
-
-
 def _check_targets(cfg: dict, environment_id: str, targets: List[str]) -> None:
-    for index, target in enumerate(targets):  # every target names a host before any is resolved
-        problem = _target_problem(target)
-        if problem is not None:  # the details leave the target out, since it may carry a secret
-            raise QaError("invalid_target", problem, index=index, environment=environment_id)
-    for target in targets:
-        env = config.resolve_host(cfg, _hostname(target))
+    """Both refusals give the target's index, never its text, which may carry a secret (§12.5)."""
+    names = []
+    for index, target in enumerate(targets):  # every target has a target form before any is resolved
+        name, problem = _read_target(target)
+        if name is None:
+            raise QaError("invalid_target", problem, index=index)
+        names.append(name)
+    for index, name in enumerate(names):
+        env = config.resolve_host(cfg, name)
         if env is None or env["id"] != environment_id:
             raise QaError("undeclared_target", "target is not a declared host of environment %r" % environment_id,
-                          target=target, environment=environment_id)
+                          index=index)
 
 
 def _check_limits(env: dict, activities: List[str], limits: Any) -> None:

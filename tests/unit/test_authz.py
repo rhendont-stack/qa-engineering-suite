@@ -221,17 +221,56 @@ def test_targets_may_be_hosts_or_http_urls_and_are_stored_as_given():
     assert _build(_cfg(STAGING), environment_id="staging", targets=staging)["targets"] == staging
 
 
-@pytest.mark.parametrize("target", ["db.example.com", "https://staging.shop.example", "ftp://localhost",
-                                    "localhost/app"])
+@pytest.mark.parametrize("target", ["db.example.com", "https://staging.shop.example", "staging.shop.example:443",
+                                    "127.0.0.2", "[::2]:8080", "::2", "fe80::1%eth0"])
 def test_a_target_must_be_a_declared_host_of_the_grant_environment(target):
     assert _refusal(_cfg(STAGING), targets=[target]) == "undeclared_target"   # a staging host is not a local one
 
 
-@pytest.mark.parametrize("target", ["", "  ", ":8080", "http://[::1", "http://", "https://:8080/",   # names no host
-                                    "http://admin@localhost", "http://admin:hunter22x@localhost:8080/",
-                                    "HTTP://@localhost/"])                                       # carries userinfo
-def test_a_target_must_name_a_host_without_userinfo(target):
-    assert _refusal(targets=["localhost", target]) == "invalid_target"   # T10-R6
+@pytest.mark.parametrize("target", ["localhost", "LOCALHOST:8080", "127.0.0.1", "[::1]", "[::1]:8080", "::1"])
+def test_bare_targets_of_the_three_forms_are_accepted(target):
+    assert _build(targets=[target])["targets"] == [target]   # T10-R10, on the default config
+
+
+@pytest.mark.parametrize("target", [
+    "", "  ", "http://[::1", "http://", "https://:8080/",                           # names no host (T10-R6)
+    "http://admin@localhost", "http://admin:hunter22x@localhost:8080/", "HTTP://@localhost/",   # userinfo
+    "ftp://localhost", "localhost://x",                                             # a URL that is not http(s)
+    "admin@localhost", "localhost/app", "http:/localhost",                          # T10-R10: '@' or '/'
+    " localhost", "localhost ", "local host", "localhost\n",                         # whitespace
+    "localhost:abc", "localhost:", "localhost:123456", ":8080",                     # no 1-5 digit port, no name
+    "[localhost]", "[127.0.0.1]", "[::1]x", "[::1]:", "fe80::1%a@b",                 # no IPv6, a zone of no name
+])
+def test_a_target_must_be_a_bare_host_or_an_http_url(target):
+    with pytest.raises(QaError) as e:
+        _build(targets=["localhost", target])
+    assert (e.value.code, e.value.details) == ("invalid_target", {"index": 1})   # T10-R10: the index, never the text
+    assert not target.strip() or target not in e.value.message
+
+
+@pytest.mark.parametrize("target,secret", [("localhost:hunter22x@evil.example", "hunter22x"),
+                                           ("admin:pw@localhost", "admin:pw")])
+def test_a_bare_target_with_userinfo_is_refused_without_echoing_it(target, secret):
+    with pytest.raises(QaError) as e:
+        _build(targets=[target])
+    assert (e.value.code, e.value.details) == ("invalid_target", {"index": 0})
+    assert secret not in json.dumps(e.value.to_json()) and secret not in str(e.value)
+
+
+def test_an_undeclared_target_is_refused_with_its_index_only():
+    with pytest.raises(QaError) as e:
+        _build(targets=["localhost", "db.example.com"])
+    assert (e.value.code, e.value.details) == ("undeclared_target", {"index": 1})
+    assert "db.example.com" not in json.dumps(e.value.to_json())
+
+
+def test_a_stored_target_of_no_target_form_covers_nothing(ws, actor, frozen_now):
+    frozen_now.set(NOON)   # hand-made grant data: build_grant refuses the first two targets
+    ledger.append(ws, actor, "authorization.granted",
+                  _granted("AUTH-001", targets=["localhost:pw@evil.example", "http://admin@localhost/", "127.0.0.1"]))
+    st, cfg = state.load(ws), config.load_config(ws)
+    assert chk(st, cfg, "db-readonly", hosts=("127.0.0.1",)).authorization == "AUTH-001"
+    assert chk(st, cfg, "db-readonly", hosts=("localhost",)).reason == "not_authorized"
 
 
 def test_check_compares_hostnames_case_insensitively(ws, actor, frozen_now):
