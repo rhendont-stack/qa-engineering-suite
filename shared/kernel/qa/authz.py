@@ -11,7 +11,9 @@
    §12.2); a trusted one is allowed on a ``local`` environment and otherwise goes on to 6 and 7;
 6. a standing authorization in config.json for the environment and the activity allows it;
 7. so does a grant that is not revoked, has not expired (it covers a check while
-   ``now < expires_at``) and covers the environment, the activity and every host;
+   ``now < expires_at``) and covers the environment, the activity and every host; for a
+   per-target activity (``network-download``, ``dast-passive``, ``dast-active``) the check must
+   also name at least one host, since §12.2 grants those per target;
 8. anything else is ``not_authorized``.
 
 Grants are ``authorization.granted`` events in the Appendix A.4 shape. ``grant`` records them
@@ -24,12 +26,14 @@ creates one. A target is stored as given and has one of these forms:
   an IPv6 address without brackets or port, as ``ipaddress.ip_address`` reads it, with a zone,
   if any, that is a name.
 
-Each target must also be a declared host of the grant's own environment. A refusal gives the
-target's index, never its text, which may carry a secret. Targets and hosts compare by hostname,
-case-insensitively: a URL gives its ``urlsplit`` hostname, as the guard reports hosts, and a
-bare host is read as ``config.resolve_host`` reads it. A stored target of no target form covers
-nothing. ``write-tests`` paths follow the rules ``write_scopes`` follow (§12.4), and the stored
-expiry, given or default, is after the grant time.
+Each target must also be a declared host of the grant's own environment, and ``grant`` refuses
+one that the ledger's redaction would change, since a redacted target covers nothing. A grant
+for a per-target activity lists at least one target. A refusal gives the target's index, never
+its text, which may carry a secret. Targets and hosts compare by hostname, case-insensitively:
+a URL gives its ``urlsplit`` hostname, as the guard reports hosts, and a bare host is read as
+``config.resolve_host`` reads it. A stored target of no target form covers nothing.
+``write-tests`` paths follow the rules ``write_scopes`` follow (§12.4), and the stored expiry,
+given or default, is after the grant time.
 """
 from __future__ import annotations
 
@@ -42,16 +46,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import config, ids, ledger, state, vocab
+from . import config, ids, ledger, redact, state, vocab
 from .errors import QaError
 from .workspace import Workspace
 
 # QaError codes raised here: approval_required, unknown_environment, ci_unsupported,
-# invalid_activity, invalid_target, undeclared_target, invalid_limits, invalid_expiry (build_grant,
-# and so grant); unknown_authorization, already_revoked (revoke); plus whatever
-# config.load_config and ledger.append raise.
+# invalid_activity, targets_required, invalid_target, undeclared_target, invalid_limits,
+# invalid_expiry (build_grant, and so grant); invalid_target also for a target the ledger would
+# redact (grant); unknown_authorization, already_revoked (revoke); plus whatever
+# config.load_config, redact.load_redactor and ledger.append raise.
 
 _NEVER_ON_PRODUCTION = ("db-write", "dast-active")
+# §12.2: network-download "Requires a grant listing hosts" and DAST "Requires a grant per target".
+_PER_TARGET = ("network-download", "dast-passive", "dast-active")
 _HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
 # The bare target forms (T10-R10). An IPv6 address holds hex digits, colons and dots, and its zone,
 # if any, is a name: ipaddress alone would also read a zone such as "a@b".
@@ -203,6 +210,8 @@ def _covers(grant: dict, env_id: Any, activity: str, names: List[Optional[str]],
             return False
     except QaError:  # fits the timestamp pattern but names no real time
         return False
+    if activity in _PER_TARGET and not names:  # a check that names no host cannot show its target is granted
+        return False
     targets = {_read_target(t)[0] for t in grant["targets"]}   # None for a target of no target form
     return all(name is not None and name in targets for name in names)
 
@@ -225,10 +234,10 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     """Check a grant request against ``cfg`` and return its record, every A.4 field but ``id``.
 
     Refusals, checked in this order: approval_required, unknown_environment, ci_unsupported,
-    invalid_activity, invalid_target, undeclared_target, invalid_limits, invalid_expiry.
-    ``expires_at`` None means the end of the local day; a given one must be timezone-aware. Given
-    or default, the expiry as stored (to the millisecond) must be after ``now``, so in the last
-    second of a local day a grant needs a given ``expires_at``.
+    invalid_activity, targets_required, invalid_target, undeclared_target, invalid_limits,
+    invalid_expiry. ``expires_at`` None means the end of the local day; a given one must be
+    timezone-aware. Given or default, the expiry as stored (to the millisecond) must be after
+    ``now``, so in the last second of a local day a grant needs a given ``expires_at``.
     """
     if not isinstance(approval, str) or not approval.strip():
         raise QaError("approval_required", "a grant needs the user's approval quote")
@@ -238,6 +247,10 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     if env["class"] == "ci":
         raise QaError("ci_unsupported", "ci environments arrive in milestone 4", environment=environment_id)
     _check_activities(env, activities)
+    per_target = [a for a in activities if a in _PER_TARGET]
+    if per_target and not targets:
+        raise QaError("targets_required", "%s needs a grant that lists its targets (§12.2)" % per_target[0],
+                      activity=per_target[0])
     _check_targets(cfg, environment_id, targets)
     _check_limits(env, activities, limits)
     default = expires_at is None
@@ -318,12 +331,21 @@ def grant(ws: Workspace, actor: ledger.Actor, *, now: Optional[datetime] = None,
     The AUTH id is taken and the event appended under one workspace lock, so two concurrent
     grants never share an id. ``granted_by`` is always ``"user"``: the grant records the user's
     approval, and the envelope's actor records who ran the command.
+
+    A target that the redaction ``ledger.append`` applies would change is refused
+    (``invalid_target``): stored redacted, it would cover nothing. The approval quote and the
+    limits may still be redacted.
     """
     with ws.lock():
         if now is None:
             now = ids.now_utc()
         data = build_grant(config.load_config(ws), now=now, **build_grant_kwargs)
         data["id"] = ledger.next_human_id(ws, "AUTH")
+        clean, _ = redact.load_redactor(ws).obj(data)   # as ledger.append will redact it
+        for index, (given, kept) in enumerate(zip(data["targets"], clean["targets"])):
+            if given != kept:  # e.g. password_assignment reads a host with "pass" and its :port as a password
+                raise QaError("invalid_target", "the ledger would redact this target, and a redacted target "
+                              "covers nothing; give the host without its port", index=index)
         return ledger.append(ws, actor, "authorization.granted", data)
 
 

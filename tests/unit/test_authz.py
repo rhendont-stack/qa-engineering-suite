@@ -273,6 +273,52 @@ def test_a_stored_target_of_no_target_form_covers_nothing(ws, actor, frozen_now)
     assert chk(st, cfg, "db-readonly", hosts=("localhost",)).reason == "not_authorized"
 
 
+# --------------------------------------------------------------------------- redaction and per-target grants
+
+COMPASS = {"id": "staging", "class": "staging", "base_urls": ["https://compass.example.com:8443"]}
+
+
+def test_a_target_the_ledger_would_redact_is_refused(ws, actor, frozen_now):
+    # T10-R11: password_assignment reads "pass…:8443" as a password, so the stored target would cover nothing
+    frozen_now.set(NOON)
+    cfg = config.load_config(ws)
+    cfg["environments"].append(COMPASS)
+    config.write_config(ws, cfg)
+    before = ledger.iter_all_events(ws)
+    for targets, index in ((["compass.example.com:8443"], 0),
+                           (["compass.example.com", "https://compass.example.com:8443/"], 1)):
+        with pytest.raises(QaError) as e:
+            _grant(ws, actor, environment_id="staging", targets=targets, activities=["dast-passive"])
+        assert (e.value.code, e.value.details) == ("invalid_target", {"index": index})
+    assert ledger.iter_all_events(ws) == before   # the ledger is unchanged
+    g = _grant(ws, actor, environment_id="staging", targets=["compass.example.com"], activities=["dast-passive"])
+    assert g["data"]["targets"] == ["compass.example.com"] and "redactions" not in g
+    assert chk(state.load(ws), cfg, "dast-passive", COMPASS, hosts=("compass.example.com",)).authorization == "AUTH-001"
+
+
+@pytest.mark.parametrize("activities", [["network-download"], ["dast-passive"], ["dast-active"],
+                                        ["db-readonly", "dast-passive"]])
+def test_a_per_target_grant_must_list_its_targets(activities):
+    assert _refusal(targets=[], activities=activities) == "targets_required"   # T10-R12
+
+
+def test_other_grants_may_list_no_target():
+    assert _build(targets=[], activities=["db-readonly", "load-test"], limits={"load-test": LOAD})["targets"] == []
+
+
+def test_a_per_target_grant_covers_only_a_check_that_names_its_hosts(ws, actor, frozen_now):
+    frozen_now.set(NOON)
+    _grant(ws, actor, targets=["localhost"], activities=["dast-passive", "db-readonly"])
+    # hand-made, since build_grant refuses a network-download grant that lists no target
+    ledger.append(ws, actor, "authorization.granted", _granted("AUTH-002", activities=["network-download"]))
+    st, cfg = state.load(ws), config.load_config(ws)
+    assert chk(st, cfg, "dast-passive", hosts=("localhost",)).authorization == "AUTH-001"
+    assert chk(st, cfg, "dast-passive").reason == "not_authorized"                  # the check names no host
+    assert chk(st, cfg, "db-readonly").authorization == "AUTH-001"                  # other activities keep the rule
+    assert chk(st, cfg, "network-download").reason == "not_authorized"
+    assert chk(st, cfg, "network-download", hosts=("localhost",)).reason == "not_authorized"
+
+
 def test_check_compares_hostnames_case_insensitively(ws, actor, frozen_now):
     frozen_now.set(NOON)
     _grant(ws, actor, targets=["http://LocalHost:8080/app", "[::1]:9000"], activities=["dast-passive"])
@@ -508,6 +554,8 @@ def test_build_grant_refusal_order():
     assert _refusal(cfg, environment_id="ci", activities=["deploy"]) == "ci_unsupported"
     assert _refusal(cfg, activities=["deploy"], targets=["db.example.com"]) == "invalid_activity"
     assert _refusal(cfg, activities=["deploy"], targets=[""]) == "invalid_activity"
+    assert _refusal(cfg, activities=["deploy", "dast-passive"], targets=[]) == "invalid_activity"
+    assert _refusal(cfg, activities=["dast-passive", "load-test"], targets=[]) == "targets_required"
     # every target must name a host before any is resolved
     assert _refusal(cfg, activities=["load-test"], targets=["db.example.com", ""]) == "invalid_target"
     assert _refusal(cfg, activities=["load-test"], targets=["db.example.com"]) == "undeclared_target"
