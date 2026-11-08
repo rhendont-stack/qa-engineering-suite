@@ -179,7 +179,6 @@ _HTTP_METHOD = re.compile(r"^[A-Z]+$")
 _STDIN_WORD_BREAK = re.compile(r"(?:\s|\\[nrt])+")   # printf's backslash-n is still two characters here
 # A here-document operator, not the '<<' inside a '<<<' here-string (hence the lookbehind).
 _HEREDOC = re.compile(r"(?<!<)<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
-_BODY_CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\n")   # an even run of backslashes before it escapes itself
 _SQL_DESTRUCTIVE = re.compile(r"(?i)\b(?:DROP\s+\w|TRUNCATE\b)")
 _SQL_UNBOUNDED = re.compile(r"(?i)\bDELETE\s+FROM\b|\bUPDATE\s+\S+(?:\s+\S+)?\s+SET\b")
 _SQL_WHERE = re.compile(r"(?i)\bWHERE\b")
@@ -429,10 +428,20 @@ def _match(rule: _Rule, unit: _Unit, ctx: _Context) -> Optional[_Hit]:
         return None
     if rule.args_rx is not None and not any(rule.args_rx.search(a) for a in _regex_subjects(m, unit, args)):
         return None
-    if rule.shell_rx is not None and (unit.shell is None or not rule.shell_rx.search(unit.shell)):
+    if rule.shell_rx is not None and not any(rule.shell_rx.search(text) for text in _shell_regex_subjects(unit)):
         return None
     check = m.get("check")
     return _CHECKS[check](ctx, unit) if check else ("", None)
+
+
+def _shell_regex_subjects(unit: _Unit) -> List[str]:
+    """What ``shell_regex`` reads: the shell string and, for a shell, the text it is fed, which it runs line by line.
+
+    On its own, because in the shell string a here-document body ends in the quote of its rewritten form.
+    """
+    if unit.shell is None:
+        return []
+    return [unit.shell] + (unit.stdin if unit.program in _SHELLS else [])
 
 
 def _regex_subjects(match: dict, unit: _Unit, args: List[str]) -> List[str]:
@@ -717,11 +726,14 @@ def _extract_heredocs(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
+        opened_in = quote
         m, quote, resume = _heredoc_operator(line, quote)
-        while resume is not None and i + 1 < len(lines):
-            i += 1
-            line = line[:-1] + lines[i]
-            m, quote, resume = _heredoc_operator(line, quote, resume[0], resume[1], m)
+        if resume is not None:
+            while resume is not None and i + 1 < len(lines):
+                i += 1
+                line = line[:-1] + lines[i]
+                _, quote, resume = _heredoc_operator(line, quote, resume[0], resume[1])
+            m, quote, _ = _heredoc_operator(line, opened_in)   # read once joined: a continuation can split the operator or its delimiter
         if m is None:
             out.append(line)
             i += 1
@@ -731,24 +743,32 @@ def _extract_heredocs(text: str) -> str:
         body: List[str] = []
         j = i + 1
         while j < len(lines):
-            if (lines[j].lstrip("\t") if dash else lines[j]) == delim:
+            current = lines[j]
+            while not m.group(1) and _ends_in_continuation(current) and j + 1 < len(lines):
+                j += 1
+                current = current[:-1] + lines[j]
+            if (current.lstrip("\t") if dash else current) == delim:
                 break
-            body.append(lines[j])
+            body.append(current)
             j += 1
-        text_of_body = "\n".join(body) if m.group(1) else _BODY_CONTINUATION.sub(r"\1", "\n".join(body))
-        out.append(line[:m.start()] + "<<< " + _shell_quote(text_of_body.replace("\n", " ")) + line[m.end():])
+        out.append(line[:m.start()] + "<<< " + _shell_quote(" ".join(body)) + line[m.end():])
         i = j + 1   # skip the body and the closing delimiter
     return "\n".join(out)
 
 
-def _heredoc_operator(line: str, quote: str, i: int = 0, word_start: bool = True, found: Optional["re.Match[str]"] = None
+def _ends_in_continuation(line: str) -> bool:
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1   # an even run of backslashes escapes itself
+
+
+def _heredoc_operator(line: str, quote: str, i: int = 0, word_start: bool = True
                       ) -> Tuple[Optional["re.Match[str]"], str, Optional[Tuple[int, bool]]]:
     """The first here-document operator of ``line`` that is outside quotes, not escaped and not in
     a comment, or None, together with the quote still open at the end of the line. ``quote`` is
     the one open when the line starts, so a double-quoted string that spans lines hides a ``<<``
     on its later lines too. When the line ends in a continuation, the third value is where to
-    resume (index, word_start) once the next line is joined; ``i``, ``word_start`` and ``found``
-    take it back, so a run of continued lines is scanned once."""
+    resume (index, word_start) once the next line is joined; ``i`` and ``word_start`` take it
+    back, so a run of continued lines is scanned once."""
+    found: Optional["re.Match[str]"] = None
     n = len(line)
     while i < n:
         c = line[i]

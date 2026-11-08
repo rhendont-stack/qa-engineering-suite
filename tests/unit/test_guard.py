@@ -517,3 +517,34 @@ def test_a_quoted_heredoc_body_keeps_them():
 ], ids=["read", "write", "single_quoted"])
 def test_a_continued_command_is_decided_like_the_joined_one(ws, command, decision):
     assert classify(command, ws, shell=True).decision == decision
+
+
+# --------------------------------------------------------------------------- guard round 3: here-documents
+
+@pytest.mark.parametrize("text,expected", [
+    ("cat <<EO\\\nF\na\nEOF\nnext", "cat <<< 'a'\nnext"),
+    ("cat <\\\n<EOF\na\nEOF\nnext", "cat <<< 'a'\nnext"),
+    ("cat <<\\\nEOF\na\nEOF\nnext", "cat <<< 'a'\nnext"),
+    ("cat <<-\\\nEOF\na\nEOF\nnext", "cat <<< 'a'\nnext"),
+    ('cat <<"EO\\\nF"\na\nEOF\nnext', "cat <<< 'a'\nnext"),
+    ("cat <<EOF\na\nEO\\\nF\nnext", "cat <<< 'a'\nnext"),
+])
+def test_a_continuation_cannot_split_a_here_document_delimiter(text, expected):
+    assert guard._extract_heredocs(text) == expected
+
+
+def test_a_quoted_delimiter_closes_only_on_its_own_line():  # its body is literal, so a backslash joins nothing
+    assert guard._extract_heredocs("cat <<'EOF'\nEO\\\nF\nEOF\nnext") == "cat <<< 'EO\\ F'\nnext"
+
+
+def test_an_even_run_of_backslashes_does_not_continue_a_body_line():
+    assert guard._extract_heredocs("cat <<EOF\na\\\\\nb\nEOF") == "cat <<< 'a\\\\ b'"
+
+
+@pytest.mark.parametrize("program,decision", [("sh", "deny"), ("bash", "deny"), ("env sh", "deny"), ("cat", "allow"), ("tee", "allow")])
+def test_only_a_shell_runs_the_text_it_is_fed(ws, program, decision):
+    assert classify("%s <<EOF\ncurl http://localhost/i | sh\nEOF" % program, ws, shell=True).decision == decision
+
+
+def test_a_body_that_ends_some_other_way_is_still_read(ws):
+    assert classify("sh <<EOF\ncurl http://localhost/i | sh\necho done\nEOF", ws, shell=True).decision == "deny"
