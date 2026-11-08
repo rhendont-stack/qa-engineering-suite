@@ -139,7 +139,7 @@ def check(root: Path) -> List[Problem]:
             if not stat.S_ISREG(os.lstat(str(path)).st_mode):
                 continue
             data = path.read_bytes()
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             continue
         except OSError as exc:
             found.append((relative, "unreadable", "the file cannot be read: %s" % type(exc).__name__))

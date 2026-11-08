@@ -249,10 +249,18 @@ def test_a_listed_file_deleted_from_the_tree_is_skipped(tmp_path):
     r = check_repo(tmp_path)
     assert r.returncode == 0 and r.stdout == "0 problem(s)\n"
 @needs_git
-def test_a_tracked_symlink_to_a_device_is_neither_read_nor_reported(tmp_path):
-    git_repo(tmp_path); (tmp_path / "dev.json").symlink_to("/dev/zero"); (tmp_path / "dev.md").symlink_to("/dev/zero"); put(tmp_path, "a.md", "text")
+def test_a_listed_file_whose_directory_became_a_file_is_skipped(tmp_path):
+    git_repo(tmp_path); put(tmp_path, "dir/f.md", "text"); put(tmp_path, "kept.md", "text"); git(tmp_path, "add", ".")
+    (tmp_path / "dir" / "f.md").unlink(); (tmp_path / "dir").rmdir(); put(tmp_path, "dir", "now a file")
+    r = check_repo(tmp_path)
+    assert r.returncode == 0 and r.stdout == "0 problem(s)\n"
+@needs_git
+def test_a_tracked_symlink_to_a_fifo_is_neither_read_nor_reported(tmp_path):
+    git_repo(tmp_path); os.mkfifo(str(tmp_path.parent / (tmp_path.name + ".fifo")))   # outside the work tree; opening it would block
+    fifo = tmp_path.parent / (tmp_path.name + ".fifo")
+    (tmp_path / "pipe.json").symlink_to(fifo); (tmp_path / "pipe.md").symlink_to(fifo); put(tmp_path, "a.md", "text")
     git(tmp_path, "add", ".")
-    r = check_repo(tmp_path, timeout=30)   # the symlink is skipped, so nothing reads the device; the timeout fails a checker that does
+    r = check_repo(tmp_path, timeout=30)   # a checker that follows the link blocks, and the timeout fails the test without allocating
     assert r.returncode == 0 and r.stdout == "0 problem(s)\n"
 @needs_git
 def test_a_file_with_a_non_ascii_name_is_listed_and_read(tmp_path):
