@@ -184,3 +184,20 @@ def test_invalid_policy_regex_or_group(monkeypatch, tmp_path, bad):
     with pytest.raises(QaError) as ei:
         redact.load_patterns()
     assert ei.value.code == "redaction_policy_invalid"
+
+
+PEM_HEAD = "-----BEGIN RSA PRIVATE" + " KEY-----"
+
+
+def test_truncated_private_key_stops_at_the_pem_body(redactor):
+    body = "MIIEow" + "IBAAKCAQEAx9" + "Zk3Lm" * 8
+    text = "start\n" + PEM_HEAD + "\nProc-Type: 4,ENCRYPTED\n\n" + body + "\n" + body[:20] + "\n2026-11-07 INFO next step ok\n"
+    out, n = redactor.text(text)
+    assert n == 1 and body not in out and body[:20] not in out and "Proc-Type" not in out
+    assert out.startswith("start\n[REDACTED:private_key:") and out.endswith("\n2026-11-07 INFO next step ok\n")
+
+
+def test_header_mentioned_in_a_sentence_keeps_following_lines(redactor):
+    text = 'expected "' + PEM_HEAD + '" here\nsecond line of the log\nthird line\n'
+    out, _ = redactor.text(text)
+    assert out.endswith('" here\nsecond line of the log\nthird line\n')

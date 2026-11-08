@@ -2,7 +2,7 @@
   "patterns": [
     {
       "kind": "private_key",
-      "regex": "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\\s\\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\\Z)",
+      "regex": "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:[ \\t]*\\r?\\n(?:(?!-----BEGIN )[\\s\\S])*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|(?:\\r?\\n[ \\t]*(?:Proc-Type:[^\\r\\n]*|DEK-Info:[^\\r\\n]*|[A-Za-z0-9+/=]+)?[ \\t]*(?=\\r?\\n|\\Z))*)",
       "group": 0,
       "min_len": 0,
       "min_entropy": null
