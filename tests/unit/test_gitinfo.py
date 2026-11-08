@@ -149,3 +149,15 @@ def test_git_timeout(repo, monkeypatch):
 
     monkeypatch.setattr(gitinfo.subprocess, "run", slow)
     assert gitinfo.git_info(repo) == (None, "git_unavailable")
+
+
+def test_untracked_files_count_whatever_the_users_git_config_says(tmp_path):  # M2
+    if shutil.which("git") is None: pytest.skip("tool missing: git")
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / "a.txt").write_text("1")
+    for args in (["add", "a.txt"], ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c"],
+                 ["config", "status.showUntrackedFiles", "no"]):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True)
+    assert gitinfo.git_info(tmp_path)[0]["dirty"] is False
+    (tmp_path / "new.txt").write_text("2")
+    assert gitinfo.git_info(tmp_path)[0]["dirty"] is True

@@ -23,7 +23,7 @@ __all__ = ["check_markdown", "md_cell", "render", "render_json", "render_markdow
 _FORMATS = ("md", "json")
 _FILE_NAMES = {"md": "report.md", "json": "report.json"}
 _UNNAMED = "unnamed project"
-_LINE_BREAKS = "\r\n\v\f\x1c\x1d\x1e\x85  "  # every boundary str.splitlines honors
+_LINE_BREAKS = "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"  # every boundary str.splitlines honors
 _ESCAPES = (("\\", "\\\\"), ("|", "\\|"), ("`", "\\`"), ("*", "\\*"), ("_", "\\_"), ("[", "\\["), ("]", "\\]"),
             ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
 _LIMITS = (  # §12.10, restated in every report

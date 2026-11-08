@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import getpass
 import importlib.util
 import json
-import socket
 from pathlib import Path
 
 import pytest

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from helpers import REPO, WRITE_JUNIT, WRITE_SARIF, base, finishes, req
-from qa import canonical, execution, findings, ids, ingest, ledger, resource_dir, schema, state, vocab
+from qa import canonical, execution, findings, ingest, ledger, resource_dir, schema, state, vocab
 from qa.errors import QaError
 
 LATER = "2026-12-01T00:00:00.000Z"
@@ -510,11 +510,11 @@ def test_tool_provisional_is_only_for_untriaged_alerts(ws, over, needle):
 
 
 def test_update_recomputes_priority_when_criticality_changes(ws, actor):
-    findings.add(ws, actor, base())
+    opened, _ = findings.add(ws, actor, base())
     e = findings.update(ws, actor, "FND-001", {"component": {"criticality": "low"}})
     assert e["data"]["changes"] == {"component": {"path": "app/orders/views.py", "endpoint": "GET /orders/{id}", "criticality": "low"},
                                     "priority": "P2"}
-    assert _updated(ws)["priority"] == "P2" and _updated(ws)["fingerprint"] == state.load(ws)["findings"]["FND-001"]["fingerprint"]
+    assert _updated(ws)["priority"] == "P2" and _updated(ws)["fingerprint"] == opened["data"]["fingerprint"]
 
 
 def test_update_of_a_defaulted_criticality_drops_its_source(ws, actor):

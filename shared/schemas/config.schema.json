@@ -55,7 +55,7 @@
     "environment": {
       "type": "object",
       "properties": {
-        "id": {"type": "string"},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
         "class": {"$ref": "defs.schema.json#/$defs/env_class"},
         "base_urls": {"type": "array", "items": {"type": "string"}},
         "dsn_env": {"$ref": "#/$defs/env_var_name"},

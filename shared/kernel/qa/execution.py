@@ -18,6 +18,7 @@ import dataclasses
 import glob
 import math
 import os
+import re
 import shlex
 import stat
 import unicodedata
@@ -626,9 +627,42 @@ def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
 
 # --------------------------------------------------------------------------- stages 5-9
 
+def _quoted_for(directory: str, quote: Optional[str]) -> str:
+    """``directory`` as one shell word where it stands: it can hold spaces ("My Skills"), and quotes do not nest."""
+    if quote == "'":
+        return directory.replace("'", "'\\''")
+    if quote == '"':
+        return re.sub(r'([\\"$`])', r"\\\1", directory)
+    return shlex.quote(directory)
+
+
+def _expanded_for_the_shell(command: str, directory: str) -> str:
+    """``command`` with each ``{evidence}`` replaced, quoted for the quotes it sits inside."""
+    out: List[str] = []
+    quote: Optional[str] = None
+    index = 0
+    while index < len(command):
+        if command.startswith(EVIDENCE_TOKEN, index):
+            out.append(_quoted_for(directory, quote))
+            index += len(EVIDENCE_TOKEN)
+            continue
+        char = command[index]
+        if char == "\\" and quote != "'":
+            out.append(command[index:index + 2])
+            index += 2
+            continue
+        if quote is None and char in "\"'":
+            quote = char
+        elif char == quote:
+            quote = None
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _concrete_command(req: RunRequest, directory: str) -> Union[List[str], str]:
-    if req.shell:  # the path can hold spaces ("My Skills")
-        return req.command.replace(EVIDENCE_TOKEN, shlex.quote(directory))
+    if req.shell:
+        return _expanded_for_the_shell(req.command, directory)
     return [argument.replace(EVIDENCE_TOKEN, directory) for argument in req.command]
 
 

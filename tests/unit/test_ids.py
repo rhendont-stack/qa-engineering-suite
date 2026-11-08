@@ -67,3 +67,8 @@ def test_ev_id():
 def test_no_environment_time_override(monkeypatch):
     monkeypatch.setenv("QA_FAKE_NOW", "2000-01-01T00:00:00.000Z")
     assert ids.now_utc().year >= 2026
+
+
+def test_a_timestamp_takes_ascii_digits_only():  # M10: \\d also matches other scripts' digits
+    with pytest.raises(QaError):
+        ids.parse_ts("\u0662\u0660\u0662\u0666-11-07T00:00:00.000Z")

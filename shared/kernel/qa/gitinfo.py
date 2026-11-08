@@ -1,8 +1,9 @@
 """Read-only facts about the user's git tree (commit, branch, dirty flag, diff hash).
 
 Only read-only git subcommands run. Every call disables fsmonitor and the untracked cache
-and sets GIT_OPTIONAL_LOCKS=0, so inspecting a tree never executes a configured hook or
-rewrites its index.
+and sets GIT_OPTIONAL_LOCKS=0, so inspecting a tree neither runs an fsmonitor hook nor rewrites
+its index. A filter driver in the local .git/config can still run during a diff or a status;
+a clone does not carry that file.
 
 Limitations returned instead of facts: not_a_git_repo, no_commit, git_unavailable.
 """
@@ -99,7 +100,7 @@ def git_info(root: Path) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
             return None, "no_commit"
         branch_run = _run(git, root, ["symbolic-ref", "--short", "-q", "HEAD"])
         branch = branch_run.stdout.strip().decode("utf-8", "replace") if branch_run.returncode == 0 else None
-        status = _run(git, root, ["status", "--porcelain", "--", ".", _EXCLUDE_QA])
+        status = _run(git, root, ["status", "--porcelain", "--untracked-files=normal", "--", ".", _EXCLUDE_QA])
         diff = _run(
             git,
             root,

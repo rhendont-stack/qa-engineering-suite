@@ -2045,3 +2045,36 @@ def test_unlisted_static_analysis_is_checked_for_drift(trusted, actor, py):
     _drift(trusted)
     r = execution.execute(trusted, actor, execution.RunRequest(command=py.argv("pass"), activity="static-analysis"))
     assert r["reason"] == "config_drift"
+
+
+# --------------------------------------------------------------------------- final review: M7
+
+SPACED = "/tmp/My Skills/ev"
+
+
+@pytest.mark.parametrize("template,expected", [
+    ("cat {evidence}/r", "cat '/tmp/My Skills/ev'/r"),
+    ('cat "{evidence}/r"', 'cat "/tmp/My Skills/ev/r"'),
+    ("cat '{evidence}/r'", "cat '/tmp/My Skills/ev/r'"),
+    ("cat \"a\" {evidence}/r", "cat \"a\" '/tmp/My Skills/ev'/r"),
+    ("echo \"it's\" '{evidence}'", "echo \"it's\" '/tmp/My Skills/ev'"),
+    ("echo \\\" {evidence}", "echo \\\" '/tmp/My Skills/ev'"),
+], ids=["bare", "double", "single", "after_a_closed_quote", "apostrophe_inside_quotes", "escaped_quote"])
+def test_the_evidence_path_is_quoted_for_where_it_stands(template, expected):
+    assert execution._concrete_command(execution.RunRequest(command=template, shell=True), SPACED) == expected
+
+
+@pytest.mark.parametrize("directory,word", [('/x/a"b', '"/x/a\\"b"'), ("/x/a$b", '"/x/a\\$b"'), ("/x/a`b", '"/x/a\\`b"'), ("/x/a\\b", '"/x/a\\\\b"')],
+                         ids=["quote", "dollar", "backtick", "backslash"])
+def test_double_quotes_escape_what_the_shell_would_read(directory, word):
+    assert execution._concrete_command(execution.RunRequest(command='cat "{evidence}"', shell=True), directory) == "cat " + word
+
+
+def test_an_apostrophe_is_spliced_inside_single_quotes():
+    assert execution._concrete_command(execution.RunRequest(command="cat '{evidence}'", shell=True), "/x/it's") == "cat '/x/it'\\''s'"
+
+
+def test_a_double_quoted_evidence_path_reaches_the_report(trusted, actor, py):  # the workspace path has a space in it
+    command = " ".join(shlex.quote(word) for word in py.argv(WRITE_JUNIT)) + ' "{evidence}/junit.xml" pass'
+    r = execution.execute(trusted, actor, execution.RunRequest(command=command, shell=True, reports=(("junit", "{evidence}/junit.xml"),)))
+    assert r["status"] == "passed" and r["tests"]["total"] == 1

@@ -40,8 +40,10 @@ def host_facts() -> dict:
 
 def _version_of(path: str, env: Optional[Dict[str, str]] = None) -> str:
     try:
-        done = subprocess.run([path, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, timeout=_TIMEOUT_S, env=env)
+        # Not in the project: qa doctor runs before any trust decision, and a build tool can read project files at startup.
+        with tempfile.TemporaryDirectory(prefix="qa-probe-") as away:
+            done = subprocess.run([path, "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, timeout=_TIMEOUT_S, env=env, cwd=away)
     except (OSError, subprocess.SubprocessError):
         return _UNKNOWN
     if done.returncode != 0:

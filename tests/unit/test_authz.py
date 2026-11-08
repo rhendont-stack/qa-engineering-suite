@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from qa import authz, config, ids, ledger, state, workspace
+from qa import authz, config, ids, ledger, redact, state, workspace
 from qa.errors import QaError
 
 LOCAL = workspace.default_config("x")["environments"][0]
@@ -315,6 +315,12 @@ def test_an_environment_id_the_ledger_would_redact_is_refused(ws, actor, frozen_
     assert chk(state.load(ws), cfg, "db-readonly", renamed, hosts=("qa.example.com",)).authorization == "AUTH-001"
 
 
+def test_a_secret_that_equals_an_activity_does_not_void_the_grant(ws, actor, frozen_now, monkeypatch):  # I11
+    frozen_now.set(NOON)
+    monkeypatch.setenv("QA_PROBE_TOKEN", "db-readonly")
+    assert _grant(ws, actor)["data"]["activities"] == ["db-readonly"]
+
+
 @pytest.mark.parametrize("secret,changes,code,details", [
     ("AUTH-001", {}, "invalid_id", {}),
     ("db-readonly", {}, "invalid_activity", {"index": 0}),
@@ -322,8 +328,10 @@ def test_an_environment_id_the_ledger_would_redact_is_refused(ws, actor, frozen_
 ])
 def test_any_field_check_reads_that_the_ledger_would_redact_is_refused(ws, actor, frozen_now, monkeypatch,
                                                                        secret, changes, code, details):
-    # T10-R13: no shipped pattern matches these fields, but a secret environment value equal to one does
+    # T10-R13: no shipped pattern matches these fields. I11 keeps vocabulary words out of the secrets, so the activity
+    # row switches that exclusion off: the refusal stays as the second line of defense.
     frozen_now.set(NOON)
+    monkeypatch.setattr(redact, "_closed_vocabulary", frozenset)
     monkeypatch.setenv("QA_PROBE_TOKEN", secret)
     before = ledger.iter_all_events(ws)
     with pytest.raises(QaError) as e:

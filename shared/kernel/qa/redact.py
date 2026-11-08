@@ -7,9 +7,9 @@ import math
 import os
 import re
 from collections import Counter, namedtuple
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional, Tuple
 
-from . import resource_dir, schema
+from . import resource_dir, schema, vocab
 from .canonical import loads
 from .errors import QaError
 from .workspace import Workspace, read_config, read_limited
@@ -23,6 +23,7 @@ ENV_NAME_GLOBS = ("*_TOKEN", "*_SECRET", "*_KEY", "*PASSWORD*")
 MIN_ENV_VALUE_LEN = 8
 KEY_BYTES = 32
 _MAX_KEY_READ = 4096  # past the key's size, so a wrong key still reports its length
+_CLOSED_WORDS: Optional[FrozenSet[str]] = None
 
 _MARKER_RE = re.compile(r"\[REDACTED:[a-z_]+:[0-9a-f]{8}\]")
 _PATTERNS: Optional[List[RedactionPattern]] = None
@@ -170,12 +171,52 @@ class Redactor:
         return out, count
 
 
+def _strings_in(value: object) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _strings_in(key)
+            yield from _strings_in(item)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _strings_in(item)
+
+
+def _enums_in(node: object) -> Iterator[str]:
+    if isinstance(node, dict):
+        if "enum" in node:
+            yield from (item for item in node["enum"] if isinstance(item, str))
+        if isinstance(node.get("const"), str):
+            yield node["const"]
+        for item in node.values():
+            yield from _enums_in(item)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _enums_in(item)
+
+
+def _closed_vocabulary() -> FrozenSet[str]:
+    """Every word a closed field can hold: what the schemas enumerate, and what ``vocab`` names."""
+    global _CLOSED_WORDS
+    if _CLOSED_WORDS is None:
+        words = {word for name in dir(vocab) if name.isupper() for word in _strings_in(getattr(vocab, name))}
+        for path in sorted(resource_dir("schemas").rglob("*.json")):
+            words.update(_enums_in(loads(path.read_bytes())))
+        _CLOSED_WORDS = frozenset(words)
+    return _CLOSED_WORDS
+
+
 def _env_values(environ: Mapping[str, str], extra_names: List[str]) -> Dict[str, str]:
+    """The values to mask. One that is part of a closed-vocabulary word stays out: masking it would make the event
+    invalid against its own schema, and it names nothing a reader of the event could not already read in the schema.
+    """
+    closed = _closed_vocabulary()
     values = {}
     for name, value in environ.items():
         listed = name in extra_names
         by_name = any(fnmatch.fnmatchcase(name.upper(), g) for g in ENV_NAME_GLOBS)
-        if (listed or by_name) and len(value) >= MIN_ENV_VALUE_LEN:
+        if (listed or by_name) and len(value) >= MIN_ENV_VALUE_LEN and not any(value in word for word in closed):
             values[name] = value
     return values
 

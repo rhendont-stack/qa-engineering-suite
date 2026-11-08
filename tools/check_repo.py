@@ -16,7 +16,7 @@ import shutil
 import stat
 import sys
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 # ``-I`` ignores PYTHONPATH: use the kernel of the repository this script belongs to, whichever root it checks.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared" / "kernel"))

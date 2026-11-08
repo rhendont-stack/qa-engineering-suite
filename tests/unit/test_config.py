@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import copy
-
 import pytest
 
 import qa
@@ -368,3 +366,14 @@ def test_resolve_host_variants():
         assert config.resolve_host(cfg, host)["id"] == "local", host
     assert config.resolve_host(cfg, "staging.example.com:1")["id"] == "stg"
     assert config.resolve_host(cfg, "other") is None
+
+
+@pytest.mark.parametrize("bad", ["<undeclared>", "", "-x", "a b", "a/b"])
+def test_an_environment_id_cannot_collide_with_the_kernels_sentinel(bad):  # M6
+    entry = {"id": bad, "class": "local"}
+    assert schema.errors(entry, {"$ref": "config.schema.json#/$defs/environment"}, base="config.schema.json") != []
+
+
+@pytest.mark.parametrize("good", ["local", "staging-2", "ci.main", "Local_1"])
+def test_an_ordinary_environment_id_is_accepted(good):  # M6
+    assert schema.errors({"id": good, "class": "local"}, {"$ref": "config.schema.json#/$defs/environment"}, base="config.schema.json") == []

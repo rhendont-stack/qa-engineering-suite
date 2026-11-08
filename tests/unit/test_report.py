@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import re
@@ -8,7 +7,7 @@ import stat
 
 import pytest
 
-from helpers import WRITE_JUNIT, base, req
+from helpers import REPO, WRITE_JUNIT, base, req
 from qa import execution, findings, gate, ledger, report, schema, state
 from qa.canonical import dumps, loads, sha256_bytes
 from qa.errors import QaError
@@ -21,7 +20,8 @@ LIMITS = ("It cannot stop an agent that ignores the skills and runs commands dir
           "It cannot verify that a human really approved a grant or a configuration change. "
           "It records the agent's quote of the approval. The host's own permission prompts remain the authoritative control.",
           "It cannot make pattern-matching a sandbox.",
-          "It cannot make a single-agent session truly independent.")
+          "It cannot make a single-agent session truly independent.",
+          "It cannot tell that a .qa/ copied in outside git carries approvals nobody here gave.")
 
 
 def run(ws, actor, py, outcome="fail", **kw):
@@ -233,7 +233,7 @@ def test_integrity_with_no_violations_says_so(ws):
     assert "The state fold found no violations." in section(render_markdown(state.load(ws)), "Integrity")
 
 
-def test_limitations_hold_the_four_limits_then_execution_limitations(trusted, actor, py):
+def test_limitations_hold_the_stated_limits_then_execution_limitations(trusted, actor, py):
     exe = run(trusted, actor, py, "pass")
     st = state.load(trusted)
     st["executions"][exe]["limitations"] = ["ran | on a laptop"]
@@ -384,10 +384,10 @@ def test_an_unclosed_fence_runs_to_the_end(ws):
     assert check_markdown("```\nfailed\nFND-999\nmore failed\n", state.load(ws)) == []
 
 
-def test_a_heading_is_ignored_and_a_hash_without_space_is_not(ws):
+def test_a_heading_is_checked_like_any_other_line(ws):  # I13: the spec over plan line 1740
     st = state.load(ws)
-    assert check_markdown("# failed FND-999\n   ## passed\n####### failed\n#\n", st) != []
-    assert [p.where for p in check_markdown("# failed FND-999\n   ## passed\n#\n#tag failed\n", st)] == ["line 4"]
+    assert [(p.kind, p.where) for p in check_markdown("## passed\n#tag failed\n", st)] == [
+        ("uncited_claim", "line 1"), ("uncited_claim", "line 2")]
 
 
 def test_status_words_match_case_insensitively_and_whole(ws):
@@ -585,3 +585,64 @@ def test_a_report_with_kernel_refusals_passes_its_own_check(trusted, actor, py):
     assert {"shell-without-flag", "secret-in-argv"} <= rules and st["executions"][refused["execution"]]["limitations"]
     md = render_markdown(st, project="p")
     assert check_markdown(md, st) == []
+
+
+# --------------------------------------------------------------------------- final review: I13
+
+CLAIM = "The suite passed."
+
+
+def _lines(*lines):
+    return "\n".join(lines) + "\n"
+
+
+def _flagged(text):
+    return [p.kind for p in check_markdown(text, state.empty_state())]
+
+
+@pytest.mark.parametrize("fake", ["```not a fence`", "``` ` ```", "```x```"])
+def test_an_opener_with_a_backtick_in_its_info_string_is_no_fence(fake):
+    assert _flagged(_lines(fake, CLAIM)) == ["uncited_claim"]
+
+
+def test_a_tilde_fence_may_hold_a_backtick_in_its_info_string():
+    assert _flagged(_lines("~~~ a`b", CLAIM, "~~~")) == []
+
+
+@pytest.mark.parametrize("opener,closer", [("```", "````"), ("~~~~", "~~~~~"), ("   ```", "```   ")])
+def test_a_longer_or_indented_closer_ends_the_fence(opener, closer):
+    assert _flagged(_lines(opener, CLAIM, closer, CLAIM)) == ["uncited_claim"]
+
+
+@pytest.mark.parametrize("not_closing", ["``", "~~~", "``` python", "```x"])
+def test_only_a_real_closer_ends_the_fence(not_closing):
+    assert _flagged(_lines("```", not_closing, CLAIM, "```")) == []
+
+
+def test_a_shorter_run_does_not_close_a_longer_fence():
+    assert _flagged(_lines("`````", "```", CLAIM, "`````")) == []
+
+
+def test_an_unclosed_fence_hides_the_rest():
+    assert _flagged(_lines("```", CLAIM)) == []
+
+
+@pytest.mark.parametrize("heading", ["# All tests passed", "## READY", "### 100% coverage", "  #### Build failed"])
+def test_a_claim_in_a_heading_is_checked(heading):
+    assert _flagged(_lines("# QA report: x", heading)) != []
+
+
+def test_a_plain_heading_is_not_a_claim():
+    assert _flagged(_lines("# QA report: x", "## Gate", "## Findings")) == []
+
+
+def test_only_the_generated_title_is_exempt():
+    assert _flagged(_lines("# QA report: a project that passed")) == []
+    assert _flagged(_lines("Intro", "# QA report: everything passed")) == ["uncited_claim"]
+    assert _flagged(_lines("# Something else that passed")) == ["uncited_claim"]
+
+
+def test_the_line_breaks_are_written_as_escapes():  # M9: an editor shows nothing at a raw U+2028 or U+2029
+    source = (REPO / "shared" / "kernel" / "qa" / "report" / "__init__.py").read_text(encoding="utf-8")
+    assert "\u2028" not in source and "\u2029" not in source
+    assert {"\u2028", "\u2029"} <= set(report._LINE_BREAKS)

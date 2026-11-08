@@ -172,3 +172,12 @@ def test_the_real_host_answers_with_a_positive_integer_or_null():
     facts = envinfo.host_facts()
     for value in (facts["cpu_count"], facts["memory_bytes"]):
         assert value is None or (type(value) is int and value > 0)
+
+
+def test_a_version_probe_does_not_run_in_the_project(tmp_path, monkeypatch):  # M11: a build tool can read project files at startup
+    (tmp_path / "project-file").write_text("x")
+    monkeypatch.chdir(tmp_path)
+    tool = tmp_path / "tool"
+    tool.write_text("#!/bin/sh\nif [ -e project-file ]; then echo 9.9.9; else echo 1.2.3; fi\n")
+    tool.chmod(0o755)
+    assert envinfo._version_of(str(tool)) == "1.2.3"

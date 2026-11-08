@@ -1,6 +1,6 @@
 """Process runner: the one place the kernel starts a project command.
 
-``run_process`` starts the command with ``stdin`` closed, in its own session (so its whole
+``run_process`` starts the command with ``stdin`` on ``/dev/null``, in its own session (so its whole
 process group can be signalled), and reads both pipes on one thread each. A reader keeps the
 first ``max_bytes`` of its stream and counts the rest as dropped. Output stays byte-faithful;
 decoding and redaction belong to the caller.

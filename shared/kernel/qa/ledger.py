@@ -171,7 +171,7 @@ def _session_files(ws: Workspace) -> Tuple[List[Tuple[str, Path]], List[str]]:
 
 def iter_all_events(ws: Workspace) -> List[dict]:
     events: List[dict] = []
-    for session, path in _session_files(ws)[0]:
+    for _session, path in _session_files(ws)[0]:
         events.extend(e for _, e in _read_lines(path) if e is not None)
     events.sort(key=lambda e: (e["ts"], e["actor"]["session"], e["seq"]))
     return events

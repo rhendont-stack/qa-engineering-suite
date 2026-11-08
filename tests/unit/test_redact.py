@@ -7,7 +7,7 @@ import re
 import pytest
 
 from helpers import finishes
-from qa import QaError, redact, workspace
+from qa import QaError, execution, redact, state, workspace
 
 GH = "gh" + "p_" + "a1B2c3D4e5" * 3 + "f6G7h8"   # 36 chars after the prefix, built at runtime
 
@@ -255,3 +255,54 @@ def test_a_key_over_the_read_cap_is_refused(ws):  # I9: a regular file, never a 
     with pytest.raises(QaError) as e:
         redact.load_redactor(ws)
     assert e.value.code == "redaction_key_invalid"
+
+
+# --------------------------------------------------------------------------- final review: I11, I12, M4
+
+@pytest.mark.parametrize("word", ["inconclu", "test-execution", "structured", "suspected"])
+def test_a_value_inside_a_vocabulary_word_is_not_a_secret_to_mask(word):  # I11
+    assert redact._env_values({"MY_SECRET": word}, []) == {}
+
+
+def test_a_value_merely_containing_a_vocabulary_word_stays_a_secret():  # I11
+    assert redact._env_values({"MY_SECRET": "inconclusive-but-long-x9"}, []) == {"MY_SECRET": "inconclusive-but-long-x9"}
+
+
+def test_a_secret_like_a_vocabulary_word_cannot_break_a_closed_field(trusted, actor, py, monkeypatch):  # I11
+    monkeypatch.setenv("MY_SECRET", "test-execution")
+    r = execution.execute(trusted, actor, execution.RunRequest(command=py.argv("pass")))
+    assert r["status"] in ("passed", "not_run", "inconclusive") and r["execution"] in state.load(trusted)["executions"]
+
+
+CLOSING = "<failure>secret_token=abcd1234EFGH5678</failure>"
+
+
+def test_an_assignment_stops_at_a_closing_tag(ws):  # I12
+    out, count = redact.load_redactor(ws, environ={}).text(CLOSING)
+    assert count == 1 and out.endswith("</failure>") and "abcd1234EFGH5678" not in out
+
+
+def test_a_closing_tag_survives_for_a_password_too(ws):  # I12
+    out, count = redact.load_redactor(ws, environ={}).text("<m>password=hunter2222</m>")
+    assert count == 1 and out.endswith("</m>") and "hunter2222" not in out
+
+
+def test_a_slash_inside_a_value_is_still_part_of_it(ws):  # I12: only "</" ends it
+    out, _ = redact.load_redactor(ws, environ={}).text("password=abc/def<ghi")
+    assert "abc/def<ghi" not in out and "def" not in out
+
+
+@pytest.mark.parametrize("before,after", [
+    ('\\"', '\\"'), ("\\'", "\\'"), ("&quot;", "&quot;"), ("&apos;", "&apos;"), ("&#34;", "&#34;"), ("&#39;", "&#39;"),
+], ids=["json_double", "json_single", "xml_quot", "xml_apos", "xml_34", "xml_39"])
+@pytest.mark.parametrize("name", ["password", "api_key"])
+def test_an_escaped_quote_does_not_hide_the_value(ws, name, before, after):  # M4
+    secret = "Hunter2Gg7Zq"
+    for text in ("%s=%s%s%s" % (name, before, secret, after), "%s%s%s:%s%s%s" % (before, name, before, before, secret, after)):
+        out, count = redact.load_redactor(ws, environ={}).text(text)
+        assert count == 1 and secret not in out and out.endswith(after), text
+
+
+def test_a_plain_quoted_value_is_masked_as_before(ws):  # M4
+    out, _ = redact.load_redactor(ws, environ={}).text('password="two words here"')
+    assert "two words" not in out and out.endswith('"')

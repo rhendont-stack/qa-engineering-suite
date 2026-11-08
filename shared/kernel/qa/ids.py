@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import os
 import re
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 from .errors import QaError
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z")
+_TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 _PREFIXES = ("EXE", "RES", "EVT", "S")
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
