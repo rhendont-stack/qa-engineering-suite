@@ -120,31 +120,37 @@ def run_process(command: Union[List[str], str], *, shell: bool, cwd: Path, env: 
     except (OSError, ValueError):
         return outcome(spawn_error="spawn_failed")
 
-    readers = [_Reader(proc.stdout, max_bytes), _Reader(proc.stderr, max_bytes)]
-    for r in readers:
-        r.start()
     pgid = proc.pid
-
-    timed_out = False
     try:
-        proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill_group(pgid, signal.SIGTERM)
+        readers = [_Reader(proc.stdout, max_bytes), _Reader(proc.stderr, max_bytes)]
+        for r in readers:
+            r.start()
+        timed_out = False
         try:
-            proc.wait(timeout=TERM_WAIT_S)
+            proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            pass
+            timed_out = True
+            _kill_group(pgid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=TERM_WAIT_S)
+            except subprocess.TimeoutExpired:
+                pass
+            _kill_group(pgid, signal.SIGKILL)
+            proc.wait()
+
+        orphaned = False
+        if timed_out:
+            orphaned = not _wait_readers(readers, grace_s)
+        elif not _wait_readers(readers, grace_s):
+            _kill_group(pgid, signal.SIGKILL)
+            _wait_readers(readers, grace_s)
+            orphaned = True
+
+    except BaseException:
+        # No RunOutcome reaches the caller, so only this function can stop the detached group.
         _kill_group(pgid, signal.SIGKILL)
         proc.wait()
-
-    orphaned = False
-    if timed_out:
-        orphaned = not _wait_readers(readers, grace_s)
-    elif not _wait_readers(readers, grace_s):
-        _kill_group(pgid, signal.SIGKILL)
-        _wait_readers(readers, grace_s)
-        orphaned = True
+        raise
 
     rc = proc.returncode
     (out, out_dropped), (err, err_dropped) = readers[0].snapshot(), readers[1].snapshot()

@@ -106,3 +106,30 @@ def test_returns_when_a_process_outside_the_group_holds_the_pipe(py, tmp_path, r
     r = run(py.argv(code), tmp_path, grace_s=0.5)
     pids.append(int(r.stderr.split()[0]))
     assert r.exit_code == 0 and r.orphaned_output and r.duration_ms < 5000
+
+
+@posix_only
+def test_exception_during_wait_kills_the_process_group(py, tmp_path, request):
+    pidfile = tmp_path / "child.pid"
+    code = ("import os, time; open(%r, 'w').write(str(os.getpid())); time.sleep(60)" % str(pidfile))
+
+    def cleanup():
+        if pidfile.exists():
+            try:
+                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError):
+                pass
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    request.addfinalizer(cleanup)
+    old = signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, 1.0)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run(py.argv(code), tmp_path, timeout_s=30)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+    assert gone(int(pidfile.read_text()))
