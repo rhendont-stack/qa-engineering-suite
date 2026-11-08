@@ -237,7 +237,7 @@ def _gate(run: _Run) -> _Gate:
     refusal = _attempt_refusal(run, gate) if req.attempt_of is not None else None
     if refusal is not None:
         gate.policy_denied = True
-        run.note("attempt_of %s refused: %s" % (req.attempt_of, refusal))
+        run.note("attempt_of refused: %s" % refusal)
     return gate
 
 

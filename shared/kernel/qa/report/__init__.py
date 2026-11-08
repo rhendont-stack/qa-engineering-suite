@@ -101,8 +101,7 @@ def _execution_section(st: dict) -> List[str]:
     rows = []
     for eid in _in_id_order(st["executions"]):
         e = st["executions"][eid]
-        rows.append("| " + eid + " | " + " | ".join(md_cell(cell) for cell in
-                    [e["status"], e["reason"], e["strength"], e["scope"]] + _counts(e) + [_short_commit(e)]) + " |")
+        rows.append(_row(eid, e["status"], e["reason"], e["strength"], e["scope"], *_counts(e), _short_commit(e)))
     return _table(("ID", "Status", "Reason", "Strength", "Scope", "Total", "Failures", "Errors", "Skipped", "Commit"), rows)
 
 
@@ -112,15 +111,14 @@ def _finding_section(st: dict) -> List[str]:
     rows = []
     for fid in _in_id_order(st["findings"]):
         f = st["findings"][fid]
-        rows.append("| " + fid + " | " + " | ".join(md_cell(cell) for cell in
-                    [f["title"], f["severity"], f["priority"], f["state"], f["verification_status"]]) + " |")
+        rows.append(_row(fid, f["title"], f["severity"], f["priority"], f["state"], f["verification_status"]))
     return _table(("ID", "Title", "Severity", "Priority", "State", "Verification"), rows)
 
 
 def _integrity_section(st: dict, gate: Optional[dict]) -> List[str]:
     lines: List[str] = []
     if st["violations"]:
-        lines += _table(("Event", "Kind"), ["| " + v["event"] + " | " + md_cell(v["kind"]) + " |" for v in st["violations"]])
+        lines += _table(("Event", "Kind"), [_row(v["event"], v["kind"]) for v in sorted(st["violations"], key=lambda v: v["event"])])
     else:
         lines.append("The state fold found no violations.")
     criterion = _test_integrity(gate)
@@ -131,7 +129,7 @@ def _integrity_section(st: dict, gate: Optional[dict]) -> List[str]:
 
 def _limitation_section(st: dict) -> List[str]:
     lines = ["- " + text for text in _LIMITS]
-    rows = ["| " + eid + " | " + md_cell(text) + " |" for eid in _in_id_order(st["executions"])
+    rows = [_row(eid, text) for eid in _in_id_order(st["executions"])
             for text in st["executions"][eid]["limitations"]]
     return lines + ([""] + _table(("Execution", "Limitation"), rows) if rows else [])
 

@@ -472,6 +472,17 @@ def test_one_unknown_and_one_known_id_count_as_cited(trusted, actor, py):
     assert kinds("%s and FND-999 passed\n" % exe, st) == ["status_mismatch", "unknown_id"]  # FND-999 is not an EXE or RES
 
 
+def test_an_unknown_execution_or_gate_beside_a_known_one_stops_the_comparison(trusted, actor, py):
+    exe = run(trusted, actor, py, "fail")
+    g = gate.evaluate(trusted, actor, profile="change")["data"]
+    st = state.load(trusted)
+    unknown_exe, unknown_gate = "EXE-" + "0" * 26, "GATE-099"
+    other = "READY" if g["verdict"] != "READY" else "NOT_READY"
+    assert kinds("%s and %s passed\n" % (exe, unknown_exe), st) == ["unknown_id"]
+    assert kinds("%s and %s say %s\n" % (g["id"], unknown_gate, other), st) == ["unknown_id"]
+    assert kinds("%s passed\n" % exe, st) == ["status_mismatch"]  # alone it is still compared
+
+
 def test_a_line_with_only_an_unknown_id_is_an_uncited_claim_too(trusted, actor, py):
     st = state.load(trusted)
     assert kinds("FND-999 failed\n", st) == ["uncited_claim", "unknown_id"]
@@ -493,10 +504,15 @@ def test_each_id_kind_resolves_in_its_own_table(trusted, actor, py):
                                          "gates": {}, "reports": {}}) == ["unknown_id"] or fid == ev
 
 
-def test_an_ingested_ev_id_resolves(trusted, actor, py):
+def test_an_ingested_ev_id_resolves(trusted, actor, py, tmp_path):
     exe = run(trusted, actor, py, "pass")
+    stored = trusted.path("evidence", exe, "reports", "junit.xml")
+    other = tmp_path / "other.xml"
+    other.write_text(stored.read_text().replace('name="t"', 'name="u"'))  # other bytes: the EV ID derives from the content
+    execution.ingest_file(trusted, actor, "junit", other, from_execution=exe)
     st = state.load(trusted)
-    ev = next(i for i in state.known_references(st) if i.startswith("EV-"))
+    ev = st["executions"][exe]["ingested"][0]["ev_id"]
+    assert ev not in st["executions"][exe]["evidence_manifest"]["ids"].values()  # it is the ingested one, not the manifest's
     assert check_markdown("evidence %s\n" % ev, st) == [] and kinds("evidence EV-%s\n" % ("f" * 12), st) == ["unknown_id"]
     assert exe in state.known_references(st)
 
@@ -536,3 +552,36 @@ def test_a_full_report_passes_its_own_check(trusted, actor, py):
     st = state.load(trusted)
     md = render_markdown(st, project="p")
     assert "**Integrity failure:**" in md and check_markdown(md, st) == []
+
+
+def test_integrity_rows_are_sorted_by_event_id_even_when_the_fold_settles_late(ws, actor):
+    ledger.append(ws, actor, "result.reclassified", {"result": "RES-" + "0" * 26, "new_status": "passed", "reason": "r",
+                                                     "evidence": ["EXE-" + "0" * 26]})  # settled after the fold loop
+    ledger.append(ws, actor, "report.rendered", _rendered())
+    ledger.append(ws, actor, "report.rendered", _rendered())  # duplicate_id, found during the loop
+    st = state.load(ws)
+    assert [v["kind"] for v in st["violations"]] == ["duplicate_id", "unknown_result"]  # fold order
+    rows = [l for l in section(render_markdown(st), "Integrity") if l.startswith("| EVT-")]
+    assert rows == sorted(rows) and [r.split(" | ")[1].rstrip(" |") for r in rows] == ["unknown\\_result", "duplicate\\_id"]
+
+
+def test_rows_sort_by_number_not_by_text(ws, actor):
+    st = state.load(ws)
+    for n in (1000, 999):
+        st["findings"]["FND-%d" % n] = dict(base(), title="t", severity="LOW", priority="P3", state="open",
+                                              verification_status="suspected")
+    rows = [l.split(" | ")[0] for l in section(render_markdown(st), "Findings") if l.startswith("| FND-")]
+    assert rows == ["| FND-999", "| FND-1000"]
+
+
+# --------------------------------------------------------------------------- kernel text passes its own check (T17-R12)
+
+def test_a_report_with_kernel_refusals_passes_its_own_check(trusted, actor, py):
+    execution.execute(trusted, actor, execution.RunRequest(command="echo hi"))  # shell-without-flag
+    execution.execute(trusted, actor, execution.RunRequest(command=["env", "PGPASSWORD=hunter22", "psql"]))  # secret-in-argv
+    refused = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass", attempt_of="EXE-" + "9" * 26))
+    st = state.load(trusted)
+    rules = {b["rule_id"] for b in st["blocked_commands"]}
+    assert {"shell-without-flag", "secret-in-argv"} <= rules and st["executions"][refused["execution"]]["limitations"]
+    md = render_markdown(st, project="p")
+    assert check_markdown(md, st) == []

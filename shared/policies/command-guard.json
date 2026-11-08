@@ -10,7 +10,7 @@
     {
       "id": "secret-in-argv",
       "effect": "deny",
-      "reason": "Secrets are referenced by environment-variable name and never passed as arguments (§12.5).",
+      "reason": "Secrets are referenced by environment-variable name and never given as arguments (§12.5).",
       "match": {"check": "secret_in_argv"}
     },
     {

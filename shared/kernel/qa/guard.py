@@ -887,7 +887,7 @@ def _check_protected_config_write(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
 
 
 def _check_shell_without_flag(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
-    return ("a shell string was passed without --shell", None) if ctx.shell_without_flag else None
+    return ("a shell string was given without --shell", None) if ctx.shell_without_flag else None
 
 
 def _check_secret_in_argv(ctx: _Context, unit: _Unit) -> Optional[_Hit]:

@@ -60,14 +60,14 @@ def _line_problems(st: dict, line: str, where: str) -> List[Problem]:
     verdicts = _VERDICT.findall(line)
     if (statuses or verdicts or _PERCENT.search(line)) and not resolved:
         problems.append(Problem("uncited_claim", where, line.strip()))
-    records = [t for t in resolved if t.startswith(("EXE-", "RES-"))]
-    gates = [t for t in resolved if t.startswith("GATE-")]
-    if len(records) == 1 and statuses:
+    records = [t for t in tokens if t.startswith(("EXE-", "RES-"))]  # an unknown ID is still a cited one
+    gates = [t for t in tokens if t.startswith("GATE-")]
+    if len(records) == 1 and records[0] in resolved and statuses:
         token = records[0]
         current = (st["executions"] if token.startswith("EXE-") else st["results"])[token]["status"]
         if any(s != current for s in statuses):
             problems.append(Problem("status_mismatch", where, "%s is %s" % (token, current)))
-    if len(gates) == 1 and verdicts and any(v != st["gates"][gates[0]]["verdict"] for v in verdicts):
+    if len(gates) == 1 and gates[0] in resolved and verdicts and any(v != st["gates"][gates[0]]["verdict"] for v in verdicts):
         problems.append(Problem("status_mismatch", where, "%s is %s" % (gates[0], st["gates"][gates[0]]["verdict"])))
     if _UNIVERSAL.search(line) and not _universal_backed(st, resolved):
         problems.append(Problem("universal_claim", where, line.strip()))
