@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -13,10 +14,11 @@ from qa.errors import QaError
 CASES = json.loads((CORPUS / "guard" / "cases.json").read_text(encoding="utf-8"))
 
 
-def classify(command, ws, *, shell=False, config=None, activity="test-execution-local"):
+def classify(command, ws, *, shell=False, config=None, activity="test-execution-local", **extra):
+    # extra carries cwd only when a test passes it, so "cwd omitted" stays a real omission.
     return guard.classify(command, shell=shell, ws_root=ws.root, qa_dir=ws.qa_dir,
                           config=workspace.default_config("x") if config is None else config,
-                          declared_activity=activity)
+                          declared_activity=activity, **extra)
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
@@ -83,6 +85,7 @@ def test_load_rules_is_cached():
     ([{"id": "a", "effect": "deny", "reason": "r", "match": {"args_regex": "("}}], "guard_policy_invalid"),
     ([{"id": "a", "effect": "deny", "reason": "r", "match": {}}], "schema_invalid"),
     ([{"id": "a", "effect": "deny", "reason": "r", "match": {"check": "no_such_check"}}], "schema_invalid"),
+    ([{"id": "a", "effect": "deny", "reason": "r", "match": {"program": ["x"], "no_args": False}}], "schema_invalid"),
 ])
 def test_invalid_rule_files_refused(tmp_path, monkeypatch, rules, code):
     (tmp_path / "command-guard.json").write_text(json.dumps({"version": 1, "rules": rules}), encoding="utf-8")
@@ -92,6 +95,40 @@ def test_invalid_rule_files_refused(tmp_path, monkeypatch, rules, code):
     with pytest.raises(QaError) as e:
         guard.load_rules()
     assert e.value.code == code
+
+
+def test_relative_paths_resolve_against_cwd(ws):
+    sub = ws.root / "sub dir"
+    d = classify(["rm", "-rf", ".qa/work/tmp"], ws, cwd=sub)   # sub dir/.qa is not the workspace's .qa
+    assert (d.decision, d.rule_id) == ("deny", "delete-outside-qa")
+    d = classify(["cp", "a", "../CLAUDE.md"], ws, cwd=sub)
+    assert (d.decision, d.rule_id) == ("deny", "protected-config-write")
+    d = classify(["rm", "-rf", "work/tmp"], ws, cwd=ws.qa_dir)
+    assert (d.decision, d.rule_id) == ("allow", None)
+    assert classify(["rm", "-rf", "work/tmp"], ws).rule_id == "delete-outside-qa"   # read against the root
+
+
+def test_redirect_targets_resolve_against_cwd(ws):
+    sub = ws.root / "sub dir"
+    assert classify("pytest -q > ../.qa/work/pytest.log", ws, shell=True, cwd=sub).decision == "allow"
+    d = classify("pytest -q > .qa/work/pytest.log", ws, shell=True, cwd=sub)
+    assert (d.decision, d.rule_id) == ("deny", "delete-outside-qa")
+
+
+@pytest.mark.parametrize("command,shell", [
+    (["rm", "-rf", ".qa/work/tmp"], False),
+    (["cp", "a", "../CLAUDE.md"], False),
+    ("pytest -q > ../.qa/work/pytest.log", True),
+])
+def test_relative_cwd_resolves_against_the_root(ws, command, shell):
+    assert classify(command, ws, shell=shell, cwd=Path("sub dir")) == classify(command, ws, shell=shell, cwd=ws.root / "sub dir")
+
+
+def test_omitted_cwd_means_the_workspace_root(ws):
+    for case in CASES:
+        kw = {"shell": case["shell"], "activity": case["activity"]}
+        omitted = classify(case["command"], ws, **kw)
+        assert omitted == classify(case["command"], ws, cwd=None, **kw) == classify(case["command"], ws, cwd=ws.root, **kw), case["id"]
 
 
 def test_classify_runs_nothing_and_writes_nothing(ws, monkeypatch):

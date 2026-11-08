@@ -41,6 +41,7 @@
         "args_all": {"description": "Every one of these is an argument (exact match).", "$ref": "#/$defs/words"},
         "args_any": {"description": "At least one of these is an argument (exact match).", "$ref": "#/$defs/words"},
         "unless_args": {"description": "None of these is an argument (exact match).", "$ref": "#/$defs/words"},
+        "no_args": {"description": "The program has no arguments after it, once wrappers are stripped. true is the only value.", "const": true},
         "args_regex": {"description": "Some argument matches this Python regex (re.search).", "$ref": "#/$defs/regex"},
         "shell_regex": {"description": "The command comes from a shell string that matches this Python regex (re.search) as a whole.", "$ref": "#/$defs/regex"},
         "check": {

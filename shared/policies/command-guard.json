@@ -275,6 +275,15 @@
       }
     },
     {
+      "id": "yarn-bare",
+      "effect": "require_grant:install-dependencies",
+      "reason": "A bare yarn installs the project's dependencies, which needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {
+        "program": ["yarn"],
+        "no_args": true
+      }
+    },
+    {
       "id": "npm-global",
       "effect": "require_grant:install-tools",
       "reason": "A global package install adds tools and needs an install-tools grant (§12.2, §12.3).",

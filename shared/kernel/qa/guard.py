@@ -27,9 +27,10 @@ What the guard reads through:
   classified too, comments are dropped, and output redirection targets are checked like
   the paths a command writes or deletes.
 
-Relative paths are resolved against the workspace root. The literal ``{evidence}`` token,
-which the run pipeline replaces after this check, counts as a directory under
-``.qa/evidence/``.
+Relative paths, in operands and redirection targets alike, resolve against ``cwd``: the
+workspace root when it is omitted, and a relative ``cwd`` is itself read against the root.
+The literal ``{evidence}`` token, which the run pipeline replaces after this check, counts as
+a directory under ``.qa/evidence/``.
 
 Secrets (§12.5): a secret flag with its value, or a word that a redaction pattern matches, is
 denied. An environment assignment whose value only names another variable
@@ -42,10 +43,10 @@ core.pager=...``, a test runner's plugins) can run a command the guard never see
 wrappers and shell constructs not listed above are not read through. Shell variables,
 aliases and functions defined elsewhere are not expanded: a program name that comes from a
 variable or a substitution is not resolved, and a path that depends on one counts as outside
-``.qa/``. Relative paths are read against the workspace root, not the run's working
-directory. A quoted operator such as ``';'`` reads as the operator, and every path operand of
-a writing command counts as written; both err towards denial. Real containment comes from the
-host's permission system and from running untrusted work in containers.
+``.qa/``. A ``cd`` inside a shell string is not followed. A quoted operator such as ``';'``
+reads as the operator, and every path operand of a writing command counts as written; both
+err towards denial. Real containment comes from the host's permission system and from
+running untrusted work in containers.
 """
 from __future__ import annotations
 
@@ -178,6 +179,7 @@ class _Unit:
 class _Context:
     ws_root: str
     qa_dir: str
+    cwd: str          # where relative paths resolve
     config: dict
     shell_without_flag: bool
 
@@ -233,13 +235,17 @@ def _compiled_rules() -> List[_Rule]:
 # --------------------------------------------------------------------------- classify
 
 def classify(command: Union[List[str], str], *, shell: bool, ws_root: Path, qa_dir: Path,
-             config: dict, declared_activity: str) -> GuardDecision:
+             config: dict, declared_activity: str, cwd: Optional[Path] = None) -> GuardDecision:
+    """Decide ``command``. Relative paths in it resolve against ``cwd``: ``ws_root`` when None,
+    and a relative ``cwd`` is itself read against ``ws_root``."""
     if declared_activity not in vocab.ACTIVITIES:
         raise QaError("invalid_activity", "unknown activity", activity=declared_activity)
     texts = _command_texts(command)
     rules = _compiled_rules()
     without_flag = not shell and (isinstance(command, str) or (len(texts) == 1 and any(m in texts[0] for m in _SHELL_MARKS)))
-    ctx = _Context(os.path.realpath(str(ws_root)), os.path.realpath(str(qa_dir)), config, without_flag)
+    root = os.path.realpath(str(ws_root))
+    where = root if cwd is None else os.path.realpath(os.path.join(root, str(cwd)))
+    ctx = _Context(root, os.path.realpath(str(qa_dir)), where, config, without_flag)
     if shell or without_flag:
         # A shell string passed without --shell is still read as the shell string it is.
         units = _shell_units(" ".join(texts), 0, lenient=without_flag)
@@ -298,6 +304,8 @@ def _match(rule: _Rule, unit: _Unit, ctx: _Context) -> Optional[_Hit]:
     m = rule.match
     prog = unit.program
     if "program" in m and (prog is None or not any(fnmatch.fnmatchcase(prog, p) for p in m["program"])):
+        return None
+    if m.get("no_args") and len(unit.argv) != 1:
         return None
     args = unit.argv[1:]
     if "subcommand" in m or "unless_subcommand" in m:
@@ -644,7 +652,7 @@ def _locations(ctx: _Context, path: str) -> Optional[Tuple[str, str]]:
     elif _shell_dependent(path):
         return None
     else:
-        joined = os.path.join(ctx.ws_root, path)
+        joined = os.path.join(ctx.cwd, path)
     return os.path.normpath(joined), os.path.realpath(joined)
 
 

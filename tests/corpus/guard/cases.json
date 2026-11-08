@@ -123,5 +123,7 @@
   {"id": "pip-audit", "command": ["pip-audit", "-r", "requirements.txt"], "shell": false, "activity": "test-execution-local", "expect": "require_grant", "rule_id": "egress-tools", "adds": ["data-egress"], "hosts": []},
   {"id": "install-and-download", "command": "npm ci && wget https://example.com/db.tar.gz", "shell": true, "activity": "test-execution-local", "expect": "require_grant", "rule_id": "npm-install", "adds": ["install-dependencies", "network-download"], "hosts": ["example.com"]},
   {"id": "secret-env-by-name", "command": "PGPASSWORD=\"$PGPASSWORD\" psql -c 'select 1'", "shell": true, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
-  {"id": "secret-arg-by-name", "command": "make DB_PASSWORD=$DB_PASSWORD", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "secret-in-argv", "adds": [], "hosts": []}
+  {"id": "secret-arg-by-name", "command": "make DB_PASSWORD=$DB_PASSWORD", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "secret-in-argv", "adds": [], "hosts": []},
+  {"id": "yarn", "command": ["yarn"], "shell": false, "activity": "test-execution-local", "expect": "require_grant", "rule_id": "yarn-bare", "adds": ["install-dependencies"], "hosts": []},
+  {"id": "yarn-test", "command": ["yarn", "test"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []}
 ]
