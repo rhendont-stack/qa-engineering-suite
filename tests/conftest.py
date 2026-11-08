@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -8,7 +9,7 @@ from typing import Dict, List
 
 import pytest
 
-from helpers import KERNEL
+from helpers import KERNEL, LAUNCHER
 
 
 class FrozenNow:
@@ -81,3 +82,19 @@ def trusted(ws, actor):
     config.record_initialized(ws, actor)
     config.set_value(ws, actor, "project.trust", "trusted", "test approval")
     return ws
+
+
+_WS_FIXTURE = object()  # qa_cli's default workspace: the ws fixture's root, created only when a test asks for it
+
+
+@pytest.fixture
+def qa_cli(request):
+    """``qa_cli(*args, cwd=None, env=None, workspace=<ws>) -> (exit code, the one JSON object stdout carried)``."""
+    def run(*args, cwd=None, env=None, workspace=_WS_FIXTURE):
+        if workspace is _WS_FIXTURE:
+            workspace = request.getfixturevalue("ws").root
+        target = [] if workspace is None else ["--workspace", workspace]
+        done = subprocess.run([sys.executable, LAUNCHER, *target, *args], cwd=cwd, env=dict(os.environ, **(env or {})),
+                              capture_output=True, timeout=120)
+        return done.returncode, json.loads(done.stdout)
+    return run
