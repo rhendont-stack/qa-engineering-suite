@@ -634,6 +634,7 @@ def test_attempt_on_the_same_commit_and_diff_runs(repo, actor, py):
     assert execution.execute(repo, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass", attempt_of=first))["status"] == "passed"
 
 
+@needs_git
 def test_two_runs_without_git_count_as_equal_and_keep_their_limitation(trusted, actor, py):
     first = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))
     second = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass", attempt_of=first["execution"]))
@@ -1072,6 +1073,7 @@ def test_signal_is_recorded(trusted, actor, py):
     assert (e["exit_code"], e["signal"]) == (None, 15) and r["reason"] == "nonzero_exit"
 
 
+@needs_git
 def test_truncation_and_git_limitations(trusted, actor, py):
     config.set_value(trusted, actor, "defaults.max_log_mb", 1, APPROVAL)
     code = "import sys; sys.stdout.write('x' * (2**20 + 10)); sys.stderr.write('y' * (2**20 + 10))"
