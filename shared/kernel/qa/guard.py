@@ -132,7 +132,8 @@ _URL = re.compile(r"(?i)\bhttps?://[^\s'\"<>`|;&,(){}\\]+")
 _INLINE_DSN = re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|sqlserver|mssql|jdbc|oracle"
                          r"|mongodb|redis|clickhouse|cockroach(?:db)?|snowflake|duckdb|cassandra|db2)"
                          r"(?:\+[a-z0-9]+)?://")
-_HEREDOC = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# A here-document operator, not the '<<' inside a '<<<' here-string (hence the lookbehind).
+_HEREDOC = re.compile(r"(?<!<)<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _SQL_DESTRUCTIVE = re.compile(r"(?i)\b(?:DROP\s+\w|TRUNCATE\b)")
 _SQL_UNBOUNDED = re.compile(r"(?i)\bDELETE\s+FROM\b|\bUPDATE\s+\S+(?:\s+\S+)?\s+SET\b")
 _SQL_WHERE = re.compile(r"(?i)\bWHERE\b")

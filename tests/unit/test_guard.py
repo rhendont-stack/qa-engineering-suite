@@ -222,6 +222,40 @@ def test_secret_free_and_file_flags_remain_allowed(ws, argv):
     assert classify(argv, ws).decision == "allow"
 
 
+# --- fix round 3 -----------------------------------------------------------------------
+
+# A one-word here-string, quoted and unquoted: '<<' inside '<<<' must not open a here-document.
+ONE_WORD_HERE_STRINGS = ['cat <<< "x"', "cat <<< 'x'", "cat <<< x", "cat <<<x"]
+
+
+@pytest.mark.parametrize("head", ONE_WORD_HERE_STRINGS)
+def test_extract_heredocs_leaves_a_one_word_here_string_alone(head):
+    text = head + "\ngit push origin main"
+    assert guard._extract_heredocs(text) == text
+
+
+@pytest.mark.parametrize("head", ONE_WORD_HERE_STRINGS)
+def test_shell_units_keep_the_command_after_a_one_word_here_string(head):
+    units = guard._shell_units(head + "\ngit push origin main", 0, False)
+    assert [u.argv for u in units] == [["cat"], ["git", "push", "origin", "main"]]
+    assert units[0].pipeline == "cat x"   # the body stays with its own command
+
+
+@pytest.mark.parametrize("head", ONE_WORD_HERE_STRINGS)
+@pytest.mark.parametrize("following,rule_id", [
+    ("git push origin main", "git-write"),
+    ("rm -rf /", "delete-outside-qa"),
+])
+def test_one_word_here_string_does_not_hide_the_next_command(ws, head, following, rule_id):
+    d = classify(head + "\n" + following, ws, shell=True)
+    assert (d.decision, d.rule_id) == ("deny", rule_id)
+
+
+def test_heredoc_after_a_one_word_here_string_is_still_read(ws):
+    d = classify("cat <<< x\npsql <<EOF\nDROP TABLE users;\nEOF", ws, shell=True)
+    assert (d.decision, d.rule_id) == ("deny", "destructive-sql")
+
+
 def test_classify_runs_nothing_and_writes_nothing(ws, monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("the guard must not run commands or open connections")
