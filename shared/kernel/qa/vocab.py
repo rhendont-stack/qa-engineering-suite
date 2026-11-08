@@ -23,3 +23,14 @@ PROTECTED_PATHS = (
     ".claude/", "CLAUDE.md", "AGENTS.md", ".cursor/", ".vscode/",
     ".github/copilot-instructions.md", ".github/agents/", ".mcp.json", "mcp.json",
 )
+
+# Finding lifecycle (§10.6): {current state: {next state: the fields the transition needs}}. Every transition needs a
+# reason. fix_submitted, verified_fixed and reopened arrive with fixes and revalidation (milestone 3), so none is here.
+TRANSITIONS = {
+    "open": {"accepted_risk": ("reason", "accepted_by", "expires_at"), "wont_fix": ("reason",),
+             "duplicate": ("reason", "duplicate_of")},
+    "accepted_risk": {"open": ("reason",)},
+    "wont_fix": {"open": ("reason",)},
+    "duplicate": {"open": ("reason",)},
+}
+MILESTONE_3_STATES = ("fix_submitted", "verified_fixed", "reopened")

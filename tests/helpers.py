@@ -55,3 +55,20 @@ def req(py, *args, **kw):
     from qa import execution
 
     return execution.RunRequest(command=py.argv(*args), reports=(("junit", "{evidence}/junit.xml"),), **kw)
+
+
+def base(**over):
+    """A valid finding in Appendix A.3's field names; ``over`` replaces whole fields."""
+    f = {"title": "IDOR on /orders/{id}", "description": "Any user can read another user's order.", "category": "security",
+         "severity_rationale": {"anchor": "SEC-H1", "modifiers": []},
+         "component": {"path": "app/orders/views.py", "endpoint": "GET /orders/{id}", "criticality": "critical"},
+         "verification_status": "suspected", "evidence": [], "reproduction_steps": [],
+         "refs": {"cwe": ["CWE-639"], "owasp_api_2023": ["API1:2023"], "rule": "manual", "location": "app/orders/views.py"}}
+    f.update(over)
+    return f
+
+
+# python -c code: writes a one-alert SARIF report to argv[1] and exits 1.
+WRITE_SARIF = ("import json, sys; json.dump({'version': '2.1.0', 'runs': [{'tool': {'driver': {'name': 'scanner', 'rules': [{'id': 'R1'}]}}, "
+               "'results': [{'ruleId': 'R1', 'level': 'error', 'message': {'text': 'm'}, 'locations': [{'physicalLocation': "
+               "{'artifactLocation': {'uri': 'a.py'}, 'region': {'startLine': 1}}}]}]}]}, open(sys.argv[1], 'w')); sys.exit(1)")

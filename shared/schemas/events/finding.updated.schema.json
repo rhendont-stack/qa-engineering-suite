@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "finding.updated event data",
+  "description": "Either a new sighting of an existing finding (last_seen and the sighting's source) or a change to its fields. changes holds final values, recomputed severity and priority included; identity (id, state, fingerprint and its inputs) never changes here.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {"$ref": "defs.schema.json#/$defs/fnd_id"},
+        "last_seen": {"$ref": "defs.schema.json#/$defs/timestamp"},
+        "source": {"$ref": "events/finding.opened.schema.json#/$defs/source"}
+      },
+      "required": ["id", "last_seen", "source"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {"$ref": "defs.schema.json#/$defs/fnd_id"},
+        "changes": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string", "minLength": 1},
+            "description": {"type": "string", "minLength": 1},
+            "severity": {"$ref": "defs.schema.json#/$defs/severity"},
+            "severity_rationale": {"$ref": "events/finding.opened.schema.json#/$defs/severity_rationale"},
+            "priority": {"$ref": "defs.schema.json#/$defs/priority"},
+            "component": {"$ref": "events/finding.opened.schema.json#/$defs/component"},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "reproduction_steps": {"type": "array", "items": {"type": "string"}},
+            "impact": {"type": ["string", "null"]},
+            "probable_cause": {"type": ["string", "null"]},
+            "recommendation": {"type": ["string", "null"]},
+            "verification_status": {"$ref": "defs.schema.json#/$defs/verification"},
+            "refs": {"$ref": "events/finding.opened.schema.json#/$defs/refs"},
+            "links": {"$ref": "events/finding.opened.schema.json#/$defs/string_lists"},
+            "source": {"$ref": "events/finding.opened.schema.json#/$defs/source"},
+            "commit": {"type": ["string", "null"]}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["id", "changes"],
+      "additionalProperties": false
+    }
+  ]
+}

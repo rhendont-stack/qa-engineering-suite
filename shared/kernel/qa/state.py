@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import copy
-from typing import Callable, Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, Optional, Set
 
 from . import ledger, schema
 from .canonical import hash_obj
 from .errors import QaError
 from .status import can_reclassify
+from .vocab import TRANSITIONS
 from .workspace import Workspace, config_bytes, write_atomic
 
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
@@ -140,8 +141,51 @@ def _settle_ingest(state: dict, event: dict) -> None:
         execution["ingested"].append(dict(copy.deepcopy(event["data"]), event=event["id"]))
 
 
+def _finding_opened(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["findings"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    state["findings"][data["id"]] = dict(copy.deepcopy(data), last_seen=event["ts"])
+
+
+def _settle_finding_updated(state: dict, event: dict) -> None:
+    data = event["data"]
+    finding = state["findings"].get(data["id"])
+    if finding is None:
+        _violation(state, event, "unknown_finding")
+    elif "changes" in data:
+        finding.update(copy.deepcopy(data["changes"]))
+    else:
+        finding["last_seen"] = data["last_seen"]
+        finding["source"] = copy.deepcopy(data["source"])
+
+
+def _settle_finding_state_changed(state: dict, event: dict) -> None:
+    data = event["data"]
+    finding = state["findings"].get(data["id"])
+    if finding is None:
+        _violation(state, event, "unknown_finding")
+    elif data["to"] not in TRANSITIONS.get(finding["state"], {}):  # the current state decides, not the event's "from"
+        _violation(state, event, "invalid_transition")
+    else:
+        finding.update(state=data["to"], state_reason=data["reason"], accepted_by=data["accepted_by"],
+                       expires_at=data["expires_at"], duplicate_of=data["duplicate_of"])
+
+
 _SETTLERS = {"result.recorded": _settle_result, "result.reclassified": _settle_reclassification,
-             "report.ingested": _settle_ingest}
+             "report.ingested": _settle_ingest, "finding.updated": _settle_finding_updated,
+             "finding.state_changed": _settle_finding_state_changed}
+
+
+def known_references(st: dict) -> Set[str]:
+    """Every ``EXE-`` and ``EV-`` id the state can resolve."""
+    known: Set[str] = set(st["executions"])
+    for record in st["executions"].values():
+        if record["evidence_manifest"] is not None:
+            known.update(record["evidence_manifest"]["ids"].values())
+        known.update(item["ev_id"] for item in record["ingested"])
+    return known
 
 
 def chain_root(st: dict, execution_id: str) -> str:
@@ -215,6 +259,9 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "result.reclassified": _queue,
     "command.blocked": _command_blocked,
     "report.ingested": _queue,
+    "finding.opened": _finding_opened,
+    "finding.updated": _queue,
+    "finding.state_changed": _queue,
 }
 
 

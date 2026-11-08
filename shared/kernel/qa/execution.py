@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
 
-from . import (KERNEL_VERSION, authz, config, envinfo, gitinfo, guard, ids, ingest, integrity, ledger, redact, runner,
-               schema, state, status, vocab)
+from . import (KERNEL_VERSION, authz, config, envinfo, findings, gitinfo, guard, ids, ingest, integrity, ledger, redact,
+               runner, schema, state, status, vocab)
 from .canonical import dumps, loads, sha256_bytes, sha256_file
 from .errors import QaError
 from .workspace import Workspace, write_atomic
@@ -185,6 +185,9 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
         run.note("kernel_modified")
     gate = _gate(run)
     recorded = _record_blocked(run, gate) if gate.blocked else _run_command(run, gate, grace_s)
+    raised = {"opened": 0, "updated": 0}
+    if recorded.summary is not None and recorded.summary.kind == "alerts":  # a timed-out scan's partial alerts are real too
+        raised = findings.ingest_alerts(ws, actor, recorded.summary, execution_id=run.execution_id, category=req.category)
     return {
         "execution": run.execution_id,
         "status": recorded.verdict.status,
@@ -194,7 +197,7 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
         "tests": _counts(recorded.summary),
         "flaky": flaky_view(state.load(ws), run.execution_id) if req.attempt_of is not None else {},
         "evidence": recorded.evidence,
-        "findings": {"opened": 0, "updated": 0},
+        "findings": raised,
         "limitations": recorded.limitations,
     }
 
@@ -724,16 +727,6 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     return {"event": event["id"], "execution": from_execution, "strength": strength, "kind": summary.kind, "total": total}
 
 
-def _known_references(st: dict) -> Set[str]:
-    """Every ``EXE-`` and ``EV-`` id the state can resolve."""
-    known: Set[str] = set(st["executions"])
-    for record in st["executions"].values():
-        if record["evidence_manifest"] is not None:
-            known.update(record["evidence_manifest"]["ids"].values())
-        known.update(item["ev_id"] for item in record["ingested"])
-    return known
-
-
 def reclassify(ws: Workspace, actor: ledger.Actor, result_id: str, new_status: str, reason: str,
                evidence: List[str]) -> dict:
     """Change a result's status within §8.3's limits, citing evidence the state can resolve."""
@@ -749,7 +742,7 @@ def reclassify(ws: Workspace, actor: ledger.Actor, result_id: str, new_status: s
             why = "blank_reason"
         elif not evidence:
             why = "no_evidence"
-        elif not set(evidence) <= _known_references(st):
+        elif not set(evidence) <= state.known_references(st):
             why = "unknown_reference"
         if why is not None:
             raise QaError("reclassify_refused", "the reclassification was refused", why=why, result=result_id)
