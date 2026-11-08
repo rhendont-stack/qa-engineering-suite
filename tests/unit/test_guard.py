@@ -187,6 +187,41 @@ def test_a_real_password_assignment_is_still_denied(ws):
     assert (d.decision, d.rule_id) == ("deny", "secret-in-argv")
 
 
+# --- fix round 2 -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    'psql <<< "DROP TABLE users"',
+    "psql <<EOF\nDROP TABLE users;\nEOF",
+    'psql -d "$DATABASE_URL" <<< "DROP TABLE users"',
+    "psql <<-END\n\tDROP TABLE users;\nEND",
+])
+def test_here_string_and_heredoc_sql_is_still_caught(ws, command):
+    assert classify(command, ws, shell=True).rule_id == "destructive-sql"
+
+
+def test_here_string_sql_on_ephemeral_dsn_is_allowed(ws):
+    cfg = workspace.default_config("x")
+    cfg["environments"].append({"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
+    assert classify('psql "$EPH_DSN" <<< "DROP TABLE users"', ws, shell=True, config=cfg).decision == "allow"
+
+
+@pytest.mark.parametrize("key", ["SECRET_KEY", "PASSWORD_PROD", "CLIENT_SECRET", "API_TOKEN", "API_KEY", "PRIVATE_KEY", "DB_PASSWORD"])
+def test_keyword_suffix_secret_assignments_stay_denied(ws, key):
+    value = "abcd" + "1234" + "efgh"   # built at runtime; at or above Task 4's entropy threshold
+    d = classify(["env", "%s=%s" % (key, value), "make"], ws)
+    assert (d.decision, d.rule_id) == ("deny", "secret-in-argv"), key
+
+
+@pytest.mark.parametrize("argv", [
+    ["tool", "--bypass-cache=true"],
+    ["tool", "--passthrough=value"],
+    ["tool", "--password-file=/run/secrets/db"],
+    ["tool", "--token-file=/run/secrets/t"],
+])
+def test_secret_free_and_file_flags_remain_allowed(ws, argv):
+    assert classify(argv, ws).decision == "allow"
+
+
 def test_classify_runs_nothing_and_writes_nothing(ws, monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("the guard must not run commands or open connections")

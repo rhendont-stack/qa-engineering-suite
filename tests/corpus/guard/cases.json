@@ -132,5 +132,8 @@
   {"id": "bypass-cache-flag", "command": ["tool", "--bypass-cache=true"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
   {"id": "passthrough-flag", "command": ["tool", "--passthrough=value"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
   {"id": "password-file-flag", "command": ["tool", "--password-file=/run/secrets/db"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
-  {"id": "pgpassfile-env", "command": "PGPASSFILE=.qa/work/pgpass psql -c 'select 1'", "shell": true, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []}
+  {"id": "pgpassfile-env", "command": "PGPASSFILE=.qa/work/pgpass psql -c 'select 1'", "shell": true, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
+  {"id": "herestring-sql", "command": "psql <<< \"DROP TABLE users\"", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "destructive-sql", "adds": [], "hosts": []},
+  {"id": "heredoc-sql", "command": "psql <<EOF\nDROP TABLE users;\nEOF", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "destructive-sql", "adds": [], "hosts": []},
+  {"id": "password-prod-secret", "command": ["env", "PASSWORD_PROD=hunter22", "make"], "shell": false, "activity": "test-execution-local", "expect": "deny", "rule_id": "secret-in-argv", "adds": [], "hosts": []}
 ]

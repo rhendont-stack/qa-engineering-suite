@@ -113,17 +113,26 @@ _PROTECTED = tuple((tuple(e.rstrip("/").lower().split("/")), e.endswith("/")) fo
 
 _SECRET_FLAGS = ("--password", "--token", "--secret", "--api-key")
 _VAR_REF = re.compile(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$")
-# Redaction patterns that match a key=value assignment; for these the key must be a whole secret
-# keyword (see _is_whole_secret_key). Other kinds match a secret value directly and are unchanged.
+# Redaction patterns that match a key=value assignment; for these the key must name a secret
+# (see _is_whole_secret_key). Other kinds match a secret value directly and are unchanged.
 _ASSIGNMENT_SECRET_KINDS = frozenset(["password_assignment", "secret_assignment"])
-_SECRET_KEYWORD = re.compile(r"(?i)^(?:password|passwd|pass|pwd|secret|tokens?"
-                             r"|api[_-]?keys?|private[_-]?keys?|credentials?)")
+# A key word that, on its own, names a secret.
+_SECRET_WORDS = frozenset(["pass", "pwd", "password", "passwords", "passwd",
+                           "secret", "secrets", "token", "tokens",
+                           "apikey", "apikeys", "credential", "credentials"])
+# A full keyword a one-word key may end with (``pgpassword``, ``clientsecret``, ``apikey``);
+# bare ``pass``/``pwd`` are left out, so ``bypass`` and ``compass`` do not count.
+_SECRET_SUFFIXES = ("password", "passwords", "passwd", "secret", "secrets", "token", "tokens",
+                    "apikey", "apikeys", "privatekey", "privatekeys", "credential", "credentials")
+# A trailing key word that names a file or path, so its value is a reference, not a secret.
+_FILE_WORDS = frozenset(["file", "files", "path", "paths", "dir", "directory", "filename", "location", "keyfile"])
 _URL = re.compile(r"(?i)\bhttps?://[^\s'\"<>`|;&,(){}\\]+")
 
 # A concrete database connection string (postgres://..., mysql://..., not an http(s) URL).
 _INLINE_DSN = re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|sqlserver|mssql|jdbc|oracle"
                          r"|mongodb|redis|clickhouse|cockroach(?:db)?|snowflake|duckdb|cassandra|db2)"
                          r"(?:\+[a-z0-9]+)?://")
+_HEREDOC = re.compile(r"<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _SQL_DESTRUCTIVE = re.compile(r"(?i)\b(?:DROP\s+\w|TRUNCATE\b)")
 _SQL_UNBOUNDED = re.compile(r"(?i)\bDELETE\s+FROM\b|\bUPDATE\s+\S+(?:\s+\S+)?\s+SET\b")
 _SQL_WHERE = re.compile(r"(?i)\bWHERE\b")
@@ -484,15 +493,16 @@ def _find_parts(argv: List[str]) -> Tuple[List[str], bool, List[List[str]]]:
 def _shell_units(text: str, depth: int, lenient: bool) -> List[_Unit]:
     if depth > _MAX_DEPTH:
         raise QaError("invalid_command", "the command nests shell strings too deeply")
-    outer, bodies = _substitutions(text)
+    outer, bodies = _substitutions(_extract_heredocs(text))
     rows = _simple_commands(outer, lenient)
     # Commands joined by a pipe share a pipeline; the SQL and DSN checks read only their own.
+    # A here-string or here-document body (inputs) belongs to its command's pipeline, not another.
     pipeline_words: Dict[int, List[str]] = {}
-    for words, _redirects, pid in rows:
-        pipeline_words.setdefault(pid, []).extend(words)
+    for words, _redirects, pid, inputs in rows:
+        pipeline_words.setdefault(pid, []).extend(words + inputs)
     pipeline_text = {pid: " ".join(w) for pid, w in pipeline_words.items()}
     units: List[_Unit] = []
-    for words, redirects, pid in rows:
+    for words, redirects, pid, _inputs in rows:
         units.extend(_expand(words, text, redirects, depth, lenient, pipeline_text[pid]))
     for body in bodies:
         units.extend(_shell_units(body, depth + 1, lenient))
@@ -578,6 +588,38 @@ def _closing_backtick(text: str, start: int) -> int:
     return len(text)
 
 
+def _shell_quote(text: str) -> str:
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def _extract_heredocs(text: str) -> str:
+    """Rewrite each here-document (``psql <<EOF`` ... ``EOF``) as a here-string on the command's own
+    line, so its body stays with the command for the SQL and DSN checks instead of being read as
+    separate commands. The body lines and the closing delimiter are removed."""
+    lines = text.split("\n")
+    out: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _HEREDOC.search(line)
+        if m is None:
+            out.append(line)
+            i += 1
+            continue
+        dash = line[m.start():m.start() + 3] == "<<-"
+        delim = m.group(2)
+        body: List[str] = []
+        j = i + 1
+        while j < len(lines):
+            if (lines[j].lstrip("\t") if dash else lines[j]) == delim:
+                break
+            body.append(lines[j])
+            j += 1
+        out.append(line[:m.start()] + "<<< " + _shell_quote(" ".join(body)) + line[m.end():])
+        i = j + 1   # skip the body and the closing delimiter
+    return "\n".join(out)
+
+
 def _strip_fd_designators(text: str) -> str:
     """Remove a bare file-descriptor number glued to the front of a redirect operator
     (``2>file``, ``1>&2``), outside quotes, so the fd is not read as a command word. A space
@@ -618,9 +660,10 @@ def _strip_fd_designators(text: str) -> str:
     return "".join(out)
 
 
-def _simple_commands(text: str, lenient: bool) -> List[Tuple[List[str], List[str], int]]:
-    """(words, output redirection targets, pipeline index) for each simple command of a shell
-    string. Commands joined by a pipe share a pipeline index; other separators start a new one."""
+def _simple_commands(text: str, lenient: bool) -> List[Tuple[List[str], List[str], int, List[str]]]:
+    """(words, output redirection targets, pipeline index, here-string/here-doc bodies) for each
+    simple command of a shell string. Commands joined by a pipe share a pipeline index; other
+    separators start a new one. A ``<<<`` body is kept so the SQL and DSN checks can read it."""
     stripped = _strip_fd_designators(text)
     lex = shlex.shlex(stripped, posix=True, punctuation_chars=_PUNCT)
     lex.whitespace = " \t\r"   # newlines separate commands
@@ -632,26 +675,29 @@ def _simple_commands(text: str, lenient: bool) -> List[Tuple[List[str], List[str
         if not lenient:
             raise QaError("invalid_command", "the shell string does not parse")
         tokens = stripped.split()
-    commands: List[Tuple[List[str], List[str], int]] = []
+    commands: List[Tuple[List[str], List[str], int, List[str]]] = []
     words: List[str] = []
     redirects: List[str] = []
+    inputs: List[str] = []
     pending = ""
     pid = 0
     for tok in _split_operators(tokens):
         if pending:
             if pending in _OUT_REDIRECTS and not (pending == ">&" and (tok.isdigit() or tok == "-")):
                 redirects.append(tok)
+            elif pending == "<<<":
+                inputs.append(tok)
             pending = ""
         elif tok in _SEPARATORS:
-            _flush(commands, words, redirects, pid)
-            words, redirects = [], []
+            _flush(commands, words, redirects, pid, inputs)
+            words, redirects, inputs = [], [], []
             if tok not in _PIPES:
                 pid += 1
         elif tok in _OUT_REDIRECTS or tok in _IN_REDIRECTS:
             pending = tok
         else:
             words.append(tok)
-    _flush(commands, words, redirects, pid)
+    _flush(commands, words, redirects, pid, inputs)
     return commands
 
 
@@ -670,8 +716,8 @@ def _split_operators(tokens: List[str]) -> List[str]:
     return out
 
 
-def _flush(commands: List[Tuple[List[str], List[str], int]], words: List[str], redirects: List[str],
-           pid: int) -> None:
+def _flush(commands: List[Tuple[List[str], List[str], int, List[str]]], words: List[str],
+           redirects: List[str], pid: int, inputs: List[str]) -> None:
     i = 0
     while i < len(words):
         if words[i] in _KEYWORDS:
@@ -682,8 +728,8 @@ def _flush(commands: List[Tuple[List[str], List[str], int]], words: List[str], r
             i = len(words)   # a loop or case header runs nothing itself
         else:
             break
-    if words[i:] or redirects:
-        commands.append((words[i:], redirects, pid))
+    if words[i:] or redirects or inputs:
+        commands.append((words[i:], redirects, pid, inputs))
 
 
 def _hosts(texts: List[str]) -> List[str]:
@@ -844,19 +890,25 @@ def _secret_kind(text: str) -> Optional[str]:
                 continue
             if p.min_entropy is not None and shannon_entropy(secret) < p.min_entropy:
                 continue
-            if p.kind in _ASSIGNMENT_SECRET_KINDS and not _is_whole_secret_key(text[m.start(0):m.start(p.group)]):
+            if p.kind in _ASSIGNMENT_SECRET_KINDS and not _is_whole_secret_key(text[:m.start(p.group)]):
                 continue
             return p.kind
     return None
 
 
 def _is_whole_secret_key(key_text: str) -> bool:
-    """Whether ``key_text`` (the ``keyword...=`` part a redaction assignment pattern matched) is a
-    secret keyword with no further word glued after it. ``PASSWORD=`` and ``DB_PASSWORD=`` are;
-    ``pass-cache=``, ``passthrough=``, ``password-file=`` and ``PASSFILE=`` are not, so their value
-    is not treated as a secret."""
-    m = _SECRET_KEYWORD.match(key_text)
-    return m is not None and not re.search(r"[A-Za-z]", key_text[m.end():])
+    """Whether the key before the value is a secret key carrying a secret (T9-R4). The key is split
+    on non-letters into words. It counts when a word is exactly a secret keyword (so ``SECRET_KEY``,
+    ``DB_PASSWORD`` and ``MYSQL_PASS`` do), or the key's letters end in a full keyword (so
+    ``PGPASSWORD``, ``CLIENT_SECRET`` and ``API_KEY`` do). It does not when the keyword is only part
+    of an unrelated word (``bypass``, ``passthrough``) or when the key names a file or path
+    (``password-file``, ``PGPASSFILE``, ``token-file``), whose value is a reference, not a secret."""
+    words = re.sub(r"[^A-Za-z]+", " ", key_text).lower().split()
+    if not words or words[-1] in _FILE_WORDS:
+        return False
+    if any(w in _SECRET_WORDS for w in words):
+        return True
+    return "".join(words).endswith(_SECRET_SUFFIXES)
 
 
 def _check_url_host(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
