@@ -138,5 +138,8 @@
   {"id": "password-prod-secret", "command": ["env", "PASSWORD_PROD=hunter22", "make"], "shell": false, "activity": "test-execution-local", "expect": "deny", "rule_id": "secret-in-argv", "adds": [], "hosts": []},
   {"id": "herestring-word-then-rm", "command": "cat <<< \"x\"\nrm -rf /", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "delete-outside-qa", "adds": [], "hosts": []},
   {"id": "herestring-word-then-push", "command": "cat <<< \"x\"\ngit push origin main", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []},
-  {"id": "herestring-bare-word-then-push", "command": "cat <<< x\ngit push origin main", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []}
+  {"id": "herestring-bare-word-then-push", "command": "cat <<< x\ngit push origin main", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []},
+  {"id": "heredoc-mark-double-quoted-then-push", "command": "echo \"<<x\"\ngit push origin main", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []},
+  {"id": "heredoc-mark-single-quoted-then-push", "command": "echo '<<x'\ngit push origin main", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []},
+  {"id": "heredoc-mark-escaped-then-push", "command": "echo \\<<x\ngit push origin main", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []}
 ]

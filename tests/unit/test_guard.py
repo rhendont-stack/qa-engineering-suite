@@ -256,6 +256,62 @@ def test_heredoc_after_a_one_word_here_string_is_still_read(ws):
     assert (d.decision, d.rule_id) == ("deny", "destructive-sql")
 
 
+# --- fix round 4 -----------------------------------------------------------------------
+
+# A '<<' the shell does not read as a here-document operator: inside double quotes, inside
+# single quotes, escaped with a backslash, inside a double-quoted string that spans lines, or
+# in a comment.
+NON_OPERATOR_MARKS = ['echo "<<x"', "echo '<<x'", "echo \\<<x", 'echo "a\n<<x"', "echo 'a <<x' b",
+                      "echo hi # see <<x"]
+
+
+@pytest.mark.parametrize("head", NON_OPERATOR_MARKS)
+def test_extract_heredocs_leaves_a_non_operator_mark_alone(head):
+    text = head + "\ngit push origin main"
+    assert guard._extract_heredocs(text) == text
+
+
+@pytest.mark.parametrize("head", NON_OPERATOR_MARKS)
+def test_shell_units_keep_the_command_after_a_non_operator_mark(head):
+    units = guard._shell_units(head + "\ngit push origin main", 0, False)
+    assert [u.argv for u in units][-1] == ["git", "push", "origin", "main"]
+    assert units[0].argv[0] == "echo"
+
+
+@pytest.mark.parametrize("head", NON_OPERATOR_MARKS)
+@pytest.mark.parametrize("following,rule_id", [
+    ("git push origin main", "git-write"),
+    ("rm -rf /", "delete-outside-qa"),
+])
+def test_non_operator_mark_does_not_hide_the_next_command(ws, head, following, rule_id):
+    d = classify(head + "\n" + following, ws, shell=True)
+    assert (d.decision, d.rule_id) == ("deny", rule_id)
+
+
+def test_heredoc_after_a_quoted_mark_is_still_read(ws):
+    d = classify('echo "<<x"\npsql <<EOF\nDROP TABLE users;\nEOF', ws, shell=True)
+    assert (d.decision, d.rule_id) == ("deny", "destructive-sql")
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Real here-documents keep their behavior: the body folds into a here-string, the terminator goes.
+    ("psql <<EOF\nDROP TABLE users;\nEOF\ngit status", "psql <<< 'DROP TABLE users;'\ngit status"),
+    ("psql <<-END\n\tDROP TABLE users;\n\tEND\ngit status", "psql <<< '\tDROP TABLE users;'\ngit status"),
+    ("psql <<'EOF'\nDROP TABLE users;\nEOF", "psql <<< 'DROP TABLE users;'"),
+    ('psql <<"EOF"\nDROP TABLE users;\nEOF', "psql <<< 'DROP TABLE users;'"),
+    # Quoted words before the operator do not hide it, and a '#' inside a word is not a comment.
+    ('psql "$DSN" <<EOF\nDROP TABLE users;\nEOF', 'psql "$DSN" <<< \'DROP TABLE users;\''),
+    ("psql 'a''b' <<EOF\nDROP TABLE users;\nEOF", "psql 'a''b' <<< 'DROP TABLE users;'"),
+    ("psql a#b <<EOF\nDROP TABLE users;\nEOF", "psql a#b <<< 'DROP TABLE users;'"),
+    # Only a line that is exactly the delimiter ends a '<<' body; an indented one does not.
+    ("psql <<EOF\nDROP TABLE users;\n  EOF\ngit status", "psql <<< 'DROP TABLE users;   EOF git status'"),
+    # '<<-' strips leading tabs, not spaces.
+    ("psql <<-EOF\n\tx\n  EOF\n\tEOF\ngit status", "psql <<< '\tx   EOF'\ngit status"),
+])
+def test_extract_heredocs_follows_the_shell(text, expected):
+    assert guard._extract_heredocs(text) == expected
+
+
 def test_classify_runs_nothing_and_writes_nothing(ws, monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("the guard must not run commands or open connections")

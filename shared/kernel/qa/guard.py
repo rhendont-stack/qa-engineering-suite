@@ -596,13 +596,17 @@ def _shell_quote(text: str) -> str:
 def _extract_heredocs(text: str) -> str:
     """Rewrite each here-document (``psql <<EOF`` ... ``EOF``) as a here-string on the command's own
     line, so its body stays with the command for the SQL and DSN checks instead of being read as
-    separate commands. The body lines and the closing delimiter are removed."""
+    separate commands. The body lines and the closing delimiter are removed. The operator is read
+    as the shell does: a ``<<`` inside quotes, escaped with a backslash or in a comment does not
+    open a body, a ``<<`` body ends only at a line that is exactly its delimiter, and ``<<-``
+    strips leading tabs from each line first."""
     lines = text.split("\n")
     out: List[str] = []
+    quote = ""   # the quote open at the start of the current line, if any
     i = 0
     while i < len(lines):
         line = lines[i]
-        m = _HEREDOC.search(line)
+        m, quote = _heredoc_operator(line, quote)
         if m is None:
             out.append(line)
             i += 1
@@ -619,6 +623,38 @@ def _extract_heredocs(text: str) -> str:
         out.append(line[:m.start()] + "<<< " + _shell_quote(" ".join(body)) + line[m.end():])
         i = j + 1   # skip the body and the closing delimiter
     return "\n".join(out)
+
+
+def _heredoc_operator(line: str, quote: str) -> Tuple[Optional["re.Match[str]"], str]:
+    """The first here-document operator of ``line`` that is outside quotes, not escaped and not in
+    a comment, or None, together with the quote still open at the end of the line. ``quote`` is
+    the one open when the line starts, so a double-quoted string that spans lines hides a ``<<``
+    on its later lines too."""
+    found: Optional["re.Match[str]"] = None
+    word_start = True
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c == "\\" and quote != "'":
+            i += 2   # the next character is literal, inside double quotes or outside quotes
+            word_start = False
+            continue
+        if quote:
+            quote = "" if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and word_start:
+            break   # a comment runs to the end of the line; a '#' inside a word is not one
+        elif found is None and c == "<":
+            m = _HEREDOC.match(line, i)
+            if m is not None:
+                found = m
+                i = m.end()
+                word_start = False
+                continue
+        word_start = not quote and (c.isspace() or c in _PUNCT)
+        i += 1
+    return found, quote
 
 
 def _strip_fd_designators(text: str) -> str:
