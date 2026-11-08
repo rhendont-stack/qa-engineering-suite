@@ -19,6 +19,7 @@ import math
 import os
 import shlex
 import stat
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
@@ -494,14 +495,19 @@ def _produced(run: _Run, directory: str, snapshot: _Snapshot) -> List[List[str]]
     return produced
 
 
+def _name_key(name: str) -> str:
+    """Names with one key may be one file: APFS ignores normalization and folds case in full, so ``ß`` is ``ss``."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 def _free_name(name: str, taken: Set[str]) -> str:
-    """``name``, or ``name`` with -2, -3, ... before its extension. Compared without case, as some filesystems do."""
+    """``name``, or ``name`` with -2, -3, ... before its extension. ``taken`` holds ``_name_key`` values."""
     stem, extension = os.path.splitext(name)
     candidate, number = name, 1
-    while candidate.lower() in taken:
+    while _name_key(candidate) in taken:
         number += 1
         candidate = "%s-%d%s" % (stem, number, extension)
-    taken.add(candidate.lower())
+    taken.add(_name_key(candidate))
     return candidate
 
 
@@ -682,7 +688,7 @@ def _ingest_strength(ws: Workspace, record: dict, file_sha256: str) -> str:
     if recorded is None:
         return "attested"
     try:
-        raw = ws.path("evidence", record["id"], "manifest.json").read_bytes()
+        raw = integrity.read_regular(ws.path("evidence", record["id"], "manifest.json"))
     except OSError:
         return "attested"
     if sha256_bytes(raw) != recorded["sha256"]:
@@ -710,7 +716,7 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
         folder = ws.path("evidence", from_execution, "ingested")
         folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         folder.mkdir(mode=0o700, exist_ok=True)
-        name = _stored_name(redactor, str(path), {entry.name.lower() for entry in folder.iterdir()})
+        name = _stored_name(redactor, str(path), {_name_key(entry.name) for entry in folder.iterdir()})
         write_atomic(folder / name, clean)
         event = ledger.append(ws, actor, "report.ingested", {
             "execution": from_execution, "format": fmt, "kind": summary.kind, "total": total, "file": "ingested/" + name,

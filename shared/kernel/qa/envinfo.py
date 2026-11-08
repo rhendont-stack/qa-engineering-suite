@@ -1,4 +1,4 @@
-"""Facts about the machine a run happens on: platform, Python and the versions of the tools the suite knows."""
+"""Facts about the machine a run happens on: platform, Python, CPU count, memory and the versions of known tools."""
 from __future__ import annotations
 
 import os
@@ -18,12 +18,23 @@ _UNKNOWN = "unknown"  # the tool exists but gave no version; None means it is mi
 _cached: Optional[dict] = None
 
 
-def host_facts() -> Dict[str, str]:
+def _memory_bytes() -> Optional[int]:
+    """Physical memory, or None where the OS cannot say."""
+    try:
+        pages, page_size = os.sysconf("SC_PHYS_PAGES"), os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):  # no sysconf on this platform, a failed call, an unknown name
+        return None
+    return pages * page_size if pages > 0 and page_size > 0 else None
+
+
+def host_facts() -> dict:
     """What the interpreter knows without starting a process."""
     return {
         "platform": "%s-%s" % (sys.platform, platform.machine().lower()),
         "python": platform.python_version(),
         "implementation": platform.python_implementation(),
+        "cpu_count": os.cpu_count(),
+        "memory_bytes": _memory_bytes(),
     }
 
 

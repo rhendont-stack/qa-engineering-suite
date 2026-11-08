@@ -29,10 +29,22 @@ def _unsafe(name: object) -> bool:
     return ".." in re.split(r"[/\\]", name)
 
 
+def _is_regular(path: Path) -> bool:
+    """``lstat``, because opening anything else can hang (a FIFO) or never end (a symlink to ``/dev/zero``)."""
+    return stat.S_ISREG(os.lstat(path).st_mode)
+
+
+def read_regular(path: Path) -> bytes:
+    """``path``'s bytes. Anything but a regular file is an ``OSError``: ``read_bytes`` on a device grows without end."""
+    if not _is_regular(path):
+        raise OSError("not a regular file: %s" % path)
+    return path.read_bytes()
+
+
 def _difference(path: Path, expected: str) -> Optional[str]:
     """``missing`` or ``modified`` when the file at ``path`` is not the recorded one, otherwise None."""
     try:
-        return None if sha256_file(path) == expected else "modified"
+        return None if _is_regular(path) and sha256_file(path) == expected else "modified"
     except (FileNotFoundError, NotADirectoryError):
         return "missing"
     except OSError:
@@ -101,7 +113,7 @@ def kernel_files(kernel_dir: Path) -> List[Path]:
         directories[:] = [d for d in directories if d != "__pycache__"]
         for name in names:
             path = Path(folder) / name
-            if not name.endswith(".pyc") and path != kernel_dir / MANIFEST and stat.S_ISREG(os.lstat(path).st_mode):
+            if not name.endswith(".pyc") and path != kernel_dir / MANIFEST and _is_regular(path):
                 found.append(path)
     return sorted(found, key=lambda p: p.relative_to(kernel_dir).as_posix())
 
@@ -140,7 +152,7 @@ def kernel_integrity(kernel_dir: Optional[Path] = None) -> dict:
         "manifest_sha256": None, "modified": [], "missing": [], "extra": [],
     }
     try:
-        raw = (kernel_dir / MANIFEST).read_bytes()
+        raw = read_regular(kernel_dir / MANIFEST)
     except FileNotFoundError:
         return report
     except OSError:

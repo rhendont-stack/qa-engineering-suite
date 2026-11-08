@@ -82,9 +82,11 @@
         "platform": {"type": "string"},
         "python": {"type": "string"},
         "implementation": {"type": "string"},
+        "cpu_count": {"type": ["integer", "null"]},
+        "memory_bytes": {"type": ["integer", "null"]},
         "tools": {"type": "object", "additionalProperties": {"type": ["string", "null"]}}
       },
-      "required": ["class", "platform", "python", "implementation", "tools"],
+      "required": ["class", "platform", "python", "implementation", "cpu_count", "memory_bytes", "tools"],
       "additionalProperties": false
     },
     "evidence_manifest": {

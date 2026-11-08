@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import qa
-from helpers import WRITE_JUNIT, req
+from helpers import WHOLE_READ_SAFE, WRITE_JUNIT, finishes, replace_file, req
 from qa import authz, canonical, config, envinfo, execution, ids, ingest, integrity, ledger, schema, state, workspace
 from qa.errors import QaError
 
@@ -225,7 +225,8 @@ def _execution_data(exe_id, **changes):
         "id": exe_id, "command": {"argv": ["t"], "shell": False, "cwd": "."},
         "started_at": TS, "ended_at": TS, "duration_ms": 0, "exit_code": 0, "signal": None, "timed_out": False,
         "git": None,
-        "environment": {"class": "local", "platform": "p", "python": "3", "implementation": "CPython", "tools": {}},
+        "environment": {"class": "local", "platform": "p", "python": "3", "implementation": "CPython",
+                        "cpu_count": 8, "memory_bytes": None, "tools": {}},
         "environment_id": "local", "env_names": [], "env_values": {}, "isolation": "host",
         "evidence_manifest": None, "reports": [], "report": None,
         "status": "passed", "reason": None, "strength": "exit_code", "anomalies": [], "classification": "deterministic",
@@ -1412,6 +1413,14 @@ def test_tampered_manifest_reads_attested(trusted, actor, base_run):
     assert execution.ingest_file(trusted, actor, "junit", stored, from_execution=base_run["execution"])["strength"] == "attested"
 
 
+@pytest.mark.parametrize("how", WHOLE_READ_SAFE)
+def test_a_manifest_that_is_not_a_regular_file_reads_attested(trusted, actor, tmp_path, base_run, how):
+    stored = _dir(trusted, base_run) / "reports" / "junit.xml"
+    replace_file(_dir(trusted, base_run) / "manifest.json", how, tmp_path)
+    out = finishes(lambda: execution.ingest_file(trusted, actor, "junit", stored, from_execution=base_run["execution"]))
+    assert out["strength"] == "attested"
+
+
 def test_missing_manifest_reads_attested(trusted, actor, base_run):
     stored = _dir(trusted, base_run) / "reports" / "junit.xml"
     (_dir(trusted, base_run) / "manifest.json").unlink()
@@ -1830,3 +1839,74 @@ def test_an_ingested_report_name_is_escaped_when_the_os_answers_with_such_a_name
     _basename_is_odd(monkeypatch)
     execution.ingest_file(trusted, actor, "junit", other, from_execution=base_run["execution"])
     assert _record(trusted, base_run)["ingested"][0]["file"] == "ingested/" + ODD_RECORDED + ".xml"
+
+
+# --------------------------------------------------------------------------- reports that may be one file on disk
+
+FAIL_XML = '<testsuite><testcase classname="c" name="a"><failure/></testcase></testsuite>'
+NFC_NAME, NFD_NAME = "résultat.xml", "résultat.xml"
+# Each pair is one file on a filesystem that ignores normalization and folds case in full, as APFS does.
+ONE_FILE_ON_SOME_FILESYSTEMS = [(NFC_NAME, NFD_NAME), ("J.xml", "j.xml"), ("straße.xml", "strasse.xml"),
+                                ("ﬁle.xml", "file.xml"), ("ſ.xml", "s.xml"), ("ς.xml", "σ.xml")]
+WRITE_TWO_REPORTS = ("import os, pathlib, sys; evidence, first, second, failing, passing = sys.argv[1:6]; "
+                     "os.mkdir(evidence + '/a'); os.mkdir(evidence + '/b'); "
+                     "pathlib.Path(evidence, 'a', first).write_text(failing); pathlib.Path(evidence, 'b', second).write_text(passing)")
+
+
+def _two_reports(ws, actor, py, first, second):
+    """A failing report in a/ and a passing one in b/, both matched by one pattern."""
+    return _run(ws, actor, py, WRITE_TWO_REPORTS, "{evidence}", first, second, FAIL_XML, PASS_XML,
+                reports=(("junit", "{evidence}/*/*.xml"),))
+
+
+def _suffixed(name):
+    stem, extension = os.path.splitext(name)
+    return "%s-2%s" % (stem, extension)
+
+
+@pytest.fixture
+def normalization_insensitive(tmp_path):
+    """Skips where the filesystem tells the NFC and NFD spellings of a name apart."""
+    (tmp_path / NFC_NAME).touch()
+    if not (tmp_path / NFD_NAME).exists():
+        pytest.skip("this filesystem tells normalization forms apart")
+
+
+def test_a_failing_report_is_not_lost_to_a_name_differing_only_by_normalization(trusted, actor, py, normalization_insensitive):
+    r = _two_reports(trusted, actor, py, NFC_NAME, NFD_NAME)
+    assert (r["status"], r["tests"]["total"], r["tests"]["failed"]) == ("failed", 2, 1)
+    assert {(item["test_id"], item["status"]) for item in state.load(trusted)["results"].values()} == {("c::a", "failed"), ("c::t", "passed")}
+    assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+@pytest.mark.parametrize("first, second", ONE_FILE_ON_SOME_FILESYSTEMS)
+def test_reports_that_may_be_one_file_are_stored_apart(trusted, actor, py, first, second):
+    r = _two_reports(trusted, actor, py, first, second)
+    assert _record(trusted, r)["reports"][0]["files"] == ["reports/" + first, "reports/" + _suffixed(second)]
+    assert (r["status"], r["tests"]["total"], r["tests"]["failed"]) == ("failed", 2, 1)
+    assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+@pytest.mark.parametrize("first, second", ONE_FILE_ON_SOME_FILESYSTEMS)
+def test_ingested_reports_that_may_be_one_file_are_kept_apart(trusted, actor, tmp_path, base_run, first, second):
+    for folder, name in (("a", first), ("b", second)):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / name).write_text(PASS_XML)
+        execution.ingest_file(trusted, actor, "junit", tmp_path / folder / name, from_execution=base_run["execution"])
+    assert [item["file"] for item in _record(trusted, base_run)["ingested"]] == ["ingested/" + first, "ingested/" + _suffixed(second)]
+
+
+# --------------------------------------------------------------------------- CPU count and memory (T14-R22)
+
+def _host_facts(environment):
+    return {key: environment[key] for key in ("cpu_count", "memory_bytes")}
+
+
+def test_a_run_records_the_cpu_count_and_memory(trusted, actor, py):
+    r = _run(trusted, actor, py, "pass")
+    assert _host_facts(_record(trusted, r)["environment"]) == _host_facts(envinfo.host_facts())
+
+
+def test_a_blocked_run_records_the_cpu_count_and_memory(trusted, actor):
+    r = execution.execute(trusted, actor, execution.RunRequest(command=["git", "push"]))
+    assert r["status"] == "blocked" and _host_facts(_record(trusted, r)["environment"]) == _host_facts(envinfo.host_facts())

@@ -6,7 +6,7 @@ import shutil
 
 import pytest
 
-from helpers import KERNEL, WRITE_JUNIT, req
+from helpers import KERNEL, NOT_A_REGULAR_FILE, WHOLE_READ_SAFE, WRITE_JUNIT, finishes, replace_file, req
 from qa import canonical, execution, ids, integrity, ledger, state
 
 
@@ -250,6 +250,40 @@ def test_malformed_manifest_line_is_modified(kernel, bad):
 def test_manifest_with_an_undecodable_line_is_modified(kernel):
     (kernel / "MANIFEST.sha256").write_bytes(b"\xff\xfe\n")
     assert integrity.kernel_integrity(kernel)["modified"] == ["MANIFEST.sha256"]
+
+
+# --------------------------------------------------------------------------- what stands at a recorded path
+
+@pytest.mark.parametrize("name", ["stdout.log", "reports/junit.xml", "manifest.json"])
+@pytest.mark.parametrize("how", sorted(NOT_A_REGULAR_FILE))
+def test_a_recorded_file_that_is_no_longer_a_regular_file_is_modified(trusted, run, tmp_path, name, how):
+    replace_file(_dir(trusted, run) / name, how, tmp_path)
+    problems = finishes(lambda: integrity.verify_evidence(trusted, state.load(trusted)))
+    assert _kinds(problems) == {("modified", run["execution"] + "/" + name)}
+
+
+@pytest.mark.parametrize("how", sorted(NOT_A_REGULAR_FILE))
+def test_an_ingested_copy_that_is_no_longer_a_regular_file_is_modified(trusted, actor, run, tmp_path, how):
+    stored = _dir(trusted, run) / "reports" / "junit.xml"
+    execution.ingest_file(trusted, actor, "junit", stored, from_execution=run["execution"])
+    replace_file(_dir(trusted, run) / "ingested" / "junit.xml", how, tmp_path)
+    problems = finishes(lambda: integrity.verify_evidence(trusted, state.load(trusted)))
+    assert _kinds(problems) == {("modified", run["execution"] + "/ingested/junit.xml")}
+
+
+def test_a_file_under_a_directory_that_became_a_file_is_missing(trusted, run):
+    reports = _dir(trusted, run) / "reports"
+    shutil.rmtree(str(reports))
+    reports.write_text("x")
+    assert _kinds(integrity.verify_evidence(trusted, state.load(trusted))) == {("missing", run["execution"] + "/reports/junit.xml")}
+
+
+@pytest.mark.parametrize("how", WHOLE_READ_SAFE)
+def test_a_kernel_manifest_that_is_not_a_regular_file_is_modified(kernel, tmp_path, how):
+    integrity.write_manifest(kernel)
+    replace_file(kernel / "MANIFEST.sha256", how, tmp_path)
+    report = finishes(lambda: integrity.kernel_integrity(kernel))
+    assert (report["status"], report["modified"], report["manifest_sha256"]) == ("modified", ["MANIFEST.sha256"], None)
 
 
 # --------------------------------------------------------------------------- problems

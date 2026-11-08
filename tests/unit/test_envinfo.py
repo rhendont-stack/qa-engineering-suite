@@ -112,7 +112,7 @@ def test_host_facts_start_no_process(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", refuse)
     facts = envinfo.host_facts()
-    assert set(facts) == {"platform", "python", "implementation"}
+    assert set(facts) == {"platform", "python", "implementation", "cpu_count", "memory_bytes"}
     assert facts["python"] == platform.python_version() and facts["implementation"] == platform.python_implementation()
 
 
@@ -122,5 +122,53 @@ def test_platform_is_sys_platform_and_lower_machine():
 
 def test_fingerprint_has_the_host_facts_and_tools():
     fingerprint = envinfo.environment_fingerprint()
-    assert set(fingerprint) == {"platform", "python", "implementation", "tools"}
-    assert {k: fingerprint[k] for k in ("platform", "python", "implementation")} == envinfo.host_facts()
+    assert set(fingerprint) == {"platform", "python", "implementation", "cpu_count", "memory_bytes", "tools"}
+    assert {k: fingerprint[k] for k in envinfo.host_facts()} == envinfo.host_facts()
+
+
+# --------------------------------------------------------------------------- CPU count and memory (T14-R22)
+
+def _sysconf(monkeypatch, **answers):
+    """``os.sysconf`` answers from ``answers``, raising the ones that are exceptions."""
+    def fake(name):
+        if isinstance(answers[name], Exception):
+            raise answers[name]
+        return answers[name]
+
+    monkeypatch.setattr(os, "sysconf", fake)
+
+
+def test_cpu_count_is_what_the_os_says(monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    assert envinfo.host_facts()["cpu_count"] == 8
+
+
+def test_cpu_count_can_be_unknown(monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert envinfo.host_facts()["cpu_count"] is None
+
+
+def test_memory_is_physical_pages_times_page_size(monkeypatch):
+    _sysconf(monkeypatch, SC_PHYS_PAGES=1000, SC_PAGE_SIZE=4096)
+    assert envinfo.host_facts()["memory_bytes"] == 4096000
+
+
+@pytest.mark.parametrize("pages, size", [
+    (ValueError("unknown name"), 4096), (1000, ValueError("unknown name")),
+    (OSError(22, "invalid"), 4096), (1000, OSError(22, "invalid")),
+    (0, 4096), (-1, 4096), (1000, 0), (1000, -1), (-1, -1),
+])
+def test_memory_is_null_when_the_os_cannot_say(monkeypatch, pages, size):
+    _sysconf(monkeypatch, SC_PHYS_PAGES=pages, SC_PAGE_SIZE=size)
+    assert envinfo.host_facts()["memory_bytes"] is None
+
+
+def test_memory_is_null_without_sysconf(monkeypatch):
+    monkeypatch.delattr(os, "sysconf")
+    assert envinfo.host_facts()["memory_bytes"] is None
+
+
+def test_the_real_host_answers_with_a_positive_integer_or_null():
+    facts = envinfo.host_facts()
+    for value in (facts["cpu_count"], facts["memory_bytes"]):
+        assert value is None or (type(value) is int and value > 0)
