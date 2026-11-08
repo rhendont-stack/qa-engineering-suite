@@ -141,6 +141,7 @@ tests.unit.test_tools (9)
 - **Mutation testing of the kernel.** Deferred to milestone 3 (deviation 24).
 - **CI workflow.** The 2x2 matrix in `.github/workflows/ci.yml` has never run, because nothing is pushed. Its cells are `ubuntu-latest` (x86_64) and `macos-latest` (arm64), each with Python 3.9 and 3.15, plus an `l0` job on `ubuntu-latest` with 3.15. The only check so far is actionlint 1.7.12.
 - **Linux architecture.** The Linux legs ran on arm64 only, in local containers limited to 2 CPUs and 2 GB of memory. The CI cells are x86_64.
+- **What the ledger's environment fields describe.** The `environment` and `isolation` fields of each `execution.recorded` event describe the macOS host and the interpreter that launched `qa`, not the interpreter or container under test. They read `darwin-arm64`, Python 3.9.6 and `host` on all nine executions, including the CPython 3.15 and Linux legs, so they differ from the row labels above. Each leg's operating system and interpreter are established by its recorded command (the virtual environment path or the image digest) and by the D4 installs below. For the macOS 3.15 leg, that recorded path is the only ledger link to its interpreter, and no stored artifact of that leg records the version.
 - **Network use inside Docker.** The two Linux installs, EXE-01M6YBPYJFRKGHWT6TPPVFZS89 and EXE-01M6YCNP3NAMGDPF2FTF9FWJ50, reached PyPI from inside the container, where the guard cannot see it. Milestone 2's `--container` runs make container network policy explicit. The test legs used `--network=none`.
 
 ## Approvals
