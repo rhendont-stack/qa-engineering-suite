@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import shlex
 import shutil
 import stat
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -849,7 +851,8 @@ def test_a_file_already_in_reports_keeps_its_name_when_another_shares_it(trusted
 
 
 def test_a_report_that_cannot_be_stored_is_invalid_not_a_crash(trusted, actor, py):
-    r = _run(trusted, actor, py, WRITE_FILES, PASS_XML, "{evidence}/reports", reports=(("junit", "{evidence}/reports"),))
+    code = "import os, pathlib, sys; os.makedirs(sys.argv[1] + '/reports/j.xml'); pathlib.Path(sys.argv[1], 'j.xml').write_text(sys.argv[2])"
+    r = _run(trusted, actor, py, code, "{evidence}", PASS_XML, reports=(("junit", "{evidence}/j.xml"),))
     assert (r["status"], r["reason"]) == ("inconclusive", "report_invalid")
     assert _record(trusted, r)["reports"][0]["files"] == [] and any("could not be stored" in t for t in r["limitations"])
     assert integrity.verify_evidence(trusted, state.load(trusted)) == []
@@ -1422,3 +1425,408 @@ def test_ingest_into_a_blocked_execution_is_attested_and_verifiable(trusted, act
     assert execution.ingest_file(trusted, actor, "junit", other, from_execution=r["execution"])["strength"] == "attested"
     assert stat.S_IMODE(_dir(trusted, r).stat().st_mode) == 0o700
     assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+# --------------------------------------------------------------------------- T14-R19: undeclared files
+
+STORED = {"command.json", "stdout.log", "stderr.log", "manifest.json"}
+WRITE_UNDER = "import pathlib, sys; [pathlib.Path(sys.argv[1], name).write_text('x') for name in sys.argv[2:]]"
+modes_bind = pytest.mark.skipif(getattr(os, "geteuid", lambda: 0)() == 0, reason="directory modes do not bind this user")
+
+
+def _undeclared(result):
+    return [text for text in result["limitations"] if "undeclared" in text]
+
+
+def _left(ws, result):
+    """Everything in the run's evidence directory, as relative paths."""
+    root = _dir(ws, result)
+    return {p.relative_to(root).as_posix() for p in root.rglob("*")}
+
+
+def test_an_undeclared_file_is_removed_with_one_limitation(trusted, actor, py):
+    r = _run(trusted, actor, py, WRITE_UNDER, "{evidence}", "a.txt", "b.log")
+    assert _left(trusted, r) == STORED
+    notes = _undeclared(r)
+    assert len(notes) == 1 and notes[0].startswith("2 ") and "report pattern" in notes[0]
+    assert _record(trusted, r)["limitations"] == r["limitations"]
+    assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+def test_a_run_that_leaves_nothing_undeclared_adds_no_limitation(trusted, actor, py):
+    assert _undeclared(_run(trusted, actor, py, "pass")) == []
+
+
+def test_a_raw_report_is_removed_and_not_counted(trusted, actor, py):
+    r = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))
+    assert _left(trusted, r) == STORED | {"reports", "reports/junit.xml"} and _undeclared(r) == []
+    assert not any("could not remove" in text for text in r["limitations"])
+
+
+def test_only_the_undeclared_files_are_counted(trusted, actor, py):
+    r = _run(trusted, actor, py, WRITE_FILES, PASS_XML, "{evidence}/j.xml", "{evidence}/other.txt", reports=(("junit", "{evidence}/j.xml"),))
+    assert _left(trusted, r) == STORED | {"reports", "reports/j.xml"}
+    assert len(_undeclared(r)) == 1 and _undeclared(r)[0].startswith("1 ")
+
+
+def test_a_declared_report_too_large_to_store_is_removed_and_not_counted(trusted, actor, py):
+    config.set_value(trusted, actor, "defaults.max_log_mb", 1, APPROVAL)
+    code = "import sys; open(sys.argv[1], 'wb').write(b' ' * (2**20 + 1))"
+    r = _run(trusted, actor, py, code, "{evidence}/big.xml", reports=(("junit", "{evidence}/big.xml"),))
+    assert r["reason"] == "report_invalid" and _left(trusted, r) == STORED and _undeclared(r) == []
+
+
+def test_undeclared_symlinks_are_removed_without_being_followed(trusted, actor, py, tmp_path):
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    (outside / "kept.txt").write_text("kept")
+    (outside / "inner" / "kept.txt").write_text("kept")
+    code = ("import os, sys; os.symlink(sys.argv[2], sys.argv[1] + '/to_file'); os.symlink(sys.argv[3], sys.argv[1] + '/to_dir'); "
+            "os.symlink(sys.argv[2] + '.gone', sys.argv[1] + '/dangling')")
+    r = _run(trusted, actor, py, code, "{evidence}", str(outside / "kept.txt"), str(outside / "inner"))
+    assert _left(trusted, r) == STORED and _undeclared(r)[0].startswith("3 ")
+    assert (outside / "kept.txt").read_text() == "kept" and (outside / "inner" / "kept.txt").read_text() == "kept"
+
+
+def test_nested_undeclared_directories_are_removed(trusted, actor, py):
+    code = ("import os, pathlib, sys; os.makedirs(sys.argv[1] + '/a/b/c'); pathlib.Path(sys.argv[1], 'a/b/c/deep.txt').write_text('x'); "
+            "pathlib.Path(sys.argv[1], 'a/top.txt').write_text('x')")
+    r = _run(trusted, actor, py, code, "{evidence}")
+    assert _left(trusted, r) == STORED and _undeclared(r)[0].startswith("2 ")
+
+
+def test_an_empty_undeclared_directory_is_removed_without_a_limitation(trusted, actor, py):
+    r = _run(trusted, actor, py, "import os, sys; os.makedirs(sys.argv[1] + '/a/b')", "{evidence}")
+    assert _left(trusted, r) == STORED and _undeclared(r) == []
+
+
+def test_an_undeclared_file_under_reports_goes_and_the_stored_copy_stays(trusted, actor, py):
+    code = ("import os, pathlib, sys; os.mkdir(sys.argv[1] + '/reports'); pathlib.Path(sys.argv[1], 'reports/stray.txt').write_text('x'); "
+            "pathlib.Path(sys.argv[1], 'j.xml').write_text(sys.argv[2])")
+    r = _run(trusted, actor, py, code, "{evidence}", PASS_XML, reports=(("junit", "{evidence}/j.xml"),))
+    assert _left(trusted, r) == STORED | {"reports", "reports/j.xml"} and _undeclared(r)[0].startswith("1 ")
+
+
+def test_a_timed_out_run_is_cleared_too(trusted, actor, tmp_path):
+    tool = _stub(tmp_path, "slow-tool", ': > "$1/stray.txt"\nexec sleep 30')
+    r = execution.execute(trusted, actor, execution.RunRequest(command=[tool, "{evidence}"], timeout_s=2), grace_s=0.5)
+    assert r["reason"] == "timeout" and _left(trusted, r) == STORED and _undeclared(r)[0].startswith("1 ")
+
+
+@modes_bind
+def test_a_file_that_cannot_be_removed_is_named(trusted, actor, py, request):
+    code = "import os, pathlib, sys; d = pathlib.Path(sys.argv[1], 'locked'); d.mkdir(); (d / 'stuck.txt').write_text('x'); os.chmod(str(d), 0o500)"
+    r = _run(trusted, actor, py, code, "{evidence}")
+    locked = _dir(trusted, r) / "locked"
+    request.addfinalizer(lambda: locked.chmod(0o700))
+    assert any("locked/stuck.txt" in text and "could not remove" in text for text in r["limitations"])
+    assert (locked / "stuck.txt").exists() and _undeclared(r) == [] and r["status"] == "passed"
+
+
+@modes_bind
+def test_a_directory_that_cannot_be_removed_is_named(trusted, actor, py, request):
+    code = "import os, pathlib, sys; d = pathlib.Path(sys.argv[1], 'closed'); d.mkdir(); (d / 'inside.txt').write_text('x'); os.chmod(str(d), 0)"
+    r = _run(trusted, actor, py, code, "{evidence}")
+    closed = _dir(trusted, r) / "closed"
+    request.addfinalizer(lambda: closed.chmod(0o700))
+    assert any("closed" in text and "could not remove" in text for text in r["limitations"]) and r["status"] == "passed"
+
+
+@pytest.fixture
+def case_insensitive(tmp_path):
+    """Skips where the filesystem tells names apart by case."""
+    (tmp_path / "Probe").touch()
+    if not (tmp_path / "probe").exists():
+        pytest.skip("this filesystem tells names apart by case")
+
+
+def test_a_reports_directory_spelled_in_another_case_keeps_the_stored_copy(trusted, actor, py):
+    code = "import os, pathlib, sys; os.mkdir(sys.argv[1] + '/Reports'); pathlib.Path(sys.argv[1], 'j.xml').write_text(sys.argv[2])"
+    r = _run(trusted, actor, py, code, "{evidence}", PASS_XML, reports=(("junit", "{evidence}/j.xml"),))
+    assert (r["status"], r["strength"]) == ("passed", "structured") and _undeclared(r) == []
+    assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+def test_a_report_matched_in_another_case_is_not_counted(trusted, actor, py, case_insensitive):
+    r = _run(trusted, actor, py, WRITE_FILES, PASS_XML, "{evidence}/J.xml", reports=(("junit", "{evidence}/j.xml"),))
+    assert (r["status"], r["strength"]) == ("passed", "structured") and _undeclared(r) == []
+
+
+# --------------------------------------------------------------------------- T14-R20: a damaged evidence directory
+
+DESTROY_EVIDENCE = {
+    "deleted": "import shutil, sys; shutil.rmtree(sys.argv[1])",
+    "replaced_by_a_file": "import shutil, sys; shutil.rmtree(sys.argv[1]); open(sys.argv[1], 'w').write('x')",
+    "replaced_by_a_symlink": "import os, shutil, sys; shutil.rmtree(sys.argv[1]); os.symlink(sys.argv[2], sys.argv[1])",
+}
+
+
+def _repaired(result):
+    return [text for text in result["limitations"] if "repaired" in text]
+
+
+def _is_private_directory(path):
+    mode = os.lstat(path).st_mode
+    return stat.S_ISDIR(mode) and stat.S_IMODE(mode) == 0o700
+
+
+def _refuse_unlink(monkeypatch, refused):
+    """``os.unlink`` raises for the paths ``refused(path)`` picks."""
+    real = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if refused(os.fspath(path)):
+            raise PermissionError(13, "refused", os.fspath(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+
+
+@pytest.mark.parametrize("how", sorted(DESTROY_EVIDENCE))
+def test_a_destroyed_evidence_directory_is_rebuilt_and_the_run_recorded(trusted, actor, py, tmp_path, how):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    r = _run(trusted, actor, py, DESTROY_EVIDENCE[how], "{evidence}", str(outside), reports=(("junit", "{evidence}/j.xml"),))
+    assert (r["status"], r["reason"]) == ("inconclusive", "report_missing")
+    assert _is_private_directory(_dir(trusted, r)) and _left(trusted, r) == STORED
+    assert len(_repaired(r)) == 1 and _record(trusted, r)["limitations"] == r["limitations"]
+    assert _record(trusted, r)["reports"][0]["error"] == "report_missing"
+    assert list(outside.iterdir()) == [] and integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+def test_a_symlink_planted_as_reports_is_removed_and_never_written_through(trusted, actor, py, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    code = "import os, pathlib, sys; os.symlink(sys.argv[2], sys.argv[1] + '/reports'); pathlib.Path(sys.argv[1], 'j.xml').write_text(sys.argv[3])"
+    r = _run(trusted, actor, py, code, "{evidence}", str(outside), PASS_XML, reports=(("junit", "{evidence}/j.xml"),))
+    assert (r["status"], r["strength"]) == ("passed", "structured")
+    assert _is_private_directory(_dir(trusted, r) / "reports") and (_dir(trusted, r) / "reports" / "j.xml").read_text() == PASS_XML
+    assert list(outside.iterdir()) == [] and len(_repaired(r)) == 1
+
+
+def test_a_report_behind_a_planted_reports_symlink_reads_missing(trusted, actor, py, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    code = "import os, pathlib, sys; os.symlink(sys.argv[2], sys.argv[1] + '/reports'); pathlib.Path(sys.argv[1], 'reports', 'j.xml').write_text(sys.argv[3])"
+    r = _run(trusted, actor, py, code, "{evidence}", str(outside), PASS_XML, reports=(("junit", "{evidence}/reports/j.xml"),))
+    assert (r["status"], r["reason"]) == ("inconclusive", "report_missing")
+    assert (outside / "j.xml").read_text() == PASS_XML and _left(trusted, r) == STORED
+
+
+def test_a_file_planted_as_reports_reads_missing(trusted, actor, py):
+    r = _run(trusted, actor, py, WRITE_FILES, PASS_XML, "{evidence}/reports", reports=(("junit", "{evidence}/reports"),))
+    assert (r["status"], r["reason"]) == ("inconclusive", "report_missing")
+    assert len(_repaired(r)) == 1 and _left(trusted, r) == STORED
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o500, 0])
+def test_a_changed_evidence_directory_mode_is_set_back(trusted, actor, py, mode):
+    code = "import os, pathlib, sys; pathlib.Path(sys.argv[1], 'j.xml').write_text(sys.argv[2]); os.chmod(sys.argv[1], int(sys.argv[3]))"
+    r = _run(trusted, actor, py, code, "{evidence}", PASS_XML, str(mode), reports=(("junit", "{evidence}/j.xml"),))
+    assert (r["status"], r["strength"]) == ("passed", "structured")
+    assert _is_private_directory(_dir(trusted, r)) and len(_repaired(r)) == 1
+
+
+def test_an_untouched_evidence_directory_is_not_reported_as_repaired(trusted, actor, py):
+    assert _repaired(execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))) == []
+
+
+@pytest.mark.parametrize("name", sorted(STORED))
+def test_a_directory_occupying_a_stored_name_is_removed_and_the_file_written(trusted, actor, py, name):
+    code = "import os, pathlib, sys; os.makedirs(sys.argv[1] + '/' + sys.argv[2] + '/inner'); pathlib.Path(sys.argv[1], sys.argv[2], 'inner', 'x').write_text('x')"
+    r = _run(trusted, actor, py, code, "{evidence}", name)
+    assert stat.S_ISREG(os.lstat(_dir(trusted, r) / name).st_mode) and _left(trusted, r) == STORED
+    assert _undeclared(r)[0].startswith("1 ") and r["status"] == "passed"
+    assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+@pytest.mark.parametrize("name", sorted(STORED))
+def test_a_symlink_occupying_a_stored_name_is_replaced_and_never_written_through(trusted, actor, py, tmp_path, name):
+    target = tmp_path / "target.txt"
+    target.write_text("kept")
+    r = _run(trusted, actor, py, "import os, sys; os.symlink(sys.argv[3], sys.argv[1] + '/' + sys.argv[2])", "{evidence}", name, str(target))
+    assert stat.S_ISREG(os.lstat(_dir(trusted, r) / name).st_mode) and target.read_text() == "kept"
+    assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+@modes_bind
+@pytest.mark.parametrize("name", ["stdout.log", "manifest.json"])
+def test_an_unremovable_directory_on_a_stored_name_still_records_the_run(trusted, actor, py, request, name):
+    code = "import os, pathlib, sys; d = pathlib.Path(sys.argv[1], sys.argv[2]); d.mkdir(); (d / 'x').write_text('x'); os.chmod(str(d), 0o500)"
+    r = _run(trusted, actor, py, code, "{evidence}", name)
+    occupied = _dir(trusted, r) / name
+    request.addfinalizer(lambda: occupied.chmod(0o700))
+    assert _record(trusted, r)["status"] == "passed"
+    assert any(name + "/x" in text and "could not remove" in text for text in r["limitations"])
+    assert any(text.startswith(name) and "could not be stored" in text for text in r["limitations"])
+
+
+def test_a_symlink_that_cannot_be_removed_is_never_written_through(trusted, actor, py, tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("kept")
+    evidence_root = str(trusted.path("evidence"))
+    _refuse_unlink(monkeypatch, lambda path: os.path.dirname(path) == evidence_root)
+    code = DESTROY_EVIDENCE["replaced_by_a_symlink"] + "; open(sys.argv[1] + '/j.xml', 'w').write(sys.argv[3])"
+    r = _run(trusted, actor, py, code, "{evidence}", str(outside), PASS_XML, reports=(("junit", "{evidence}/j.xml"),))
+    assert sorted(p.name for p in outside.iterdir()) == ["j.xml", "precious.txt"] and (outside / "precious.txt").read_text() == "kept"
+    assert any("could not be repaired" in text for text in r["limitations"]) and r["reason"] == "report_invalid"
+    assert _record(trusted, r)["reports"][0]["files"] == []
+    assert any(p.kind == "missing" for p in integrity.verify_evidence(trusted, state.load(trusted)))
+
+
+def test_a_reports_symlink_that_cannot_be_removed_is_never_written_through(trusted, actor, py, tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _refuse_unlink(monkeypatch, lambda path: os.path.basename(path) == "reports")
+    code = "import os, pathlib, sys; os.symlink(sys.argv[2], sys.argv[1] + '/reports'); pathlib.Path(sys.argv[1], 'j.xml').write_text(sys.argv[3])"
+    r = _run(trusted, actor, py, code, "{evidence}", str(outside), PASS_XML, reports=(("junit", "{evidence}/j.xml"),))
+    assert (r["status"], r["reason"]) == ("inconclusive", "report_invalid") and list(outside.iterdir()) == []
+    assert any("reports" in text and "could not remove" in text for text in r["limitations"])
+
+
+def test_a_tree_too_deep_for_the_interpreter_still_records_the_run(trusted, actor, py):
+    code = "import os, sys; os.makedirs(sys.argv[1] + '/a' * int(sys.argv[2]))"
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(len(inspect.stack()) + 200)
+    try:
+        r = _run(trusted, actor, py, code, "{evidence}", "300", reports=(("junit", "{evidence}/**/*.xml"),))
+    finally:
+        sys.setrecursionlimit(limit)
+    assert (r["status"], r["reason"]) == ("inconclusive", "report_missing") and _left(trusted, r) == STORED
+
+
+# --------------------------------------------------------------------------- T14-R21: text UTF-8 cannot encode
+
+ODD = "a\udcffb"
+ODD_RECORDED = "a\\udcffb"
+
+
+@pytest.fixture
+def byte_names(tmp_path):
+    """Skips where the filesystem refuses a file name that is not UTF-8, as APFS does."""
+    probe = os.fsencode(tmp_path) + b"/probe\xff"
+    try:
+        os.close(os.open(probe, os.O_CREAT | os.O_WRONLY, 0o600))
+    except OSError:
+        pytest.skip("this filesystem refuses file names that are not UTF-8")
+    os.unlink(probe)
+
+
+def _basename_is_odd(monkeypatch, name=ODD + ".xml"):
+    """``os.path.basename`` answers as the OS would for a file whose name is not UTF-8."""
+    real = os.path.basename
+    monkeypatch.setattr(os.path, "basename", lambda p: name if str(p).endswith("raw.xml") else real(p))
+
+
+@pytest.mark.parametrize("field, code", [("argv", "invalid_command"), ("shell", "invalid_command"), ("pattern", "invalid_command"),
+                                         ("attempt_of", "invalid_command"), ("cwd", "invalid_cwd")])
+def test_request_text_utf8_cannot_encode_is_refused_before_anything_runs(trusted, actor, py, tmp_path, field, code):
+    marker = tmp_path / "ran"
+    command = py.argv(_touch(marker))
+    changes = {
+        "argv": {"command": command + [ODD]},
+        "shell": {"command": shlex.join(command + [ODD]), "shell": True},
+        "pattern": {"command": command, "reports": (("junit", ODD + ".xml"),)},
+        "attempt_of": {"command": command, "attempt_of": ODD},
+        "cwd": {"command": command, "cwd": ODD},
+    }[field]
+    before = len(ledger.iter_all_events(trusted))
+    assert _refusal(trusted, actor, **changes).code == code and not marker.exists()
+    assert len(ledger.iter_all_events(trusted)) == before
+
+
+def test_a_cwd_utf8_cannot_encode_is_refused_on_a_filesystem_that_allows_it(trusted, actor, py, byte_names):
+    os.mkdir(os.fsencode(trusted.root) + b"/a\xffb")
+    assert _refusal(trusted, actor, command=py.argv("pass"), cwd=ODD).code == "invalid_cwd"
+
+
+def test_a_cwd_utf8_cannot_encode_is_refused_even_when_the_directory_exists(trusted, actor, py, monkeypatch):
+    real = os.path.isdir
+    monkeypatch.setattr(os.path, "isdir", lambda path: str(path).endswith(ODD) or real(path))
+    refusal = _refusal(trusted, actor, command=py.argv("pass"), cwd=ODD)
+    assert refusal.code == "invalid_cwd" and refusal.details["cwd"] == ODD_RECORDED
+
+
+def test_env_names_are_recorded_with_backslashreplace(trusted, actor, py):
+    r = _run(trusted, actor, py, "pass", environ={**os.environ, "QA_" + ODD: "x"})
+    names = _record(trusted, r)["env_names"]
+    assert "QA_" + ODD_RECORDED in names and names == sorted(names)
+
+
+def test_env_values_are_recorded_with_backslashreplace(trusted, actor, py):
+    r = _run(trusted, actor, py, "pass", environ={**os.environ, "CI": ODD, "NODE_ENV": ODD})
+    assert _record(trusted, r)["env_values"] == {"CI": ODD_RECORDED, "NODE_ENV": ODD_RECORDED}
+
+
+def test_the_recorded_cwd_is_escaped_when_a_symlink_leads_to_such_a_name(trusted, actor, py, byte_names):
+    os.mkdir(os.fsencode(trusted.root) + b"/a\xffb")
+    (trusted.root / "link").symlink_to(os.fsdecode(b"a\xffb"))
+    assert _record(trusted, _run(trusted, actor, py, "pass", cwd="link"))["command"]["cwd"] == ODD_RECORDED
+
+
+def test_the_recorded_cwd_is_escaped_when_the_os_answers_with_such_a_name(trusted, actor, py, monkeypatch):
+    real = os.path.relpath
+    monkeypatch.setattr(os.path, "relpath", lambda path, start=None: ODD if path == start else real(path, start))
+    assert _record(trusted, _run(trusted, actor, py, "pass"))["command"]["cwd"] == ODD_RECORDED
+
+
+def test_a_stored_report_name_is_escaped_on_a_filesystem_that_allows_it(trusted, actor, py, byte_names):
+    code = "import os, sys; fd = os.open(os.fsencode(sys.argv[1]) + b'/a\\xffb.xml', os.O_CREAT | os.O_WRONLY); os.write(fd, sys.argv[2].encode()); os.close(fd)"
+    r = _run(trusted, actor, py, code, "{evidence}", PASS_XML, reports=(("junit", "{evidence}/*.xml"),))
+    name = ODD_RECORDED + ".xml"
+    assert (r["status"], r["strength"]) == ("passed", "structured") and "reports/" + name in _manifest(trusted, r)
+    assert (_dir(trusted, r) / "reports" / name).exists() and integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+def test_a_stored_report_name_is_escaped_when_the_os_answers_with_such_a_name(trusted, actor, py, monkeypatch):
+    _basename_is_odd(monkeypatch)
+    r = _run(trusted, actor, py, WRITE_FILES, PASS_XML, "{evidence}/raw.xml", reports=(("junit", "{evidence}/raw.xml"),))
+    name = ODD_RECORDED + ".xml"
+    assert (r["status"], r["strength"]) == ("passed", "structured") and "reports/" + name in _manifest(trusted, r)
+    assert (_dir(trusted, r) / "reports" / name).exists() and _record(trusted, r)["reports"][0]["files"] == ["reports/" + name]
+    assert integrity.verify_evidence(trusted, state.load(trusted)) == []
+
+
+def test_a_secret_holding_such_text_is_redacted_from_a_stored_report_name(trusted, actor, py, monkeypatch):
+    secret = "hunter22" + "\udcff"
+    _basename_is_odd(monkeypatch, secret + ".xml")
+    r = _run(trusted, actor, py, WRITE_FILES, PASS_XML, "{evidence}/raw.xml", reports=(("junit", "{evidence}/raw.xml"),),
+             environ={**os.environ, "API_TOKEN": secret})
+    assert (r["status"], r["strength"]) == ("passed", "structured")
+    assert not any("hunter22" in name for name in _manifest(trusted, r))
+
+
+def test_a_limitation_naming_such_a_report_is_escaped_too(trusted, actor, py, monkeypatch):
+    config.set_value(trusted, actor, "defaults.max_log_mb", 1, APPROVAL)
+    _basename_is_odd(monkeypatch)
+    code = "import sys; open(sys.argv[1], 'wb').write(b' ' * (2**20 + 1))"
+    r = _run(trusted, actor, py, code, "{evidence}/raw.xml", reports=(("junit", "{evidence}/raw.xml"),))
+    assert r["reason"] == "report_invalid" and any(ODD_RECORDED in text for text in _record(trusted, r)["limitations"])
+
+
+def test_a_secret_holding_such_text_is_redacted_from_a_limitation_naming_the_report(trusted, actor, py, monkeypatch):
+    config.set_value(trusted, actor, "defaults.max_log_mb", 1, APPROVAL)
+    secret = "hunter22" + "\udcff"
+    _basename_is_odd(monkeypatch, secret + ".xml")
+    code = "import sys; open(sys.argv[1], 'wb').write(b' ' * (2**20 + 1))"
+    r = _run(trusted, actor, py, code, "{evidence}/raw.xml", reports=(("junit", "{evidence}/raw.xml"),),
+             environ={**os.environ, "API_TOKEN": secret})
+    assert r["reason"] == "report_invalid" and any("over the defaults.max_log_mb" in text for text in r["limitations"])
+    assert not any("hunter22" in text for text in _record(trusted, r)["limitations"])
+
+
+def test_an_ingested_report_name_is_escaped_on_a_filesystem_that_allows_it(trusted, actor, tmp_path, base_run, byte_names):
+    raw = os.fsencode(tmp_path) + b"/a\xffb.xml"
+    with open(raw, "w") as handle:
+        handle.write(PASS_XML)
+    execution.ingest_file(trusted, actor, "junit", os.fsdecode(raw), from_execution=base_run["execution"])
+    assert _record(trusted, base_run)["ingested"][0]["file"] == "ingested/" + ODD_RECORDED + ".xml"
+
+
+def test_an_ingested_report_name_is_escaped_when_the_os_answers_with_such_a_name(trusted, actor, tmp_path, base_run, monkeypatch):
+    other = tmp_path / "raw.xml"
+    other.write_text(PASS_XML)
+    _basename_is_odd(monkeypatch)
+    execution.ingest_file(trusted, actor, "junit", other, from_execution=base_run["execution"])
+    assert _record(trusted, base_run)["ingested"][0]["file"] == "ingested/" + ODD_RECORDED + ".xml"

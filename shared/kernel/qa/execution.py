@@ -5,8 +5,9 @@
 1-4. ``_gate``: guard, config drift, authorization and attempt rules. All of them run, so
      ``status.decide`` applies rule 1's order whatever the combination. A run stopped here has
      no evidence directory and is recorded by ``_record_blocked``.
-5-9. ``_run_command``: create the evidence directory, snapshot the declared reports, run,
-     redact and store what came out, decide the status, record the execution and its results.
+5-9. ``_run_command``: create the evidence directory, snapshot the declared reports, run, repair
+     what the tool did to the directory, redact and store the reports, remove anything undeclared,
+     store the logs, decide the status, record the execution and its results.
 
 Everything stored or recorded goes through one redactor built from the run's own environment,
 and is hashed after redaction.
@@ -20,7 +21,7 @@ import shlex
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
+from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
 
 from . import (KERNEL_VERSION, authz, config, envinfo, gitinfo, guard, ids, ingest, integrity, ledger, redact, runner,
                schema, state, status, vocab)
@@ -39,6 +40,15 @@ _UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production":
 _MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
+
+
+def _recordable(text: str) -> str:
+    """Text the OS hands over can hold surrogate escapes (non-UTF-8 bytes), which the ledger cannot store (T14-R21)."""
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _encodable(text: str) -> bool:
+    return text == _recordable(text)
 
 
 @dataclass(frozen=True)
@@ -79,6 +89,7 @@ class _Run:
         return self.cfg["defaults"]["max_log_mb"] * _MIB
 
     def note(self, text: str) -> None:
+        text = _recordable(self.redactor.text(text)[0])  # a limitation can name a file; in the same order as _stored_name
         if text not in self.limitations:
             self.limitations.append(text)
 
@@ -134,6 +145,9 @@ def _check_request(req: RunRequest) -> None:
             raise ingest.ReportInvalid("unknown_format", format=fmt)
     if len({ingest.FORMAT_KINDS[fmt] for fmt, _pattern in req.reports}) > 1:
         raise QaError("kind_mismatch", "one request cannot mix test reports and alert reports")
+    argv = [command] if isinstance(command, str) else command
+    if not all(map(_encodable, argv + [pattern for _fmt, pattern in req.reports] + [req.attempt_of or ""])):
+        raise QaError("invalid_command", "a command that cannot be recorded must not run: it holds text UTF-8 cannot encode")
 
 
 def _resolve_cwd(ws: Workspace, cwd: Optional[Path]) -> Tuple[str, str]:
@@ -141,12 +155,12 @@ def _resolve_cwd(ws: Workspace, cwd: Optional[Path]) -> Tuple[str, str]:
     root = os.path.realpath(str(ws.root))
     try:
         where = root if cwd is None else os.path.realpath(os.path.join(root, str(cwd)))
-        inside = os.path.isdir(where) and os.path.commonpath([root, where]) == root
+        inside = _encodable(str(cwd)) and os.path.isdir(where) and os.path.commonpath([root, where]) == root
     except ValueError:  # a NUL in the path
         inside = False
     if not inside:
-        raise QaError("invalid_cwd", "cwd must be an existing directory inside the workspace", cwd=str(cwd))
-    return where, Path(os.path.relpath(where, root)).as_posix()
+        raise QaError("invalid_cwd", "cwd must be an existing directory inside the workspace", cwd=_recordable(str(cwd)))
+    return where, _recordable(Path(os.path.relpath(where, root)).as_posix())  # a symlink can lead to any name
 
 
 def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Optional[Mapping[str, str]] = None,
@@ -295,8 +309,8 @@ def _execution_data(run: _Run, gate: _Gate, verdict: status.StatusDecision, fact
     return dict(
         facts,
         id=run.execution_id, command=run.command, git=gate.git, environment_id=req.environment,
-        env_names=sorted(run.environ),
-        env_values={name: run.environ[name] for name in _ENV_VALUE_NAMES if name in run.environ},
+        env_names=sorted(_recordable(name) for name in run.environ),
+        env_values={name: _recordable(run.environ[name]) for name in _ENV_VALUE_NAMES if name in run.environ},
         isolation="host", status=verdict.status, reason=verdict.reason, strength=verdict.strength,
         anomalies=list(verdict.anomalies), classification=verdict.classification,
         authorization=gate.authorization, authorizations=gate.authorizations, activity=req.activity, scope=req.scope,
@@ -327,6 +341,116 @@ def _record_blocked(run: _Run, gate: _Gate) -> _Recorded:
     return _Recorded(verdict, None, None, clean["limitations"])
 
 
+# --------------------------------------------------------------------------- the evidence directory
+
+def _real_directory(path: Path) -> bool:
+    """``lstat`` sees a symlink a tool planted instead of following it."""
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _unlink_unless_a_directory(path: Path) -> bool:
+    """True when something other than a real directory stood at ``path`` and is now gone."""
+    if _real_directory(path) or not os.path.lexists(path):
+        return False
+    os.unlink(path)
+    return True
+
+
+def _repair_evidence(run: _Run, directory: Path) -> None:
+    """Whatever the tool did to the directory it was given, the run is still recorded (T14-R20)."""
+    repairs = []
+    try:
+        replaced = _unlink_unless_a_directory(directory)
+        if not os.path.lexists(directory):
+            directory.mkdir(mode=0o700, parents=True)
+            repairs.append("it was replaced" if replaced else "it was deleted")
+        if stat.S_IMODE(os.lstat(directory).st_mode) != 0o700:
+            os.chmod(directory, 0o700)
+            repairs.append("its mode was changed")
+        if _unlink_unless_a_directory(directory / "reports"):
+            repairs.append("reports was not a directory")
+    except OSError as exc:
+        run.note("the evidence directory could not be repaired after the run (%s)" % type(exc).__name__)
+    if repairs:
+        run.note("the evidence directory was repaired after the run: %s" % ", ".join(repairs))
+
+
+def _identities(paths: Iterable[Union[str, Path]]) -> Set[Tuple[int, int]]:
+    """What the paths are on disk. A name would not do: some filesystems ignore case or normalization."""
+    found = set()
+    for path in paths:
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue
+        found.add((info.st_dev, info.st_ino))
+    return found
+
+
+def _everything_under(root: str) -> List[str]:
+    """Every entry below ``root``, each after what it holds. Symlinks are not entered, and depth is no limit."""
+    found: List[str] = []
+    folders = [root]
+    while folders:
+        try:
+            with os.scandir(folders.pop()) as entries:
+                for entry in entries:
+                    found.append(entry.path)
+                    if entry.is_dir(follow_symlinks=False):
+                        folders.append(entry.path)
+        except OSError:  # unreadable: removing it then fails, and that is what gets reported
+            continue
+    return found[::-1]
+
+
+def _clear_evidence(run: _Run, directory: Path, stored: Set[str], declared: Set[str]) -> None:
+    """Keep only the stored copies: a file neither listed nor redacted must not sit in the store (§9.5, T14-R19)."""
+    if not _real_directory(directory):  # a repair that failed: a planted symlink is never walked through
+        return
+    copies = [directory / name for name in stored]
+    keep = _identities(copies + [copy.parent for copy in copies])
+    raw_reports = _identities(declared)
+    undeclared = 0
+    for path in _everything_under(str(directory)):
+        try:
+            info = os.lstat(path)
+            identity = (info.st_dev, info.st_ino)
+            if identity in keep:
+                continue
+            is_file = not stat.S_ISDIR(info.st_mode)  # a symlink to a directory is unlinked, never entered
+            (os.unlink if is_file else os.rmdir)(path)
+        except OSError as exc:
+            name = os.path.relpath(path, str(directory))
+            run.note("could not remove %s from the evidence directory (%s)" % (name, type(exc).__name__))
+            continue
+        if is_file and identity not in raw_reports:
+            undeclared += 1
+    if undeclared:
+        run.note("%d undeclared file(s) removed from the evidence directory; "
+                 "declare a report pattern to keep a file" % undeclared)
+
+
+def _store_file(directory: Path, name: str, data: bytes, media_type: str, redactions: int) -> dict:
+    """Everything a run stores goes through here, so nothing is ever written through a planted symlink (T14-R20)."""
+    target = directory / name
+    if not _real_directory(directory) or os.path.islink(target.parent):
+        raise NotADirectoryError(str(target.parent))
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    write_atomic(target, data)
+    return {"sha256": sha256_bytes(data), "size": len(data), "media_type": media_type, "redactions": redactions}
+
+
+def _store_evidence(run: _Run, directory: Path, manifest: Dict[str, dict], name: str, data: bytes, media_type: str,
+                    redactions: int) -> None:
+    try:
+        manifest[name] = _store_file(directory, name, data, media_type, redactions)
+    except OSError as exc:  # what the tool left there must not stop the run from being recorded (T14-R20)
+        run.note("%s could not be stored (%s)" % (name, type(exc).__name__))
+
+
 # --------------------------------------------------------------------------- report resolution
 
 def _matches(pattern: str, directory: str, cwd: str) -> List[str]:
@@ -335,8 +459,11 @@ def _matches(pattern: str, directory: str, cwd: str) -> List[str]:
     if os.path.lexists(literal):
         candidates = [literal]
     else:  # both directories can hold glob characters: "My [x] Skills" is a legal path
-        candidates = glob.glob(os.path.join(glob.escape(cwd), pattern.replace(EVIDENCE_TOKEN, glob.escape(directory))),
-                               recursive=True)
+        try:
+            candidates = glob.glob(os.path.join(glob.escape(cwd), pattern.replace(EVIDENCE_TOKEN, glob.escape(directory))),
+                                   recursive=True)
+        except RecursionError:  # a tree deeper than the interpreter can walk (T14-R20)
+            candidates = []
     found = set()
     for path in candidates:
         try:
@@ -378,9 +505,9 @@ def _free_name(name: str, taken: Set[str]) -> str:
     return candidate
 
 
-def _store_file(directory: Path, name: str, data: bytes, media_type: str, redactions: int) -> dict:
-    write_atomic(directory / name, data)
-    return {"sha256": sha256_bytes(data), "size": len(data), "media_type": media_type, "redactions": redactions}
+def _stored_name(redactor: redact.Redactor, path: str, taken: Set[str]) -> str:
+    """A report's name in the store: without secrets, recordable (in that order, T14-R21), and not taken yet."""
+    return _free_name(_recordable(redactor.text(os.path.basename(path))[0]), taken)
 
 
 def _read_report(run: _Run, source: str) -> Optional[bytes]:
@@ -395,27 +522,13 @@ def _read_report(run: _Run, source: str) -> Optional[bytes]:
         return None
 
 
-def _discard_raw_reports(run: _Run, directory: Path, sources: List[str], names: Dict[str, str]) -> None:
-    """A tool may write into the evidence directory; its unredacted file must not stay there (§9.5)."""
-    inside = os.path.realpath(str(directory)) + os.sep
-    copies = {os.path.realpath(str(directory / "reports" / name)) for name in names.values()}
-    for source in sources:
-        if source.startswith(inside) and source not in copies:
-            try:
-                os.unlink(source)
-            except OSError as exc:
-                run.note("unredacted report left in the evidence directory: %s (%s)"
-                         % (os.path.basename(source), type(exc).__name__))
-
-
 def _copy_reports(run: _Run, directory: Path, produced: List[List[str]]) -> Tuple[Dict[str, str], Dict[str, dict]]:
     """Store each produced file once, redacted. Returns {source: stored name} and the files' manifest entries."""
     formats: Dict[str, str] = {}
     for (fmt, _pattern), sources in zip(run.req.reports, produced):
         for source in sources:
             formats.setdefault(source, fmt)
-    home = directory / "reports"
-    real_home = os.path.realpath(str(home))
+    real_home = os.path.realpath(str(directory / "reports"))
     names: Dict[str, str] = {}
     manifest: Dict[str, dict] = {}
     taken: Set[str] = set()
@@ -424,16 +537,14 @@ def _copy_reports(run: _Run, directory: Path, produced: List[List[str]]) -> Tupl
         data = _read_report(run, source)
         if data is None:
             continue
-        name = _free_name(run.redactor.text(os.path.basename(source))[0], taken)  # manifest keys stay clean
+        name = _stored_name(run.redactor, source, taken)  # manifest keys stay clean
         clean, count = run.redactor.bytes_(data)
         try:
-            home.mkdir(mode=0o700, exist_ok=True)
             manifest["reports/" + name] = _store_file(directory, "reports/" + name, clean, _MEDIA_TYPES[formats[source]], count)
-        except OSError as exc:  # the tool can write anything here, even a file named reports
+        except OSError as exc:  # for example, a directory the tool left under that name
             run.note("report_invalid: %s could not be stored (%s)" % (name, type(exc).__name__))
             continue
         names[source] = name
-    _discard_raw_reports(run, directory, sorted(formats), names)
     return names, manifest
 
 
@@ -448,6 +559,7 @@ def _parse_copy(run: _Run, fmt: str, copy: Path) -> Optional[ingest.ReportSummar
 def _store_reports(run: _Run, directory: Path, snapshot: _Snapshot) -> _Reports:
     produced = _produced(run, str(directory), snapshot)
     names, manifest = _copy_reports(run, directory, produced)
+    _clear_evidence(run, directory, set(manifest), {source for sources in produced for source in sources})
     parsed: Dict[Tuple[str, str], Optional[ingest.ReportSummary]] = {}  # a file two patterns match counts once
     entries = []
     for (fmt, pattern), sources in zip(run.req.reports, produced):
@@ -501,11 +613,11 @@ def _write_evidence(run: _Run, directory: Path, streams: Dict[str, Tuple[bytes, 
         activity=req.activity, environment=req.environment, scope=req.scope, category=req.category,
         allow_empty=req.allow_empty, attempt_of=req.attempt_of))
     manifest = dict(report_entries)
-    manifest["command.json"] = _store_file(directory, "command.json", dumps(document) + b"\n", "application/json", redactions)
+    _store_evidence(run, directory, manifest, "command.json", dumps(document) + b"\n", "application/json", redactions)
     for name, (data, count) in streams.items():
-        manifest[name] = _store_file(directory, name, data, "text/plain", count)
+        _store_evidence(run, directory, manifest, name, data, "text/plain", count)
     manifest_bytes = dumps(manifest) + b"\n"
-    write_atomic(directory / "manifest.json", manifest_bytes)
+    _store_evidence(run, directory, {}, "manifest.json", manifest_bytes, "application/json", 0)  # not listed in itself
     evidence_manifest = {"sha256": sha256_bytes(manifest_bytes), "files": sorted(manifest),
                          "ids": {name: ids.ev_id(entry["sha256"]) for name, entry in manifest.items()}}
     return evidence_manifest, sum(entry["redactions"] for entry in manifest.values())
@@ -526,6 +638,7 @@ def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
     snapshot = _snapshot(req.reports, str(directory), run.cwd)
     outcome = runner.run_process(_concrete_command(req, str(directory)), shell=req.shell, cwd=Path(run.cwd), env=run.environ,
                                  timeout_s=timeout_s, max_bytes=run.max_bytes, grace_s=grace_s)
+    _repair_evidence(run, directory)
     stdout, stdout_redactions = run.redactor.bytes_(outcome.stdout)
     stderr, stderr_redactions = run.redactor.bytes_(outcome.stderr)
     reports = _store_reports(run, directory, snapshot)
@@ -597,7 +710,7 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
         folder = ws.path("evidence", from_execution, "ingested")
         folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         folder.mkdir(mode=0o700, exist_ok=True)
-        name = _free_name(redactor.text(path.name)[0], {entry.name.lower() for entry in folder.iterdir()})
+        name = _stored_name(redactor, str(path), {entry.name.lower() for entry in folder.iterdir()})
         write_atomic(folder / name, clean)
         event = ledger.append(ws, actor, "report.ingested", {
             "execution": from_execution, "format": fmt, "kind": summary.kind, "total": total, "file": "ingested/" + name,
