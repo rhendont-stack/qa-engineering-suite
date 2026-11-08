@@ -395,9 +395,9 @@ def test_drift_is_checked_for_every_required_activity(trusted, actor):
     assert r["reason"] == "config_drift"
 
 
-def test_static_analysis_alone_is_not_blocked_by_drift(trusted, actor, py):
+def test_static_analysis_alone_is_not_blocked_by_drift(trusted, actor):
     _drift(trusted)
-    assert _run(trusted, actor, py, "pass", activity="static-analysis")["status"] == "passed"
+    assert execution.execute(trusted, actor, execution.RunRequest(command=["ls"], activity="static-analysis"))["status"] == "passed"
 
 
 def test_only_a_guard_deny_records_command_blocked(trusted, actor, py):
@@ -1912,3 +1912,81 @@ def test_a_run_records_the_cpu_count_and_memory(trusted, actor, py):
 def test_a_blocked_run_records_the_cpu_count_and_memory(trusted, actor):
     r = execution.execute(trusted, actor, execution.RunRequest(command=["git", "push"]))
     assert r["status"] == "blocked" and _host_facts(_record(trusted, r)["environment"]) == _host_facts(envinfo.host_facts())
+
+
+# --------------------------------------------------------------------------- final review: I1, I7
+
+def _ledger_text(ws):
+    return b"".join(p.read_bytes() for p in ws.path("ledger").iterdir()).decode("utf-8")
+
+
+@pytest.mark.parametrize("command,shell", [
+    (["tool", "--password", "s3cr3t-word-1"], False),
+    (["tool", "--api-key", "s3cr3t-word-1"], False),
+    (["tool", "--token=s3cr3t-word-1"], False),
+    (["sh", "-c", "tool --secret s3cr3t-word-1"], False),
+    ("tool --password s3cr3t-word-1", True),
+    ("tool --token 's3cr3t-word-1' | cat", True),
+    ('tool --secret="s3cr3t-word-1"', True),
+])
+def test_a_secret_the_guard_detected_never_reaches_the_ledger(trusted, actor, command, shell):
+    r = execution.execute(trusted, actor, execution.RunRequest(command=command, shell=shell))
+    assert (r["status"], r["reason"]) == ("blocked", "policy_denied")
+    assert "s3cr3t-word-1" not in _ledger_text(trusted)
+    assert "[REDACTED:secret_flag:" in " ".join(state.load(trusted)["executions"][r["execution"]]["command"]["argv"])
+
+
+def test_masking_leaves_the_rest_of_the_command_alone(trusted, actor):
+    r = execution.execute(trusted, actor, execution.RunRequest(command=["tool", "--token", "s3cr3t-word-1", "--verbose", "x"]))
+    argv = state.load(trusted)["executions"][r["execution"]]["command"]["argv"]
+    assert (argv[0], argv[1], argv[3:]) == ("tool", "--token", ["--verbose", "x"])
+
+
+def test_a_flag_before_another_flag_masks_nothing(trusted, actor, py):
+    r = execution.execute(trusted, actor, execution.RunRequest(command=py.argv("pass", "--token", "--verbose")))
+    assert state.load(trusted)["executions"][r["execution"]]["command"]["argv"][-2:] == ["--token", "--verbose"]
+
+
+def _db_write_grant(ws, actor, environment="local"):
+    return authz.grant(ws, actor, environment_id=environment, targets=[], activities=["db-write"],
+                       limits={"db-write": {"backup_statement": "snapshot taken"}}, approval="ok",
+                       expires_at=ids.now_utc() + timedelta(days=1))
+
+
+def test_a_grant_on_local_does_not_reach_an_undeclared_dsn(trusted, actor):
+    _db_write_grant(trusted, actor)
+    r = execution.execute(trusted, actor, execution.RunRequest(command=["alembic", "-x", "url=postgres://db.prod.example/app", "upgrade", "head"]))
+    assert (r["status"], r["reason"]) == ("blocked", "policy_denied")
+
+
+def test_a_declared_dsn_host_is_authorized_on_its_own_environment(trusted, actor, tmp_path):
+    cfg = config.load_config(trusted)
+    cfg["environments"].append({"id": "stg", "class": "staging", "base_urls": ["postgres://db.stg.example"]})
+    config.write_config(trusted, cfg)
+    config.accept(trusted, actor, "ok")
+    _db_write_grant(trusted, actor)   # covers local only
+    r = execution.execute(trusted, actor, execution.RunRequest(command=["alembic", "-x", "url=postgres://db.stg.example/app", "upgrade", "head"]))
+    assert (r["status"], r["reason"]) == ("blocked", "not_authorized")
+
+
+def test_a_dsn_variable_resolves_to_its_environment(trusted, actor):
+    cfg = config.load_config(trusted)
+    cfg["environments"].append({"id": "prod", "class": "production", "base_urls": [], "dsn_env": "PROD_DSN"})
+    config.write_config(trusted, cfg)
+    config.accept(trusted, actor, "ok")
+    _db_write_grant(trusted, actor)
+    r = execution.execute(trusted, actor, execution.RunRequest(command='psql "$PROD_DSN" -c "UPDATE t SET a = 1 WHERE b = 2"', shell=True))
+    assert (r["status"], r["reason"]) == ("blocked", "policy_denied")
+
+
+def test_unlisted_static_analysis_needs_trust(ws, actor, py, tmp_path):
+    config.record_initialized(ws, actor)
+    marker = tmp_path / "ran"
+    r = execution.execute(ws, actor, execution.RunRequest(command=py.argv("open(%r, 'w')" % str(marker)), activity="static-analysis"))
+    assert (r["status"], r["reason"]) == ("blocked", "not_authorized") and not marker.exists()
+
+
+def test_unlisted_static_analysis_is_checked_for_drift(trusted, actor, py):
+    _drift(trusted)
+    r = execution.execute(trusted, actor, execution.RunRequest(command=py.argv("pass"), activity="static-analysis"))
+    assert r["reason"] == "config_drift"

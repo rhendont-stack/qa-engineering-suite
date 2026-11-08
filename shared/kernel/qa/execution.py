@@ -34,6 +34,7 @@ from .workspace import Workspace, write_atomic
 EVIDENCE_TOKEN = "{evidence}"
 _SCOPES = ("targeted", "full")
 _ATTEMPT_ACTIVITY = "test-execution-local"
+_DEFAULT_ACTIVITY = "static-analysis"  # allowed without authority (§12.2)
 _ENV_VALUE_NAMES = ("CI", "NODE_ENV")
 _STDERR_TAIL = 64 * 1024
 _MIB = 2 ** 20
@@ -177,9 +178,11 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
     run_environ = dict(os.environ if environ is None else environ)
     argv = [req.command] if isinstance(req.command, str) else list(req.command)
     kernel = integrity.kernel_integrity()
+    redactor = redact.load_redactor(ws, environ=run_environ)
+    recorded_argv = guard.mask_secret_flags(argv, lambda value: redactor.mask("secret_flag", value))
     run = _Run(ws=ws, actor=actor, req=req, cfg=cfg, environment=environment, cwd=cwd,
-               command={"argv": argv, "shell": req.shell, "cwd": recorded_cwd}, environ=run_environ,
-               redactor=redact.load_redactor(ws, environ=run_environ), execution_id=ids.new_id("EXE"),
+               command={"argv": recorded_argv, "shell": req.shell, "cwd": recorded_cwd}, environ=run_environ,
+               redactor=redactor, execution_id=ids.new_id("EXE"),
                st=state.load(ws), config_hash=config.current_hash(ws),
                kernel={"version": KERNEL_VERSION, "manifest": kernel["manifest_sha256"]})
     if kernel["status"] == "modified":
@@ -232,8 +235,14 @@ def _gate(run: _Run) -> _Gate:
     if decision.decision == "deny":
         gate.policy_denied = True
         run.note("guard rule %s denied the command: %s" % (decision.rule_id, decision.reason))
-    _check_drift(run, gate)
-    _authorize(run, gate)
+    refused = integrity.authority(run.ws)["refused"]
+    for limitation in refused:
+        run.note(limitation)
+    if refused and set(decision.required_activities) != {_DEFAULT_ACTIVITY}:
+        gate.not_authorized = True  # a shipped or unverifiable ledger authorizes nothing but the default (C1, I2)
+    else:
+        _check_drift(run, gate)
+        _authorize(run, gate)
     refusal = _attempt_refusal(run, gate) if req.attempt_of is not None else None
     if refusal is not None:
         gate.policy_denied = True
@@ -249,9 +258,13 @@ def _check_drift(run: _Run, gate: _Gate) -> None:
         run.note("config_drift: config.json differs from the accepted configuration, needed for %s" % ", ".join(drifted))
 
 
-def _authorization_groups(cfg: dict, run_environment: dict, hosts: Tuple[str, ...]) -> List[Tuple[dict, List[str]]]:
-    """The run's environment, each other environment a host resolves to, then the hosts nobody declared."""
+def _authorization_groups(cfg: dict, run_environment: dict, hosts: Tuple[str, ...],
+                          named: Tuple[str, ...] = ()) -> List[Tuple[dict, List[str]]]:
+    """The run's environment, each other environment a host or a named DSN resolves to, then the hosts nobody declared."""
     groups: Dict[str, Tuple[dict, List[str]]] = {run_environment["id"]: (run_environment, [])}
+    for environment in cfg["environments"]:
+        if environment["id"] in named:
+            groups.setdefault(environment["id"], (environment, []))
     undeclared: List[str] = []
     for host in dict.fromkeys(hosts):
         environment = config.resolve_host(cfg, host)
@@ -264,7 +277,7 @@ def _authorization_groups(cfg: dict, run_environment: dict, hosts: Tuple[str, ..
 
 def _authorize(run: _Run, gate: _Gate) -> None:
     """Every required activity against every group, each with that group's hosts only."""
-    groups = _authorization_groups(run.cfg, run.environment, gate.decision.hosts)
+    groups = _authorization_groups(run.cfg, run.environment, gate.decision.hosts, gate.decision.environments)
     now = ids.now_utc()
     # A grant never covers a per-target activity with no host, so checking one on an environment
     # no host resolves to would deny a run that the host's own environment authorizes.

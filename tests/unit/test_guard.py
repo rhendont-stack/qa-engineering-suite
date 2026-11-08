@@ -55,7 +55,8 @@ def test_every_rule_has_a_corpus_case():
 def test_destructive_sql_on_ephemeral_dsn_is_not_denied(ws):
     cfg = workspace.default_config("x")
     cfg["environments"].append({"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
-    assert classify('psql "$EPH_DSN" -c "DROP TABLE users"', ws, shell=True, config=cfg).decision == "allow"
+    d = classify('psql "$EPH_DSN" -c "DROP TABLE users"', ws, shell=True, config=cfg)
+    assert (d.decision, d.required_activities) == ("require_grant", ("test-execution-local", "db-ephemeral"))
     d = classify('psql "$OTHER_DSN" -c "DROP TABLE users"', ws, shell=True, config=cfg)
     assert (d.decision, d.rule_id) == ("deny", "destructive-sql")
 
@@ -199,10 +200,11 @@ def test_here_string_and_heredoc_sql_is_still_caught(ws, command):
     assert classify(command, ws, shell=True).rule_id == "destructive-sql"
 
 
-def test_here_string_sql_on_ephemeral_dsn_is_allowed(ws):
+def test_here_string_sql_on_ephemeral_dsn_needs_db_ephemeral(ws):
     cfg = workspace.default_config("x")
     cfg["environments"].append({"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
-    assert classify('psql "$EPH_DSN" <<< "DROP TABLE users"', ws, shell=True, config=cfg).decision == "allow"
+    d = classify('psql "$EPH_DSN" <<< "DROP TABLE users"', ws, shell=True, config=cfg)
+    assert (d.decision, d.required_activities) == ("require_grant", ("test-execution-local", "db-ephemeral"))
 
 
 @pytest.mark.parametrize("key", ["SECRET_KEY", "PASSWORD_PROD", "CLIENT_SECRET", "API_TOKEN", "API_KEY", "PRIVATE_KEY", "DB_PASSWORD"])
@@ -335,3 +337,77 @@ def test_invalid_input_refused(ws, command, shell, activity, code):
     with pytest.raises(QaError) as e:
         classify(command, ws, shell=shell, activity=activity)
     assert e.value.code == code
+
+
+# --------------------------------------------------------------------------- final review: C2, I7, I8, I10, I14, M5
+
+def _with_env(**env):
+    cfg = workspace.default_config("x")
+    cfg["environments"].append(env)
+    return cfg
+
+
+def test_sql_write_on_an_ephemeral_dsn_needs_db_ephemeral(ws):
+    cfg = _with_env(id="eph", **{"class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
+    d = classify('psql "$EPH_DSN" -c "INSERT INTO t VALUES (1)"', ws, shell=True, config=cfg)
+    assert d.decision == "require_grant" and d.rule_id == "sql-write" and "db-ephemeral" in d.required_activities
+    assert "db-write" not in d.required_activities
+
+
+def test_drop_on_an_ephemeral_dsn_still_needs_a_grant(ws):
+    cfg = _with_env(id="eph", **{"class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
+    d = classify('psql "$EPH_DSN" -c "DROP TABLE t"', ws, shell=True, config=cfg)
+    assert (d.decision, d.required_activities) == ("require_grant", ("test-execution-local", "db-ephemeral"))
+
+
+def test_an_inline_dsn_on_a_client_needs_db_write_even_when_another_is_ephemeral(ws):
+    cfg = _with_env(id="eph", **{"class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
+    d = classify(["psql", "postgres://db.example/app?from=EPH_DSN", "-c", "UPDATE t SET a = 1 WHERE b = 2"], ws, config=cfg)
+    assert d.decision == "require_grant" and "db-write" in d.required_activities and d.hosts == ("db.example",)
+
+
+def test_dsn_environments_are_named_for_authorization(ws):
+    cfg = _with_env(id="prod", **{"class": "production", "base_urls": [], "dsn_env": "PROD_DSN"})
+    assert classify('psql "$PROD_DSN" -c "SELECT 1"', ws, shell=True, config=cfg).environments == ("prod",)
+    assert classify('psql "$OTHER_DSN" -c "SELECT 1"', ws, shell=True, config=cfg).environments == ()
+
+
+@pytest.mark.parametrize("url", ["http://[::1/x", "http://exa[mple.com/x"])
+def test_a_url_nobody_can_read_counts_as_undeclared(ws, url):
+    d = classify(["curl", url], ws)
+    assert d.decision == "require_grant" and "network-download" in d.required_activities
+
+
+def test_static_analysis_by_path_is_not_a_known_analyzer(ws):
+    d = classify(["./ruff", "check", "."], ws, activity="static-analysis")
+    assert d.decision == "require_grant" and d.rule_id == "unlisted-analyzer"
+
+
+def test_a_shell_string_is_judged_per_command_under_static_analysis(ws):
+    d = classify("ruff check . && ./run-this", ws, shell=True, activity="static-analysis")
+    assert d.decision == "require_grant" and "test-execution-local" in d.required_activities
+
+
+def test_only_static_analysis_is_limited_to_known_analyzers(ws):
+    assert classify(["./anything"], ws).decision == "allow"
+
+
+def test_writing_into_the_workspace_record_is_denied(ws):
+    for argv in (["cp", "a", ".qa/config.json"], ["mv", "a", ".qa/redaction.key"], ["truncate", "-s", "0", ".qa/ledger/x.jsonl"]):
+        d = classify(argv, ws)
+        assert (d.decision, d.rule_id) == ("deny", "delete-outside-qa"), argv
+
+
+def test_writing_into_work_stays_allowed(ws):
+    assert classify(["cp", "a", ".qa/work/a"], ws).decision == "allow"
+    assert classify(["find", ".qa/work", "-name", "x", "-delete"], ws).decision == "allow"
+
+
+@pytest.mark.parametrize("argv", [["GIT", "push"], ["Rm", "-rf", "/"], ["SUDO", "ls"], ["ENV", "git", "push"]])
+def test_program_names_are_read_as_a_case_insensitive_filesystem_does(ws, argv):
+    assert classify(argv, ws).decision == "deny", argv
+
+
+@pytest.mark.parametrize("option", ["--namespace", "--super-prefix", "--config-env", "--attr-source"])
+def test_git_global_options_that_take_a_value_hide_no_subcommand(ws, option):
+    assert classify(["git", option, "status", "push"], ws).decision == "deny"

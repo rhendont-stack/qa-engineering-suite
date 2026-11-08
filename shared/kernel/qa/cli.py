@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, config, doctor, execution, findings, gate, guard, ids, ingest, ledger, redact, report, schema, state, workspace
+from . import authz, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, redact, report, schema, state, workspace
 from .canonical import loads
 from .errors import QaError
 from .workspace import Workspace, write_atomic
@@ -355,6 +355,7 @@ def cmd_init(args: argparse.Namespace, ctx: Context) -> int:
     _bind_actor(args, ctx)
     if created:
         ctx.reply(event=config.record_initialized(ctx.ws, ctx.actor)["id"])
+    ctx.limitations.extend(integrity.authority(ctx.ws)["refused"])  # a clone may arrive with .qa/ already in it (§12.2)
     ctx.reply(created=created, workspace=str(ctx.ws.root))
     return 0
 

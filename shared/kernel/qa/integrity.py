@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import ledger, schema
+from . import gitinfo, ledger, schema
 from .canonical import loads, sha256_bytes, sha256_file
 from .errors import QaError
 from .ledger import Problem
@@ -20,6 +20,8 @@ _UNSAFE_PATH = "the path is absolute or leaves its directory, so it was not open
 _DETAILS = {"missing": "the recorded file is gone", "modified": "the content differs from the recorded hash"}
 # kernel_integrity's lists, and the kind of problem each entry becomes.
 _KERNEL_KINDS = (("modified", "modified"), ("missing", "missing"), ("extra", "modified"))
+_TRACKED_DETAIL = "git tracks this file, so a clone brings it along; only .qa/config.json and .qa/.gitignore may be tracked"
+_TRACKED_SHOWN = 5
 
 
 def _unsafe(name: object) -> bool:
@@ -200,6 +202,32 @@ def _kernel_problems() -> List[Problem]:
             for field, kind in _KERNEL_KINDS for name in report[field]]
 
 
+def _tracked_problems(ws: Workspace) -> List[Problem]:
+    return [Problem("invalid", name, _TRACKED_DETAIL) for name in gitinfo.tracked_under_qa(ws.root)[0]]
+
+
 def problems(ws: Workspace, st: dict) -> List[Problem]:
-    """Everything ``qa ledger verify`` reports (§9.4): chains, events, evidence and the kernel."""
-    return ledger.verify_chains(ws, _latest_anchors(st)) + _event_problems(ws) + verify_evidence(ws, st) + _kernel_problems()
+    """Everything ``qa ledger verify`` reports (§9.4): chains, events, evidence, the kernel and what git should not hold."""
+    return (ledger.verify_chains(ws, _latest_anchors(st)) + _event_problems(ws) + verify_evidence(ws, st) + _kernel_problems()
+            + _tracked_problems(ws))
+
+
+def authority(ws: Workspace) -> dict:
+    """Whether the workspace's own files can back a grant, a trust level or an accepted configuration (§12.2, §12.7).
+
+    ``refused`` holds named limitations, empty when they can: ``tracked_authority`` when git tracks more of ``.qa/`` than
+    the two files meant to be shared, because a clone then brings its approvals with it, and ``ledger_unverified`` when a
+    hash chain does not verify. ``limitation`` says why the tracked check could not run: not_a_git_repo or git_unavailable.
+    """
+    tracked, limitation = gitinfo.tracked_under_qa(ws.root)
+    refused = []
+    if tracked:
+        shown = ", ".join(tracked[:_TRACKED_SHOWN]) + (" and %d more" % (len(tracked) - _TRACKED_SHOWN) if len(tracked) > _TRACKED_SHOWN else "")
+        refused.append("tracked_authority: git tracks %s, so this workspace's ledger, grants and accepted configuration carry "
+                       "no authority; only .qa/config.json and .qa/.gitignore may be tracked: remove the rest from git and "
+                       "delete them from .qa/" % shown)
+    broken = ledger.verify_chains(ws, foreign=False)
+    if broken:
+        refused.append("ledger_unverified: %d problem(s) in the hash chains, the first at %s; grants and the accepted "
+                       "configuration are not honored until `qa ledger verify` is clean" % (len(broken), broken[0].where))
+    return {"refused": refused, "limitation": limitation}

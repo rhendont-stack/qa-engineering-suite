@@ -33,6 +33,7 @@ _LIMITS = (  # §12.10, restated in every report
     "It records the agent's quote of the approval. The host's own permission prompts remain the authoritative control.",
     "It cannot make pattern-matching a sandbox.",
     "It cannot make a single-agent session truly independent.",
+    "It cannot tell that a .qa/ copied in outside git carries approvals nobody here gave.",
 )
 
 

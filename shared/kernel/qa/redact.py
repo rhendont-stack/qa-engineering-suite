@@ -85,6 +85,10 @@ class Redactor:
         # Longest first, so a value that contains another is replaced whole.
         self._env = sorted({v for v in env_values.values() if v}, key=lambda v: (-len(v), v))
 
+    def mask(self, kind: str, secret: str) -> str:
+        """The marker for a value the caller knows is secret, whatever it looks like."""
+        return marker(kind, secret, self._key)
+
     def text(self, s: str) -> Tuple[str, int]:
         parts: _Parts = []
         last = 0

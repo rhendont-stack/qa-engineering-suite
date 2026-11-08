@@ -43,12 +43,20 @@ def _config_drifted(ws: Workspace) -> bool:
         return True
 
 
+def _authority(ws: Workspace) -> dict:
+    try:
+        return integrity.authority(ws)
+    except Exception as exc:  # what is broken is what doctor reports
+        return {"refused": ["authority_unknown: the check failed (%s)" % type(exc).__name__], "limitation": None}
+
+
 def doctor(ws: Workspace) -> dict:
     """Never raises for a broken project: what is broken is what it reports."""
     return {
         "kernel": integrity.kernel_integrity(),
         "ledger": ledger_problems(ws),
         "config": {"drift": _config_drifted(ws)},
+        "authority": _authority(ws),
         "environment": envinfo.environment_fingerprint(refresh=True),
         "docker": {"server_version": _docker_server_version()},
     }

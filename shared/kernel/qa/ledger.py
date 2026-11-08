@@ -178,10 +178,14 @@ def heads(ws: Workspace) -> Dict[str, dict]:
     return out
 
 
-def verify_chains(ws: Workspace, anchors: Optional[Dict[str, dict]] = None) -> List[Problem]:
+def verify_chains(ws: Workspace, anchors: Optional[Dict[str, dict]] = None, *, foreign: bool = True) -> List[Problem]:
+    """Every problem in the session files and, unless ``foreign`` is False, the directory entries that are not ledger files.
+
+    The fold never reads such an entry, so it says nothing about what the ledger authorizes.
+    """
     problems: List[Problem] = []
-    files, foreign = _session_files(ws)
-    for name in foreign:
+    files, others = _session_files(ws)
+    for name in others if foreign else ():
         problems.append(Problem("invalid", name, "not a ledger file"))
     present = set()
     for session, path in files:

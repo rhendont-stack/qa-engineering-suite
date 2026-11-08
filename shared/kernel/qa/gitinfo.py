@@ -20,6 +20,8 @@ from .canonical import sha256_bytes, sha256_file
 _TIMEOUT_S = 30
 _EXCLUDE_QA = ":(exclude).qa"
 _BASE_OPTS = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"]
+_QA_PATHSPEC = ":(icase).qa"  # a case-insensitive filesystem reads a tracked .QA/ as this .qa/
+_SHAREABLE = (".qa/.gitignore", ".qa/config.json")  # .qa/.gitignore keeps everything else out of git
 
 
 class _Unavailable(Exception):
@@ -58,6 +60,27 @@ def _untracked_hash(root: Path, rel: bytes) -> str:
         except OSError:
             return sha256_bytes(b"missing")
     return sha256_bytes(b"special:" + str(stat.S_IFMT(mode)).encode("ascii"))
+
+
+def tracked_under_qa(root: Path) -> Tuple[List[str], Optional[str]]:
+    """(paths git tracks in ``.qa/`` beyond the two files meant to be shared, limitation).
+
+    A limitation means nothing here can tell: ``not_a_git_repo`` or ``git_unavailable``.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return [], "git_unavailable"
+    try:
+        inside = _run(git, root, ["rev-parse", "--is-inside-work-tree"])
+        if inside.returncode != 0 or inside.stdout.strip() != b"true":
+            return [], "not_a_git_repo"
+        listed = _run(git, root, ["ls-files", "-z", "--", _QA_PATHSPEC])
+    except _Unavailable:
+        return [], "git_unavailable"
+    if listed.returncode != 0:
+        return [], "git_unavailable"
+    names = (os.fsdecode(path) for path in listed.stdout.split(b"\0") if path)
+    return sorted(name for name in names if name.lower() not in _SHAREABLE), None
 
 
 def git_info(root: Path) -> Tuple[Optional[Dict[str, object]], Optional[str]]:

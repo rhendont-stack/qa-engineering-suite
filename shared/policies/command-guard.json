@@ -28,7 +28,7 @@
     {
       "id": "delete-outside-qa",
       "effect": "deny",
-      "reason": "Deleting or overwriting files outside .qa/ is denied (§12.3, §12.4).",
+      "reason": "Deleting or overwriting files outside .qa/work/ and the run's evidence directory is denied (§12.3, §12.4).",
       "match": {"check": "delete_outside_qa"}
     },
     {
@@ -99,7 +99,7 @@
       "reason": "Destructive SQL (DROP, TRUNCATE, DELETE or UPDATE without WHERE) through a CLI client is denied unless every DSN it names is registered ephemeral (§12.3).",
       "match": {
         "program": ["psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "clickhouse-client", "duckdb", "usql",
-                    "pgcli", "mycli", "litecli", "sqlplus", "cockroach", "snowsql", "trino"],
+                    "pgcli", "mycli", "litecli", "sqlplus", "cockroach", "snowsql", "trino", "cqlsh"],
         "check": "destructive_sql"
       }
     },
@@ -137,9 +137,52 @@
       "reason": "Deployment is never performed by the suite (§12.2).",
       "match": {
         "program": ["vercel", "netlify", "fly", "flyctl", "firebase", "serverless", "sls", "wrangler", "cdk", "pulumi",
-                    "sam", "railway", "eb"],
-        "args_any": ["deploy", "up", "publish", "--prod", "destroy", "remove", "delete", "terminate"]
+                    "sam", "railway", "eb", "kamal", "cap", "capistrano", "sst", "amplify", "copilot", "zappa", "chalice",
+                    "dokku", "argocd"],
+        "args_any": ["deploy", "up", "publish", "--prod", "destroy", "remove", "delete", "terminate", "push", "sync", "release"]
       }
+    },
+    {
+      "id": "deploy-bare",
+      "effect": "deny",
+      "reason": "These tools deploy when run with no subcommand; deployment is never performed by the suite (§12.2).",
+      "match": {"program": ["vercel", "now", "surge"], "unless_args": ["list", "ls", "logs", "inspect", "whoami", "dev", "build", "pull", "help", "--help", "-h", "--version", "-v"]}
+    },
+    {
+      "id": "deploy-run",
+      "effect": "deny",
+      "reason": "Deployment is never performed by the suite (§12.2).",
+      "match": {"program": ["skaffold", "nomad"], "args_any": ["run", "deploy", "apply"]}
+    },
+    {
+      "id": "heroku-write",
+      "effect": "deny",
+      "reason": "Deploying to or changing a Heroku application is never performed by the suite (§12.2).",
+      "match": {"program": ["heroku"], "args_regex": "^(deploy|container:(push|release)|releases:rollback|apps:(create|destroy|rename)|config:(set|unset)|pg:(reset|push|promote|backups:restore)|maintenance:on|ps:(scale|restart|exec)|run(:detached)?)$"}
+    },
+    {
+      "id": "ansible-deploy",
+      "effect": "deny",
+      "reason": "A playbook changes the hosts it targets; only its dry-run and listing options run (§12.2).",
+      "match": {"program": ["ansible-playbook"], "unless_args": ["--check", "-C", "--syntax-check", "--list-hosts", "--list-tasks", "--list-tags"]}
+    },
+    {
+      "id": "docker-stack-deploy",
+      "effect": "deny",
+      "reason": "Deployment is never performed by the suite (§12.2).",
+      "match": {"program": ["docker"], "args_all": ["stack", "deploy"]}
+    },
+    {
+      "id": "cloud-deploy",
+      "effect": "deny",
+      "reason": "Deployment through a cloud CLI is never performed by the suite (§12.2).",
+      "match": {"program": ["aws", "gcloud", "az", "doctl"], "args_regex": "^(deploy|deployment|deployments|create-deployment|up|update-function-code|update-function-configuration|create-stack|update-stack|create-change-set|execute-change-set|update-service)$", "unless_args": ["list", "show", "describe", "get", "validate", "what-if"]}
+    },
+    {
+      "id": "doctl-apps-write",
+      "effect": "deny",
+      "reason": "Creating or updating a DigitalOcean app deploys it (§12.2).",
+      "match": {"program": ["doctl"], "args_all": ["apps"], "args_any": ["create", "update"]}
     },
     {
       "id": "package-publish",
@@ -233,6 +276,102 @@
         "program": ["systemctl", "loginctl"],
         "args_any": ["poweroff", "reboot", "halt", "suspend", "hibernate", "hybrid-sleep", "kexec", "rescue", "emergency"]
       }
+    },
+    {
+      "id": "container-remove",
+      "effect": "deny",
+      "reason": "Removing containers, images, volumes or networks, or pruning them, destroys state the suite did not create (§12.3).",
+      "match": {"program": ["docker", "podman", "nerdctl", "docker-compose", "podman-compose"], "args_any": ["rm", "rmi", "prune"]}
+    },
+    {
+      "id": "compose-volumes-down",
+      "effect": "deny",
+      "reason": "Bringing a Compose project down with its volumes or images destroys their data (§12.3).",
+      "match": {"program": ["docker", "podman", "nerdctl", "docker-compose", "podman-compose"], "args_any": ["down"], "args_regex": "^(-[a-zA-Z]*v[a-zA-Z]*|--volumes|--rmi(=.*)?)$"}
+    },
+    {
+      "id": "remote-shell",
+      "effect": "deny",
+      "reason": "A remote shell runs commands on a system the guard cannot see; the suite works on this machine (§12.3).",
+      "match": {"program": ["ssh", "autossh", "scp", "sftp", "mosh", "telnet", "rsh", "rlogin", "rcp", "pdsh", "pscp", "tsh", "ftp", "lftp"]}
+    },
+    {
+      "id": "remote-sync",
+      "effect": "deny",
+      "reason": "rsync to or from another host changes or copies files on a system the guard cannot see (§12.3).",
+      "match": {"program": ["rsync"], "args_regex": "^((?:[^/:\\s]+@)?[^/:\\s]+:|rsync://)"}
+    },
+    {
+      "id": "cluster-shell",
+      "effect": "deny",
+      "reason": "A shell or file copy into a cluster runs on a system the guard cannot see (§12.3).",
+      "match": {"program": ["kubectl", "oc"], "args_any": ["exec", "attach", "cp", "debug", "rsh", "rsync"]}
+    },
+    {
+      "id": "cloud-shell",
+      "effect": "deny",
+      "reason": "A shell through a cloud CLI runs on a system the guard cannot see (§12.3).",
+      "match": {"program": ["gcloud", "az", "doctl", "fly", "flyctl", "aws"], "args_any": ["ssh", "scp", "start-session", "console"]}
+    },
+    {
+      "id": "sql-write",
+      "effect": "require_grant:db-write",
+      "reason": "SQL that writes or changes a schema through a CLI client needs db-write, or db-ephemeral when every DSN it names is registered ephemeral (§12.2, §12.3).",
+      "match": {"program": ["psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "clickhouse-client", "duckdb", "usql", "pgcli", "mycli", "litecli", "sqlplus", "cockroach", "snowsql", "trino", "cqlsh"], "check": "sql_write"}
+    },
+    {
+      "id": "redis-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to a key-value store need db-write (§12.2, §12.3).",
+      "match": {"program": ["redis-cli", "valkey-cli", "keydb-cli"], "args_regex": "(?i)^(set|setex|psetex|setnx|setrange|setbit|mset|msetnx|getset|getdel|getex|append|incr|incrby|incrbyfloat|decr|decrby|del|unlink|expire|expireat|pexpire|pexpireat|persist|rename|renamenx|flushall|flushdb|hset|hsetnx|hmset|hincrby|hincrbyfloat|hdel|lpush|lpushx|rpush|rpushx|lpop|rpop|rpoplpush|lmove|lset|lrem|ltrim|linsert|sadd|srem|spop|smove|sinterstore|sunionstore|sdiffstore|zadd|zrem|zincrby|zpopmin|zpopmax|zremrangebyscore|zremrangebyrank|zremrangebylex|xadd|xdel|xtrim|pfadd|pfmerge|restore|move|copy|migrate|config|eval|evalsha|evalsha_ro|fcall|function|script|slaveof|replicaof|swapdb|bgsave|save|bitop|bitfield|geoadd|georadius)$"}
+    },
+    {
+      "id": "document-store-write",
+      "effect": "require_grant:db-write",
+      "reason": "Shell commands that write to a document store need db-write (§12.2, §12.3).",
+      "match": {"program": ["mongosh", "mongo"], "args_regex": "(?i)\\b(insert(one|many)?|update(one|many)?|replaceone|delete(one|many)?|remove|drop(database|indexes)?|createcollection|createindex|findoneand(update|replace|delete)|bulkwrite|renamecollection)\\s*\\("}
+    },
+    {
+      "id": "document-store-load",
+      "effect": "require_grant:db-write",
+      "reason": "Loading data into a document store needs db-write (§12.2, §12.3).",
+      "match": {"program": ["mongoimport", "mongorestore"]}
+    },
+    {
+      "id": "kv-store-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to a key-value store need db-write (§12.2, §12.3).",
+      "match": {"program": ["etcdctl"], "args_any": ["put", "del", "txn", "compact", "defrag"]}
+    },
+    {
+      "id": "consul-kv-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to a key-value store need db-write (§12.2, §12.3).",
+      "match": {"program": ["consul"], "args_all": ["kv"], "args_any": ["put", "delete", "import"]}
+    },
+    {
+      "id": "dynamodb-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to DynamoDB need db-write (§12.2, §12.3).",
+      "match": {"program": ["aws"], "args_all": ["dynamodb"], "args_regex": "^(put-item|update-item|batch-write-item|transact-write-items|create-table|update-table)$"}
+    },
+    {
+      "id": "gh-api-write",
+      "effect": "deny",
+      "reason": "GitHub writes through the API: any write method, or fields, which imply one (§12.3).",
+      "match": {"program": ["gh"], "args_any": ["api"], "args_regex": "(?i)^(post|put|patch|delete|-X(post|put|patch|delete)|--method=(post|put|patch|delete)|-[fF].*|--field(=.*)?|--raw-field(=.*)?|--input(=.*)?)$"}
+    },
+    {
+      "id": "gh-workflow-run",
+      "effect": "deny",
+      "reason": "Dispatching a GitHub workflow runs it on GitHub (§12.3).",
+      "match": {"program": ["gh"], "args_all": ["workflow"], "args_any": ["run"]}
+    },
+    {
+      "id": "unlisted-analyzer",
+      "effect": "require_grant:test-execution-local",
+      "reason": "Static analysis covers the known analyzers and read-only tools; any other program may run the project's code and also needs test-execution-local (§12.2, §12.7).",
+      "match": {"declared_activity": ["static-analysis"], "unless_program": ["semgrep", "opengrep", "bandit", "gosec", "gitleaks", "betterleaks", "osv-scanner", "grype", "syft", "trivy", "hadolint", "conftest", "actionlint", "zizmor", "ruff", "shellcheck", "squawk", "git", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "file", "stat", "sha256sum", "shasum", "jq", "echo", "true", "pwd"]}
     },
     {
       "id": "load-test",

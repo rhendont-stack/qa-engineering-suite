@@ -2,7 +2,8 @@
 
 ``classify`` reads a command (an argv list, or a shell string with ``shell=True``) and returns
 a ``GuardDecision``: ``allow``, ``deny`` or ``require_grant``, the activities the run needs,
-the rule that decided, and the hosts of its ``http(s)://`` arguments. It never runs the
+the rule that decided, the hosts of its ``http(s)://`` and inline DSN arguments, and the
+environments whose ``dsn_env`` variable it names. It never runs the
 command, opens a network connection or writes a file. It reads the rule file, the redaction
 patterns and, to follow symbolic links, the paths the command names.
 
@@ -12,7 +13,8 @@ in a ``match`` must hold. Any deny wins, and the first deny rule in file order i
 Then require_grant: its activities accumulate after the declared one, and the decision is
 ``require_grant`` only when at least one was added. Then allow. A command that no rule matches
 is allowed with ``rule_id`` None. Its declared activity still goes to authorization, and so
-does the environment of every host it names (§12.2).
+does the environment of every host it names (§12.2). A URL ``urlsplit`` refuses is reported as
+the host ``<unreadable>``, which no environment declares and no grant lists.
 
 What the guard reads through:
 
@@ -43,13 +45,14 @@ core.pager=...``, a test runner's plugins) can run a command the guard never see
 wrappers and shell constructs not listed above are not read through. Shell variables,
 aliases and functions defined elsewhere are not expanded: a program name that comes from a
 variable or a substitution is not resolved, and a path that depends on one counts as outside
-``.qa/``. A ``cd`` inside a shell string is not followed. A quoted operator such as ``';'``
+``.qa/work/``. A ``cd`` inside a shell string is not followed. A quoted operator such as ``';'``
 reads as the operator, and every path operand of a writing command counts as written; both
 err towards denial. Real containment comes from the host's permission system and from
 running untrusted work in containers.
 """
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import os
 import re
@@ -100,7 +103,8 @@ _WRAPPERS: Dict[str, Tuple[str, Tuple[str, ...], int]] = {
                            "--process-slot-var"), 0),
 }
 _SHELLS = frozenset(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh"])
-_GIT_VALUE_OPTIONS = frozenset(["-C", "-c", "--git-dir", "--work-tree"])
+_GIT_VALUE_OPTIONS = frozenset(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
+                                "--attr-source"])
 
 _PRIVILEGE = frozenset(["sudo", "doas", "su", "pkexec", "run0", "sudoedit"])
 _DELETERS = frozenset(["rm", "rmdir", "unlink"])
@@ -112,6 +116,8 @@ _EVIDENCE = "{evidence}"
 _PROTECTED = tuple((tuple(e.rstrip("/").lower().split("/")), e.endswith("/")) for e in vocab.PROTECTED_PATHS)
 
 _SECRET_FLAGS = ("--password", "--token", "--secret", "--api-key")
+# Inside a shell string: a secret flag, how its value follows it, and the value (quoted or a bare word).
+_SECRET_FLAG_VALUE = re.compile(r"(?<![\w-])(%s)(=|\s+)(\"[^\"]*\"|'[^']*'|[^\s;&|()<>]+)" % "|".join(_SECRET_FLAGS))
 _VAR_REF = re.compile(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$")
 # Redaction patterns that match a key=value assignment; for these the key must name a secret
 # (see _is_whole_secret_key). Other kinds match a secret value directly and are unchanged.
@@ -126,17 +132,33 @@ _SECRET_SUFFIXES = ("password", "passwords", "passwd", "secret", "secrets", "tok
                     "apikey", "apikeys", "privatekey", "privatekeys", "credential", "credentials")
 # A trailing key word that names a file or path, so its value is a reference, not a secret.
 _FILE_WORDS = frozenset(["file", "files", "path", "paths", "dir", "directory", "filename", "location", "keyfile"])
-_URL = re.compile(r"(?i)\bhttps?://[^\s'\"<>`|;&,(){}\\]+")
-
 # A concrete database connection string (postgres://..., mysql://..., not an http(s) URL).
-_INLINE_DSN = re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|sqlserver|mssql|jdbc|oracle"
-                         r"|mongodb|redis|clickhouse|cockroach(?:db)?|snowflake|duckdb|cassandra|db2)"
-                         r"(?:\+[a-z0-9]+)?://")
+_DSN_SCHEMES = (r"(?:postgres(?:ql)?|mysql|mariadb|sqlite|sqlserver|mssql|jdbc|oracle|mongodb|rediss?|clickhouse"
+                r"|cockroach(?:db)?|snowflake|duckdb|cassandra|db2)")
+_INLINE_DSN = re.compile(r"(?i)\b%s(?:\+[a-z0-9]+)?://" % _DSN_SCHEMES)
+_URL = re.compile(r"(?i)\b(?:https?|%s(?:\+[a-z0-9]+)?)://[^\s'\"<>`|;&,(){}\\]+" % _DSN_SCHEMES)
+_UNREADABLE_HOST = "<unreadable>"   # no environment declares it and no grant can list it
+_SCHEME = re.compile(r"(?i)^([a-z][a-z0-9+.-]*)://")
+# What the network-download check reads: options whose value is not the thing fetched. One not listed
+# here makes its value read as a host nobody declared, which errs towards asking for a grant.
+_DOWNLOAD_VALUE_OPTIONS = frozenset([
+    "-o", "--output", "-D", "--dump-header", "-H", "--header", "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+    "-F", "--form", "-u", "--user", "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar", "-T",
+    "--upload-file", "-X", "--request", "-w", "--write-out", "-m", "--max-time", "--connect-timeout", "--retry", "-x", "--proxy",
+    "-r", "--range", "-K", "--config", "--cacert", "--cert", "--key", "--resolve", "-O", "--output-document", "--output-file",
+    "-P", "--directory-prefix", "-U", "--post-data", "--post-file", "-t", "--tries", "-T", "--timeout", "--wait", "-i",
+    "--input-file", "--out", "--dir", "-s", "--split", "-j", "--max-concurrent-downloads",
+])
+_HTTP_CLIENTS = frozenset(["http", "https", "xh", "xhs"])   # METHOD URL [items], where only the URL is a target
+_HTTP_METHOD = re.compile(r"^[A-Z]+$")
 # A here-document operator, not the '<<' inside a '<<<' here-string (hence the lookbehind).
 _HEREDOC = re.compile(r"(?<!<)<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _SQL_DESTRUCTIVE = re.compile(r"(?i)\b(?:DROP\s+\w|TRUNCATE\b)")
 _SQL_UNBOUNDED = re.compile(r"(?i)\bDELETE\s+FROM\b|\bUPDATE\s+\S+(?:\s+\S+)?\s+SET\b")
 _SQL_WHERE = re.compile(r"(?i)\bWHERE\b")
+_SQL_WRITE = re.compile(r"(?i)\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO|UPSERT\s+INTO|MERGE\s+INTO|DELETE\s+FROM"
+                        r"|UPDATE\s+\S+(?:\s+\S+)?\s+SET|ALTER\s+\w|CREATE\s+\w|DROP\s+\w|TRUNCATE\b|GRANT\s+\w|REVOKE\s+\w"
+                        r"|COPY\s+\S+\s+FROM|LOAD\s+DATA)")
 # Migration tools, found anywhere in argv (so npx, bundle exec or python manage.py count), and their verbs.
 _MIGRATION_VERBS = (
     (("alembic",), r"upgrade|downgrade|stamp"),
@@ -152,6 +174,21 @@ _MIGRATION_VERBS = (
     (("typeorm",), r"migration:(?:run|revert)|schema:(?:sync|drop)"),
     (("dbmate",), r"up|migrate|down|rollback|drop"),
     (("drizzle-kit",), r"push|migrate|drop"),
+    (("mix",), r"ecto\.(?:migrate|rollback|drop|reset|setup|create|load)"),
+    (("goose", "sql-migrate", "tern", "dbmigrate"), r"up(?:-by-one|-to)?|down(?:-to)?|redo|reset|migrate|rollback"),
+    (("migrate",), r"up|down|drop|force|goto"),
+    (("atlas",), r"migrate\s+(?:apply|down)|schema\s+(?:apply|clean)"),
+    (("ef", "dotnet-ef"), r"database\s+(?:update|drop)"),
+    (("fm", "dotnet-fm"), r"migrate(?:\s+(?:up|down))?|rollback"),
+    (("evolve",), r"migrate|erase|repair"),
+    (("diesel",), r"migration\s+(?:run|revert|redo)|database\s+(?:setup|reset)"),
+    (("sqlx",), r"migrate\s+(?:run|revert)|database\s+(?:setup|reset|drop)"),
+    (("node-pg-migrate", "db-migrate"), r"up|down|reset|redo"),
+    (("phinx",), r"migrate|rollback"),
+    (("yoyo", "yoyo-migrate"), r"apply|rollback|reapply"),
+    (("aerich",), r"upgrade|downgrade"),
+    (("mvn", "mvnw"), r"(?:flyway:(?:migrate|clean|baseline|repair|undo)|liquibase:(?:update|rollback|dropAll))"),
+    (("gradle", "gradlew"), r"flyway(?:Migrate|Clean|Baseline|Repair|Undo)|update|rollback|dropAll"),
 )
 _MIGRATIONS = {name: re.compile(r"(?:^|\s)(?:%s)(?=\s|$)" % verbs) for names, verbs in _MIGRATION_VERBS for name in names}
 
@@ -167,6 +204,7 @@ class GuardDecision:
     rule_id: Optional[str]
     reason: str
     hosts: Tuple[str, ...]
+    environments: Tuple[str, ...] = ()     # the ids of the environments whose dsn_env variable the command names
 
 
 @dataclass(frozen=True)
@@ -193,7 +231,7 @@ class _Unit:
 
     @property
     def program(self) -> Optional[str]:
-        return os.path.basename(self.argv[0]) if self.argv else None
+        return _program_name(self.argv[0]) if self.argv else None
 
 
 @dataclass(frozen=True)
@@ -203,9 +241,15 @@ class _Context:
     cwd: str          # where relative paths resolve
     config: dict
     shell_without_flag: bool
+    declared: str     # the activity the command declares
 
 
 _Hit = Tuple[str, Optional[str]]   # (detail for the reason, activity that replaces the rule's own)
+
+
+def _program_name(word: str) -> str:
+    """A program's base name, as a case-insensitive filesystem (APFS) would find it."""
+    return os.path.basename(word).lower()
 
 
 # --------------------------------------------------------------------------- rules
@@ -266,13 +310,14 @@ def classify(command: Union[List[str], str], *, shell: bool, ws_root: Path, qa_d
     without_flag = not shell and (isinstance(command, str) or (len(texts) == 1 and any(m in texts[0] for m in _SHELL_MARKS)))
     root = os.path.realpath(str(ws_root))
     where = root if cwd is None else os.path.realpath(os.path.join(root, str(cwd)))
-    ctx = _Context(root, os.path.realpath(str(qa_dir)), where, config, without_flag)
+    ctx = _Context(root, os.path.realpath(str(qa_dir)), where, config, without_flag, declared_activity)
     if shell or without_flag:
         # A shell string passed without --shell is still read as the shell string it is.
         units = _shell_units(" ".join(texts), 0, lenient=without_flag)
     else:
         units = _expand(texts, None, [], 0, lenient=False)
-    return _decide(rules, units, ctx, declared_activity, tuple(_hosts(texts)))
+    decision = _decide(rules, units, ctx, declared_activity, tuple(_hosts(texts)))
+    return dataclasses.replace(decision, environments=_dsn_environments(config, texts))
 
 
 def _command_texts(command: Union[Sequence[str], str]) -> List[str]:
@@ -324,7 +369,11 @@ def _reason(rule: _Rule, hit: _Hit) -> str:
 def _match(rule: _Rule, unit: _Unit, ctx: _Context) -> Optional[_Hit]:
     m = rule.match
     prog = unit.program
+    if "declared_activity" in m and ctx.declared not in m["declared_activity"]:
+        return None
     if "program" in m and (prog is None or not any(fnmatch.fnmatchcase(prog, p) for p in m["program"])):
+        return None
+    if "unless_program" in m and (prog is None or _known_program(unit, m["unless_program"])):
         return None
     if m.get("no_args") and len(unit.argv) != 1:
         return None
@@ -347,9 +396,14 @@ def _match(rule: _Rule, unit: _Unit, ctx: _Context) -> Optional[_Hit]:
     return _CHECKS[check](ctx, unit) if check else ("", None)
 
 
+def _known_program(unit: _Unit, patterns: Sequence[str]) -> bool:
+    """A bare name found on the PATH, listed in ``patterns``. A path can name the project's own file under any name."""
+    return "/" not in unit.argv[0] and any(fnmatch.fnmatchcase(_program_name(unit.argv[0]), p) for p in patterns)
+
+
 def _subcommand(argv: List[str]) -> Tuple[Optional[str], List[str]]:
     """The first argument that is not an option, and the arguments after it."""
-    skip = _GIT_VALUE_OPTIONS if argv and os.path.basename(argv[0]) == "git" else frozenset()
+    skip = _GIT_VALUE_OPTIONS if argv and _program_name(argv[0]) == "git" else frozenset()
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -395,7 +449,7 @@ def _strip_wrappers(words: List[str]) -> Tuple[List[str], List[str]]:
         while argv and _ASSIGNMENT.match(argv[0]):
             assignments.append(argv[0])
             argv = argv[1:]
-        name = os.path.basename(argv[0]) if argv else ""
+        name = _program_name(argv[0]) if argv else ""
         if name not in _WRAPPERS:
             return argv, assignments
         argv = _unwrap(name, argv)
@@ -775,11 +829,21 @@ def _hosts(texts: List[str]) -> List[str]:
         for m in _URL.finditer(text):
             try:
                 host = urllib.parse.urlsplit(m.group(0)).hostname
-            except ValueError:
-                continue
+            except ValueError:  # whatever a URL that cannot be read names, it is not known to be declared (§12.2)
+                host = _UNREADABLE_HOST
             if host and host not in hosts:
                 hosts.append(host)
     return hosts
+
+
+def _names_variable(name: str, text: str) -> bool:
+    return re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name), text) is not None
+
+
+def _dsn_environments(config: dict, texts: List[str]) -> Tuple[str, ...]:
+    """The environments whose ``dsn_env`` variable the command names, which authorization must also cover."""
+    return tuple(env["id"] for env in config.get("environments", [])
+                 if env.get("dsn_env") and any(_names_variable(env["dsn_env"], text) for text in texts))
 
 
 # --------------------------------------------------------------------------- paths
@@ -806,9 +870,23 @@ def _inside(path: str, root: str) -> bool:
     return path != root and os.path.commonpath([path, root]) == root
 
 
+def _at_or_inside(path: str, root: str) -> bool:
+    return path == root or _inside(path, root)
+
+
 def _inside_qa(ctx: _Context, path: str) -> bool:
     locations = _locations(ctx, path)
-    return locations is not None and all(_inside(p, ctx.qa_dir) for p in locations)
+    return locations is not None and any(_at_or_inside(p, ctx.qa_dir) for p in locations)
+
+
+def _changeable(ctx: _Context, path: str) -> bool:
+    """Whether a command may delete or overwrite ``path``: ``.qa/work/`` and this run's evidence directory only.
+
+    The rest of ``.qa/`` is the record that testifies about the run.
+    """
+    locations = _locations(ctx, path)
+    roots = (os.path.join(ctx.qa_dir, "work"), os.path.join(ctx.qa_dir, "evidence", "EXE-pending"))
+    return locations is not None and all(any(_at_or_inside(p, root) for root in roots) for p in locations)
 
 
 def _protected(ctx: _Context, path: str) -> bool:
@@ -868,17 +946,23 @@ def _check_delete_outside_qa(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
         roots, deletes, _ = _find_parts(unit.argv)
         if deletes:
             targets.extend(roots)
+    if prog in _WRITERS and _edits_in_place(unit):   # only the record is checked here: elsewhere these commands may write
+        targets.extend(t for t in _write_targets(unit.argv) if _inside_qa(ctx, t))
     for target in targets:
-        if not _inside_qa(ctx, target):
-            where = "depends on the shell" if _locations(ctx, target) is None else "is outside .qa/"
+        if not _changeable(ctx, target):
+            where = "depends on the shell" if _locations(ctx, target) is None else "is outside .qa/work/ and the run's evidence"
             return ("%s %s" % (target, where), None)
     return None
+
+
+def _edits_in_place(unit: _Unit) -> bool:
+    return unit.program not in ("sed", "perl") or any(_IN_PLACE.match(a) for a in unit.argv[1:])
 
 
 def _check_protected_config_write(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     targets = list(unit.redirects)
     prog = unit.program
-    if prog in _WRITERS and (prog not in ("sed", "perl") or any(_IN_PLACE.match(a) for a in unit.argv[1:])):
+    if prog in _WRITERS and _edits_in_place(unit):
         targets.extend(_write_targets(unit.argv))
     for target in targets:
         if _protected(ctx, target):
@@ -933,6 +1017,33 @@ def _secret_kind(text: str) -> Optional[str]:
     return None
 
 
+def mask_secret_flags(argv: List[str], mask: Callable[[str], str]) -> List[str]:
+    """``argv`` with the value after each secret flag replaced by ``mask(value)``, for the record (§12.5).
+
+    The guard denies these commands, and a value matches no redaction pattern just for following a flag. An item
+    can be a whole shell string, so each is also read for a flag and its value inside it.
+    """
+    masked: List[str] = []
+    for i, word in enumerate(argv):
+        flag = next((f for f in _SECRET_FLAGS if word.startswith(f + "=") and len(word) > len(f) + 1), None)
+        if i and argv[i - 1] in _SECRET_FLAGS and word and not word.startswith("-"):
+            masked.append(mask(word))
+        elif flag is not None:
+            masked.append(flag + "=" + mask(word[len(flag) + 1:]))
+        else:
+            masked.append(_SECRET_FLAG_VALUE.sub(lambda m: _masked_value(m, mask), word))
+    return masked
+
+
+def _masked_value(match: "re.Match[str]", mask: Callable[[str], str]) -> str:
+    flag, separator, value = match.groups()
+    quote = value[0] if value[0] in "\"'" else ""
+    inner = value[1:-1] if quote else value
+    if not inner or (separator != "=" and value.startswith("-")):
+        return match.group(0)
+    return flag + separator + quote + mask(inner) + quote
+
+
 def _is_whole_secret_key(key_text: str) -> bool:
     """Whether the key before the value is a secret key carrying a secret (T9-R4). The key is split
     on non-letters into words. It counts when a word is exactly a secret keyword (so ``SECRET_KEY``,
@@ -950,7 +1061,51 @@ def _is_whole_secret_key(key_text: str) -> bool:
 
 def _check_url_host(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     undeclared = [h for h in _hosts(unit.argv[1:]) if resolve_host(ctx.config, h) is None]
-    return ("no environment declares %s" % ", ".join(undeclared), None) if undeclared else None
+    if undeclared:
+        return ("no environment declares %s" % ", ".join(undeclared), None)
+    if any(_no_readable_host(ctx, target) for target in _download_targets(unit.argv)):
+        return ("a download target names no host this check can read", None)
+    return None
+
+
+def _download_targets(argv: List[str]) -> List[str]:
+    """What a download tool fetches: its operands, without the values of the options listed above."""
+    targets: List[str] = []
+    i, rest = 1, False
+    while i < len(argv):
+        word = argv[i]
+        if rest or word == "-" or not word.startswith("-"):
+            targets.append(word)
+            i += 1
+        elif word == "--":
+            rest = True
+            i += 1
+        elif word == "--url":
+            targets.extend(argv[i + 1:i + 2])
+            i += 2
+        elif word.startswith("--url="):
+            targets.append(word[len("--url="):])
+            i += 1
+        else:
+            i += 2 if word in _DOWNLOAD_VALUE_OPTIONS else 1
+    if _program_name(argv[0]) in _HTTP_CLIENTS:
+        targets = targets[1:2] if targets and _HTTP_METHOD.match(targets[0]) else targets[:1]
+    return targets
+
+
+def _no_readable_host(ctx: _Context, word: str) -> bool:
+    """Whether ``word`` is a target nothing here can place on a declared host: a variable, a glob, another scheme, no scheme."""
+    scheme = _SCHEME.match(word)
+    authority = re.split(r"[/?#]", word[scheme.end():] if scheme else word, maxsplit=1)[0]
+    if not authority or any(c in authority for c in "$`{}"):
+        return True
+    if scheme and scheme.group(1).lower() in ("http", "https"):
+        return False   # _hosts has read it
+    try:
+        host = urllib.parse.urlsplit("//" + authority).hostname
+    except ValueError:
+        return True
+    return host is None or resolve_host(ctx.config, host) is None
 
 
 def _check_privilege_escalation(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
@@ -973,7 +1128,7 @@ def _all_dsns_ephemeral(ctx: _Context, texts: List[str]) -> bool:
     classes = set()
     for env in ctx.config.get("environments", []):
         name = env.get("dsn_env")
-        if name and any(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name), t) for t in texts):
+        if name and any(_names_variable(name, t) for t in texts):
             classes.add(env.get("class"))
     return classes == {"ephemeral"}
 
@@ -995,10 +1150,18 @@ def _check_destructive_sql(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     return ("the SQL drops, truncates or changes rows without WHERE", None)
 
 
+def _check_sql_write(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
+    # Row-bounded changes, schema changes and DDL against an ephemeral DSN: destructive_sql denies the rest.
+    texts = _scan_texts(unit)
+    if not any(_SQL_WRITE.search(t) for t in texts):
+        return None
+    return ("the SQL writes to the database", "db-ephemeral" if _all_dsns_ephemeral(ctx, texts) else None)
+
+
 def _check_migration(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     argv = unit.argv
     for i, word in enumerate(argv):
-        tool = os.path.basename(word)
+        tool = _program_name(word)
         rx = _MIGRATIONS.get(tool)
         if rx is not None and rx.search(" ".join(argv[i + 1:])):
             texts = _scan_texts(unit)
@@ -1014,5 +1177,6 @@ _CHECKS: Dict[str, Callable[[_Context, _Unit], Optional[_Hit]]] = {
     "url_host": _check_url_host,
     "privilege_escalation": _check_privilege_escalation,
     "destructive_sql": _check_destructive_sql,
+    "sql_write": _check_sql_write,
     "migration": _check_migration,
 }
