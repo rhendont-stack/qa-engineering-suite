@@ -208,9 +208,9 @@ def test_assignment_patterns_are_linear_on_long_keyword_runs(redactor, keyword):
     import time
 
     run = keyword * (200_000 // len(keyword))
-    start = time.monotonic()
+    start = time.process_time()
     out, _ = redactor.text(run + "=" + "Zx81" + "kQ02pLm7 and " + keyword + "=" + "Qw3Er5Ty")
-    assert time.monotonic() - start < 2.0
+    assert time.process_time() - start < 2.0
     assert "Qw3Er5Ty" not in out
 
 
@@ -223,6 +223,6 @@ def test_assignment_patterns_are_linear_on_long_keyword_runs(redactor, keyword):
 def test_other_patterns_are_linear(redactor, text):
     import time
 
-    start = time.monotonic()
+    start = time.process_time()
     redactor.text(text)
-    assert time.monotonic() - start < 2.0
+    assert time.process_time() - start < 2.0
