@@ -181,6 +181,14 @@ def _gate_evaluated(state: dict, event: dict) -> None:
     state["gates"][data["id"]] = copy.deepcopy(data)
 
 
+def _report_rendered(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["reports"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    state["reports"][data["id"]] = copy.deepcopy(data)
+
+
 def _gate_policy_proposed(state: dict, event: dict) -> None:
     data = event["data"]
     state["config"]["history"].append({"event": event["id"], "kind": "gate_policy_proposed", "criterion": data["criterion"],
@@ -297,6 +305,7 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "finding.updated": _queue,
     "finding.state_changed": _queue,
     "gate.evaluated": _gate_evaluated,
+    "report.rendered": _report_rendered,
     "gate.policy_proposed": _gate_policy_proposed,
     "gate.policy_accepted": _gate_policy_accepted,
 }
