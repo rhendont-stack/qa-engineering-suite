@@ -1,26 +1,26 @@
 # Milestone 1 exit evidence
 
-Date of the runs: 2026-11-08. Evidence commit: `dabb361002f34a45e8f7c48733c6f1a150ec735e` on branch `milestone-1/kernel-foundations`, clean tree. This report's own commit follows that one and changes only this file. `<repo>` stands for the repository path.
+Date of the runs: 2026-11-08. Evidence commit: `fa72d4d270909697aa65b8d5782f388de8011d3c` on branch `milestone-1/kernel-foundations`, clean tree. The commit that adds this version of the report comes right after the evidence commit and changes only this file. Earlier versions of the report were committed before it (`5629cac` and `f765dc8`). `<repo>` stands for the repository path.
 
 Every `EXE-` and `AUTH-` ID below resolves against the local `.qa/` ledger. D8 keeps that ledger out of git, so a fresh clone has nothing to resolve them against.
 
 ## Exit evidence
 
-Spec §18 asks for "L1 green on 3.9 + newest (macOS, Linux); deterministic scenarios in §16.3 pass". L1 here excludes mutation testing of the kernel (deviation 24). Each row is the latest attempt of its leg, as `qa run` recorded it. The numeric columns are the recorded `tests` fields.
+Spec §18 asks for "L1 green on 3.9 + newest (macOS, Linux); deterministic scenarios in §16.3 pass". L1 here excludes mutation testing of the kernel (deviation 24). Each row is the latest attempt of its leg, as `qa run` recorded it. Total, Fail, Error and Skip come from the `report` field of the leg's `execution.recorded` event. Pass counts the leg's `result.recorded` events with a passing status.
 
 | Leg | Execution | Status | Strength | Total | Pass | Fail | Error | Skip | Commit |
 |---|---|---|---|---|---|---|---|---|---|
-| macOS arm64, CPython 3.9.6 | EXE-01M6YC1Y999Q0Q89817S0WDW9S | passed | structured | 2225 | 2220 | 0 | 0 | 5 | `dabb361` |
-| macOS arm64, CPython 3.15.2 | EXE-01M6YC9TB3EK3K25RW4BFA5Q30 | passed | structured | 2225 | 2220 | 0 | 0 | 5 | `dabb361` |
-| Linux arm64 container, `python:3.9-slim` | EXE-01M6YCF4G3EZSTZJ5E6000GW09 | passed | structured | 2225 | 2156 | 0 | 0 | 69 | `dabb361` |
-| Linux arm64 container, `python:3-slim` (CPython 3.15) | EXE-01M6YCPEKZAMAC0ZWQ0JR2V1M6 | passed | structured | 2225 | 2156 | 0 | 0 | 69 | `dabb361` |
+| macOS arm64, CPython 3.9.6 | EXE-01M6YHY63RDTZNABF6AHZSCMRW | passed | structured | 2474 | 2469 | 0 | 0 | 5 | `fa72d4d` |
+| macOS arm64, CPython 3.15.2 | EXE-01M6YJ420CN5ZH85M2B8PBJCD3 | passed | structured | 2474 | 2469 | 0 | 0 | 5 | `fa72d4d` |
+| Linux arm64 container, `python:3.9-slim` | EXE-01M6YJA5HDRS0XF17ERPSBBYQZ | passed | structured | 2474 | 2395 | 0 | 0 | 79 | `fa72d4d` |
+| Linux arm64 container, `python:3-slim` (CPython 3.15) | EXE-01M6YJGRVF35VCTMD4C1AQTA0V | passed | structured | 2474 | 2395 | 0 | 0 | 79 | `fa72d4d` |
 
 Each leg recorded exit code 0 and a clean tree, and each ran alone, macOS first. `qa ledger verify` reported no problems after the last leg.
 
 The §16.3 scenarios are the nine tests in `tests/integration/test_scenarios.py`:
 
-- On macOS, nine of nine passed in EXE-01M6YC1Y999Q0Q89817S0WDW9S and EXE-01M6YC9TB3EK3K25RW4BFA5Q30.
-- On Linux, seven of nine passed in EXE-01M6YCF4G3EZSTZJ5E6000GW09 and EXE-01M6YCPEKZAMAC0ZWQ0JR2V1M6. The other two skip for lack of git (see Limitations), so those two scenarios have only macOS evidence.
+- On macOS, nine of nine passed in EXE-01M6YHY63RDTZNABF6AHZSCMRW and EXE-01M6YJ420CN5ZH85M2B8PBJCD3.
+- On Linux, seven of nine passed in EXE-01M6YJA5HDRS0XF17ERPSBBYQZ and EXE-01M6YJGRVF35VCTMD4C1AQTA0V. The other two skip for lack of git (see Limitations), so those two scenarios have only macOS evidence.
 
 The Linux images are referenced by digest:
 
@@ -37,37 +37,50 @@ docker run --rm --cpus=2 --memory=2g --init --network=none -e PYTHONDONTWRITEBYT
 
 ## Earlier attempts
 
-These attempts ran on commit `eba154d`, before the test fix in `dabb361`. None is the exit evidence for its leg.
+These test attempts ran before the final code, newest round first. None is the exit evidence for its leg. The columns have the same sources as above.
 
-| Leg | Execution | Status | Reason | Strength | Total | Pass | Fail | Error | Skip |
-|---|---|---|---|---|---|---|---|---|---|
-| macOS 3.9.6 | EXE-01M6YB3T1J6BE9EWKHY8MW67EG | passed | none | structured | 2225 | 2220 | 0 | 0 | 5 |
-| macOS 3.15.2 | EXE-01M6YB8XKYYQB5Q24Q93E6Q36G | passed | none | structured | 2225 | 2220 | 0 | 0 | 5 |
-| Linux `python:3.9-slim` | EXE-01M6YBQR3VZSS58K0WKP64PCYK | failed | assertion | structured | 2225 | 2154 | 4 | 0 | 67 |
+| Leg | Execution | Status | Reason | Strength | Total | Pass | Fail | Error | Skip | Commit |
+|---|---|---|---|---|---|---|---|---|---|---|
+| macOS 3.9.6 | EXE-01M6YC1Y999Q0Q89817S0WDW9S | passed | none | structured | 2225 | 2220 | 0 | 0 | 5 | `dabb361` |
+| macOS 3.15.2 | EXE-01M6YC9TB3EK3K25RW4BFA5Q30 | passed | none | structured | 2225 | 2220 | 0 | 0 | 5 | `dabb361` |
+| Linux `python:3.9-slim` | EXE-01M6YCF4G3EZSTZJ5E6000GW09 | passed | none | structured | 2225 | 2156 | 0 | 0 | 69 | `dabb361` |
+| Linux `python:3-slim` | EXE-01M6YCPEKZAMAC0ZWQ0JR2V1M6 | passed | none | structured | 2225 | 2156 | 0 | 0 | 69 | `dabb361` |
+| macOS 3.9.6 | EXE-01M6YB3T1J6BE9EWKHY8MW67EG | passed | none | structured | 2225 | 2220 | 0 | 0 | 5 | `eba154d` |
+| macOS 3.15.2 | EXE-01M6YB8XKYYQB5Q24Q93E6Q36G | passed | none | structured | 2225 | 2220 | 0 | 0 | 5 | `eba154d` |
+| Linux `python:3.9-slim` | EXE-01M6YBQR3VZSS58K0WKP64PCYK | failed | assertion | structured | 2225 | 2154 | 4 | 0 | 67 | `eba154d` |
 
-That Linux attempt, EXE-01M6YBQR3VZSS58K0WKP64PCYK, ran without `--init`. Its four failing tests were:
+That last Linux attempt, EXE-01M6YBQR3VZSS58K0WKP64PCYK, ran without `--init`. Its four failing tests were:
 
 - `tests/unit/test_execution.py::test_two_runs_without_git_count_as_equal_and_keep_their_limitation` and `::test_truncation_and_git_limitations` expected `not_a_git_repo`, which the kernel can report only where git exists. The images ship no git, so the kernel's `git_unavailable` was correct. Commit `dabb361` adds the `needs_git` guard to both tests.
-- `tests/unit/test_runner.py::test_timeout_kills_process_group` and `::test_background_child_holding_stdout` found the grandchild process still answering `os.kill(pid, 0)`. The later Linux legs add `--init`, and both tests passed in EXE-01M6YCF4G3EZSTZJ5E6000GW09 and EXE-01M6YCPEKZAMAC0ZWQ0JR2V1M6. The inferred cause is that pytest as PID 1 did not reap the orphan. The process state itself was not inspected.
+- `tests/unit/test_runner.py::test_timeout_kills_process_group` and `::test_background_child_holding_stdout` found the grandchild process still answering `os.kill(pid, 0)`. The later Linux legs add `--init`, and both tests passed in EXE-01M6YCF4G3EZSTZJ5E6000GW09, EXE-01M6YCPEKZAMAC0ZWQ0JR2V1M6, EXE-01M6YJA5HDRS0XF17ERPSBBYQZ and EXE-01M6YJGRVF35VCTMD4C1AQTA0V. The inferred cause is that pytest as PID 1 did not reap the orphan. The process state itself was not inspected.
 
-The Linux installs under `qa run --activity install-dependencies`, one per image, are:
+## Linux installs
+
+`qa run --activity install-dependencies` ran once per image. These are environment setup, not test attempts. Each environment stayed in its named volume and was reused by the later test legs. `requirements-dev.txt` did not change between the installs and the evidence commit.
 
 | Image | Execution | Status | Strength | Commit |
 |---|---|---|---|---|
 | `python:3.9-slim` | EXE-01M6YBPYJFRKGHWT6TPPVFZS89 | passed | exit_code | `eba154d` |
 | `python:3-slim` | EXE-01M6YCNP3NAMGDPF2FTF9FWJ50 | passed | exit_code | `dabb361` |
 
-The 3.9 environment was kept in its volume and reused on `dabb361`.
-
 ## Limitations
 
-- **Attempts that did not succeed.** One, EXE-01M6YBQR3VZSS58K0WKP64PCYK, failed with reason `assertion`, as described above.
-- **Tests the Linux legs skip for lack of git.** 59 tests on each Linux leg, EXE-01M6YCF4G3EZSTZJ5E6000GW09 and EXE-01M6YCPEKZAMAC0ZWQ0JR2V1M6, with the same set on both. The images ship no git. These tests have no Linux evidence:
+- **Attempts that did not succeed.** One, EXE-01M6YBQR3VZSS58K0WKP64PCYK, failed with reason `assertion`, as described above. It is not the latest attempt of its leg.
+- **Tests the Linux legs skip for lack of git.** 69 tests on each Linux leg, EXE-01M6YJA5HDRS0XF17ERPSBBYQZ and EXE-01M6YJGRVF35VCTMD4C1AQTA0V, with the same set on both. The images ship no git. These tests have no Linux evidence:
 
 ```
 tests.integration.test_scenarios (2)
   test_f9_missing_tool_blocks_and_gate_insufficient
   test_gate_truth_table_via_cli
+tests.unit.test_authority (8)
+  test_a_clone_that_ships_its_ledger_runs_nothing
+  test_a_shipped_grant_covers_nothing
+  test_doctor_names_the_refusal
+  test_init_names_the_refusal
+  test_static_analysis_still_runs_and_names_the_limitation
+  test_the_gate_does_not_count_a_shipped_ledger
+  test_the_two_shareable_files_carry_no_refusal
+  test_tracked_paths_do_not_depend_on_the_case_of_the_directory
 tests.unit.test_execution (6)
   test_attempt_needs_the_same_commit
   test_attempt_needs_the_same_diff
@@ -75,7 +88,7 @@ tests.unit.test_execution (6)
   test_git_facts_are_read_before_the_run
   test_truncation_and_git_limitations
   test_two_runs_without_git_count_as_equal_and_keep_their_limitation
-tests.unit.test_gate (26)
+tests.unit.test_gate (27)
   test_a_passing_rerun_cannot_hide_a_failed_root_end_to_end
   test_a_run_on_the_dirty_tree_being_evaluated_counts
   test_a_run_that_leaves_a_git_ignored_file_counts
@@ -97,12 +110,13 @@ tests.unit.test_gate (26)
   test_missing_tool_gives_insufficient_evidence
   test_open_high_finding_blocks_with_detail
   test_override_via_propose_accept_is_not_drift
+  test_reclassifying_a_recorded_result_reaches_the_gate
   test_tampered_evidence_fails_the_gate_end_to_end
   test_the_default_target_is_the_current_commit
   test_the_event_records_the_hash_of_the_tree_it_evaluated
   test_unevaluable_criteria_say_why
   test_with_an_explicit_target_clean_tree_still_governs
-tests.unit.test_gitinfo (16)
+tests.unit.test_gitinfo (17)
   test_binary_change_changes_diff_hash
   test_clean_repo
   test_detached_head_has_no_branch
@@ -117,6 +131,7 @@ tests.unit.test_gitinfo (16)
   test_tracked_change_changes_diff_hash
   test_untracked_content_changes_diff_hash
   test_untracked_fifo_does_not_hang
+  test_untracked_files_count_whatever_the_users_git_config_says
   test_untracked_symlink_hashed_by_target
   test_untracked_symlink_to_dev_zero_does_not_hang
 tests.unit.test_tools (9)
@@ -131,18 +146,19 @@ tests.unit.test_tools (9)
   test_without_git_on_the_path_the_walk_runs_instead
 ```
 
-- **Other Linux skips.** Ten more on each Linux leg, for two reasons. The containers run as root, so file and directory modes do not bind (8 tests in `test_cli`, `test_doctor`, `test_execution` and `test_tools`). The file system also tells names apart by case and by normalization form, which leaves 2 macOS-specific tests in `test_execution` without a Linux run.
-- **macOS skips.** Five on each macOS leg, because APFS refuses file names that are not UTF-8: the four tests in the next item, and `test_tools.py::test_output_survives_a_file_name_that_is_not_utf8`.
-- **Non-UTF-8 name handling is Linux-only evidence.** These four tests in `tests/unit/test_execution.py` passed on both Linux legs, EXE-01M6YCF4G3EZSTZJ5E6000GW09 and EXE-01M6YCPEKZAMAC0ZWQ0JR2V1M6, as read from their stored JUnit files, and skip on macOS:
+- **Other Linux skips.** Ten more on each Linux leg, EXE-01M6YJA5HDRS0XF17ERPSBBYQZ and EXE-01M6YJGRVF35VCTMD4C1AQTA0V, for two reasons. The containers run as root, so file and directory modes do not bind (8 tests in `test_cli`, `test_doctor`, `test_execution` and `test_tools`). The file system also tells names apart by case and by normalization form, so 2 tests in `test_execution` that need a file system where such names collide have only macOS evidence.
+- **macOS skips.** Five on each macOS leg, EXE-01M6YHY63RDTZNABF6AHZSCMRW and EXE-01M6YJ420CN5ZH85M2B8PBJCD3, because APFS refuses file names that are not UTF-8: the four tests in the next item, and `test_tools.py::test_output_survives_a_file_name_that_is_not_utf8`.
+- **Non-UTF-8 name handling is Linux-only evidence.** These four tests in `tests/unit/test_execution.py` passed on both Linux legs, EXE-01M6YJA5HDRS0XF17ERPSBBYQZ and EXE-01M6YJGRVF35VCTMD4C1AQTA0V, as read from their stored JUnit files, and skip on macOS:
   - `test_a_cwd_utf8_cannot_encode_is_refused_on_a_filesystem_that_allows_it`
   - `test_the_recorded_cwd_is_escaped_when_a_symlink_leads_to_such_a_name`
   - `test_a_stored_report_name_is_escaped_on_a_filesystem_that_allows_it`
   - `test_an_ingested_report_name_is_escaped_on_a_filesystem_that_allows_it`
 - **Mutation testing of the kernel.** Deferred to milestone 3 (deviation 24).
 - **CI workflow.** The 2x2 matrix in `.github/workflows/ci.yml` has never run, because nothing is pushed. Its cells are `ubuntu-latest` (x86_64) and `macos-latest` (arm64), each with Python 3.9 and 3.15, plus an `l0` job on `ubuntu-latest` with 3.15. The only check so far is actionlint 1.7.12.
-- **Linux architecture.** The Linux legs ran on arm64 only, in local containers limited to 2 CPUs and 2 GB of memory. The CI cells are x86_64.
-- **What the ledger's environment fields describe.** The `environment` and `isolation` fields of each `execution.recorded` event describe the macOS host and the interpreter that launched `qa`, not the interpreter or container under test. They read `darwin-arm64`, Python 3.9.6 and `host` on all nine executions, including the CPython 3.15 and Linux legs, so they differ from the row labels above. Each leg's operating system and interpreter are established by its recorded command (the virtual environment path or the image digest) and by the D4 installs below. For the macOS 3.15 leg, that recorded path is the only ledger link to its interpreter, and no stored artifact of that leg records the version.
+- **Linux architecture.** The Linux legs ran on arm64 only, in local containers limited to 2 CPUs and 2 GB of memory. The Linux CI cells are x86_64.
+- **What the ledger's environment fields describe.** The `environment` and `isolation` fields of each `execution.recorded` event describe the macOS host and the interpreter that launched `qa`, not the interpreter or container under test. They read `darwin-arm64`, Python 3.9.6 and `host` on all thirteen executions, including the CPython 3.15 and Linux legs, so they differ from the row labels above. Each leg's operating system and interpreter are established by its recorded command (the virtual environment path or the image digest) and by the D4 installs below. For each macOS 3.15 leg, that recorded path is the only ledger link to its interpreter, and no stored artifact of that leg records the version.
 - **Network use inside Docker.** The two Linux installs, EXE-01M6YBPYJFRKGHWT6TPPVFZS89 and EXE-01M6YCNP3NAMGDPF2FTF9FWJ50, reached PyPI from inside the container, where the guard cannot see it. Milestone 2's `--container` runs make container network policy explicit. The test legs used `--network=none`.
+- **Command guard coverage.** The command guard is defense in depth, not a complete barrier. It has known gaps parked for milestone 2: some MySQL-dialect write forms through a listed SQL client, writes fed on standard input to key-value and document clients, and download operands placed after an option that a different tool defines as taking a value. A tree that is not a git repository cannot be checked for shipped authority.
 
 ## Approvals
 
@@ -152,7 +168,7 @@ Install authorization, AUTH-001, activity `install-dependencies`, environment `l
 
 ## D4 installs
 
-Measured on 2026-11-08 with `du -sk`, `docker image inspect --format '{{.Size}}'` and `docker system df -v`, except where a row says otherwise. Nothing was installed globally. Everything below can be removed.
+Measured on 2026-11-08 with `du -sk`, `docker image inspect --format '{{.Size}}'` and `docker system df -v`, except where a row says otherwise. Nothing was installed globally. The environments, the tools directory, the images and the volumes below can be removed outright. Removing Homebrew `python@3.15` and `openssl@4` does not undo the upgrades of `ca-certificates`, `sqlite` and `lz4` that came with them.
 
 | Item | What it is | Size |
 |---|---|---|
@@ -167,7 +183,7 @@ Measured on 2026-11-08 with `du -sk`, `docker image inspect --format '{{.Size}}'
 | Docker volume `qa-venv-39` | Linux 3.9 test environment | 32.65 MB |
 | Docker volume `qa-venv-315` | Linux 3.15 test environment | 28.03 MB |
 
-The Vitest, CTRF reporter and Gradle JUnit 5 producers ran in temporary directories that were deleted afterwards, so they are not installed.
+The Vitest, CTRF reporter and Gradle JUnit 5 producers ran in temporary directories that were deleted afterwards, except two scratch copies from one-time steps that remain in a session scratchpad outside the project. None of them is installed.
 
 ## Deviations
 
