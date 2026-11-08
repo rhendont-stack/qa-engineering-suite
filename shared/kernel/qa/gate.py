@@ -134,8 +134,11 @@ def _expired(finding: dict, now: datetime) -> bool:
 
 
 def _unresolved(finding: dict, now: datetime) -> bool:
-    """The one definition of "unresolved" (§10.6, §11.1). A ``suspected`` finding is unresolved, not ignored."""
-    if finding["verification_status"] == "false_positive":
+    """The one definition of "unresolved" (§10.6, §11.1). A ``suspected`` finding is unresolved, not ignored.
+
+    A ``false_positive`` is dismissed only with its justification: §10.6 says "disproved, with justification".
+    """
+    if finding["verification_status"] == "false_positive" and not _blank(finding.get("justification")):
         return False
     return finding["state"] in _UNRESOLVED_STATES or (finding["state"] == "accepted_risk" and _expired(finding, now))
 
@@ -179,7 +182,8 @@ def _about_target(record: dict, ctx: GateContext) -> bool:
 
 
 def _strong_enough(record: dict, minimum: Optional[str]) -> bool:
-    if minimum is None or record["status"] not in ("passed", "failed"):
+    """The floor is on what a pass may claim; a failure at any strength is still a failure."""
+    if minimum is None or record["status"] != "passed":
         return True
     return _rank(_STRENGTHS, record["strength"]) >= _rank(_STRENGTHS, minimum)
 
@@ -196,6 +200,29 @@ def _none_qualified(c: dict, ctx: GateContext) -> str:
     if c["params"].get("clean_tree"):
         wanted.append("clean tree")
     return "no execution qualified for commit %s (%s)" % (ctx.target_commit, ", ".join(wanted))
+
+
+def _same_conditions(one: dict, other: dict) -> bool:
+    return (one["git"]["commit"], one["git"]["diff_hash"], one["environment_id"], one["scope"]) == (
+        other["git"]["commit"], other["git"]["diff_hash"], other["environment_id"], other["scope"])
+
+
+def _judge_pass(latest: dict, qualifying: List[dict], st: dict, params: dict) -> _Outcome:
+    """Whether the latest pass still stands: a reclassified result withdraws it (§8.3), and so does an earlier failure.
+
+    Running a suite again until it is green is what §5.1 forbids, and §8.3 keeps mixed outcomes on one commit and
+    environment failed for gating. Only a change of tree, environment or scope lets a pass stand after a failure.
+    """
+    detail, evidence = _described(latest), [latest["id"]]
+    withdrawn = sorted(rid for rid, result in st["results"].items()
+                       if result["execution"] == latest["id"] and result["reclassifications"] and result["status"] != "passed")
+    if withdrawn:
+        return _NO_EVIDENCE, "%s, but reclassified: %s" % (detail, ", ".join(withdrawn)), evidence + withdrawn
+    if params.get("require_passed", True):
+        failed = [record["id"] for record in qualifying if record["status"] == "failed" and _same_conditions(record, latest)]
+        if failed:
+            return _NOT_MET, "mixed outcomes on one tree: %s failed, then %s passed" % (", ".join(failed), latest["id"]), failed + evidence
+    return _MET, detail, evidence
 
 
 def _suite_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
@@ -216,7 +243,7 @@ def _suite_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     latest = qualifying[-1]
     detail, evidence = _described(latest), [latest["id"]]
     if latest["status"] == "passed":
-        return _MET, detail, evidence
+        return _judge_pass(latest, qualifying, st, params)
     if latest["status"] != "failed":
         return _NO_EVIDENCE, detail, evidence
     if params.get("require_passed", True):

@@ -18,6 +18,7 @@
     "probable_cause": {"type": ["string", "null"]},
     "recommendation": {"type": ["string", "null"]},
     "verification_status": {"$ref": "defs.schema.json#/$defs/verification"},
+    "justification": {"type": "string", "minLength": 1},
     "state": {"$ref": "defs.schema.json#/$defs/finding_state"},
     "refs": {"$ref": "#/$defs/refs"},
     "links": {"$ref": "#/$defs/string_lists"},

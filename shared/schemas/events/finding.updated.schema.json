@@ -32,6 +32,7 @@
             "probable_cause": {"type": ["string", "null"]},
             "recommendation": {"type": ["string", "null"]},
             "verification_status": {"$ref": "defs.schema.json#/$defs/verification"},
+            "justification": {"type": "string", "minLength": 1},
             "refs": {"$ref": "events/finding.opened.schema.json#/$defs/refs"},
             "links": {"$ref": "events/finding.opened.schema.json#/$defs/string_lists"},
             "source": {"$ref": "events/finding.opened.schema.json#/$defs/source"},

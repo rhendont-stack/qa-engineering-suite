@@ -1377,7 +1377,7 @@ def test_ingest_returns_the_ruled_keys_and_folds(trusted, actor, tmp_path, base_
     other = tmp_path / "x.xml"
     other.write_text(PASS_XML)
     out = execution.ingest_file(trusted, actor, "junit", other, from_execution=base_run["execution"], category="functional")
-    assert set(out) == {"event", "execution", "strength", "kind", "total"}
+    assert set(out) == {"event", "execution", "strength", "kind", "total", "findings"}
     assert (out["execution"], out["strength"], out["kind"], out["total"]) == (base_run["execution"], "attested", "tests", 1)
     entry = _record(trusted, base_run)["ingested"][0]
     copy = _dir(trusted, base_run) / "ingested" / "x.xml"
@@ -1391,6 +1391,46 @@ def test_ingest_alert_report_counts_alerts(trusted, actor, tmp_path, base_run):
     other.write_text(SARIF_ONE)
     out = execution.ingest_file(trusted, actor, "sarif", other, from_execution=base_run["execution"])
     assert (out["kind"], out["total"]) == ("alerts", 1)
+
+
+def test_ingesting_a_sarif_report_raises_its_findings(trusted, actor, tmp_path, base_run):  # I6, §8.2
+    other = tmp_path / "x.sarif"
+    other.write_text(SARIF_ONE)
+    out = execution.ingest_file(trusted, actor, "sarif", other, from_execution=base_run["execution"])
+    assert out["findings"] == {"opened": 1, "updated": 0}
+    found = list(state.load(trusted)["findings"].values())
+    assert [(f["category"], f["verification_status"], f["state"]) for f in found] == [("security", "suspected", "open")]
+    assert found[0]["evidence"] == [base_run["execution"]]
+
+
+def test_ingesting_the_same_alert_again_updates_its_finding(trusted, actor, tmp_path, base_run):  # I6
+    other = tmp_path / "x.sarif"
+    other.write_text(SARIF_ONE)
+    execution.ingest_file(trusted, actor, "sarif", other, from_execution=base_run["execution"])
+    out = execution.ingest_file(trusted, actor, "sarif", other, from_execution=base_run["execution"])
+    assert out["findings"] == {"opened": 0, "updated": 1} and len(state.load(trusted)["findings"]) == 1
+
+
+def test_an_ingested_alert_takes_the_category_given(trusted, actor, tmp_path, base_run):  # I6
+    other = tmp_path / "x.sarif"
+    other.write_text(SARIF_ONE)
+    execution.ingest_file(trusted, actor, "sarif", other, from_execution=base_run["execution"], category="functional")
+    assert [f["category"] for f in state.load(trusted)["findings"].values()] == ["functional"]
+
+
+def test_an_ingested_alert_is_redacted_before_its_finding_is_recorded(trusted, actor, tmp_path, base_run):  # I6
+    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    other = tmp_path / "x.sarif"
+    other.write_text(SARIF_ONE.replace('"text": "m"', '"text": "found %s here"' % secret))
+    execution.ingest_file(trusted, actor, "sarif", other, from_execution=base_run["execution"])
+    assert not any(secret in entry.read_text() for entry in trusted.path("ledger").iterdir())
+
+
+def test_ingesting_a_test_report_raises_no_findings(trusted, actor, tmp_path, base_run):  # I6
+    other = tmp_path / "x.xml"
+    other.write_text(PASS_XML)
+    out = execution.ingest_file(trusted, actor, "junit", other, from_execution=base_run["execution"])
+    assert out["findings"] == {"opened": 0, "updated": 0} and state.load(trusted)["findings"] == {}
 
 
 def test_ingest_repeated_basename_gets_a_suffix(trusted, actor, tmp_path, base_run):

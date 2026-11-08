@@ -159,7 +159,7 @@ GIT = {"commit": COMMIT, "branch": "main", "dirty": False, "diff_hash": TREE}
 
 def _exe(execution_id="EXE-1", **changes):
     record = {"id": execution_id, "status": "passed", "reason": None, "strength": "structured", "activity": "test-execution-local",
-              "scope": "targeted", "attempt_of": None, "git": GIT, "report": {"kind": "tests"}}
+              "scope": "targeted", "attempt_of": None, "git": GIT, "report": {"kind": "tests"}, "environment_id": "local"}
     record.update(changes)
     return record
 
@@ -168,11 +168,12 @@ def _finding(severity="HIGH", fstate="open", verification="suspected", category=
     return dict(severity=severity, state=fstate, verification_status=verification, category=category, **changes)
 
 
-def _st(*executions, found=None, tests=None):
+def _st(*executions, found=None, tests=None, results=None):
     st = state.empty_state()
     st["executions"] = {record["id"]: record for record in executions}
     st["findings"] = dict(found or {})
     st["tests"] = dict(tests or {})
+    st["results"] = dict(results or {})
     return st
 
 
@@ -404,7 +405,12 @@ def test_every_verification_status_but_false_positive_counts(verification):
 
 
 def test_a_false_positive_does_not_count():
-    assert _high(_st(found={"FND-001": _finding(verification="false_positive")}))["outcome"] == "MET"
+    assert _high(_st(found={"FND-001": _finding(verification="false_positive", justification="disproved by EXE-1")}))["outcome"] == "MET"
+
+
+@pytest.mark.parametrize("extra", [{}, {"justification": "  "}, {"justification": None}], ids=["absent", "blank", "null"])
+def test_a_false_positive_with_no_justification_still_counts(extra):  # I5, §10.6
+    assert _high(_st(found={"FND-001": _finding(verification="false_positive", **extra)}))["outcome"] == "NOT_MET"
 
 
 @pytest.mark.parametrize("severity,counts", [("CRITICAL", True), ("HIGH", True), ("MEDIUM", False), ("LOW", False), ("INFORMATIONAL", False)])
@@ -484,7 +490,7 @@ def test_an_expired_or_false_positive_acceptance_is_no_accepted_risk(repo_ws, ac
     _run(repo_ws, actor, py)
     findings.add(repo_ws, actor, _low_finding("b.py"))
     findings.add(repo_ws, actor, _low_finding("c.py"))
-    findings.update(repo_ws, actor, "FND-002", {"verification_status": "false_positive", "impact": "i", "recommendation": "r"})
+    findings.update(repo_ws, actor, "FND-002", {"verification_status": "false_positive", "impact": "i", "recommendation": "r", "justification": "disproved"})
     expiry = ids.format_ts(ids.now_utc() + timedelta(days=1))
     _accepted(repo_ws, actor, "FND-001", expiry)
     _accepted(repo_ws, actor, "FND-002", expiry)
@@ -502,9 +508,8 @@ DISQUALIFIED = {
     "a_rerun": {"attempt_of": "EXE-0"},
     "no_git_facts": {"git": None},
     "another_commit": {"git": dict(GIT, commit=OTHER_COMMIT)},
-    "a_weak_pass_or_fail": {"strength": "attested"},
-    "no_strength_at_all": {"strength": None},
 }
+WEAK = {"attested": {"strength": "attested"}, "no_strength_at_all": {"strength": None}}
 
 
 @pytest.mark.parametrize("change", DISQUALIFIED.values(), ids=DISQUALIFIED)
@@ -593,9 +598,71 @@ def test_strength_does_not_apply_to_a_run_with_no_verdict():
 
 
 def test_the_latest_qualifying_execution_decides():
-    failed = _exe("EXE-1", status="failed", reason="assertion")
+    failed = _exe("EXE-1", status="failed", reason="assertion", git=dict(GIT, diff_hash=OTHER_TREE))
     assert _suite(_st(failed, _exe("EXE-2")))["evidence"] == ["EXE-2"]
     assert _suite(_st(_exe("EXE-2"), failed))["outcome"] == "NOT_MET"
+
+
+@pytest.mark.parametrize("change", WEAK.values(), ids=WEAK)
+def test_a_weak_pass_is_no_evidence(change):
+    r = _suite(_st(_exe(**change)))
+    assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", []) and "no execution qualified" in r["detail"]
+
+
+@pytest.mark.parametrize("change", WEAK.values(), ids=WEAK)
+def test_a_weak_failure_is_still_the_latest_word(change):  # I3
+    r = _suite(_st(_exe("EXE-1"), _exe("EXE-2", status="failed", reason="signal", **change)))
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-2"])
+
+
+def test_a_failure_too_weak_for_release_still_fails_the_gate():  # I3
+    runs = _st(_exe("EXE-1", scope="full"), _exe("EXE-2", status="failed", reason="exit_nonzero", strength="exit_code", scope="full"))
+    r = _suite(runs, profile="release")
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-2"])
+
+
+def test_a_pass_after_a_failure_on_the_same_tree_is_not_met():  # I4, §5.1, §8.3
+    r = _suite(_st(_exe("EXE-1", status="failed", reason="assertion"), _exe("EXE-2")))
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-1", "EXE-2"])
+    assert "EXE-1" in r["detail"] and "EXE-2" in r["detail"]
+
+
+@pytest.mark.parametrize("change", [
+    {"git": dict(GIT, diff_hash=OTHER_TREE)}, {"environment_id": "staging"}, {"scope": "full"},
+], ids=["another_tree", "another_environment", "another_scope"])
+def test_a_failure_elsewhere_does_not_taint_the_pass(change):  # I4
+    r = _suite(_st(_exe("EXE-1", status="failed", reason="assertion", **change), _exe("EXE-2")))
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-2"])
+
+
+def test_mixed_outcomes_are_met_when_a_pass_is_not_required():  # I4: this criterion only asks that the suite ran
+    r = _suite(_st(_exe("EXE-1", status="failed", reason="assertion"), _exe("EXE-2")), suite_executed={"params": {"require_passed": False}})
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-2"])
+
+
+def _result(result_id, execution_id="EXE-1", status_now="passed", reclassified=False):
+    changes = [{"event": "EVT-1", "from": "passed", "to": status_now, "reason": "r", "evidence": [execution_id]}] if reclassified else []
+    return {"id": result_id, "execution": execution_id, "status": status_now, "reclassifications": changes}
+
+
+def test_a_result_reclassified_down_withdraws_the_pass():  # M8
+    results = {"RES-1": _result("RES-1"), "RES-2": _result("RES-2", status_now="inconclusive", reclassified=True)}
+    r = _suite(_st(_exe(), results=results))
+    assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", ["EXE-1", "RES-2"]) and "RES-2" in r["detail"]
+
+
+def test_a_reclassified_result_of_another_execution_changes_nothing():  # M8
+    r = _suite(_st(_exe(), results={"RES-2": _result("RES-2", "EXE-9", status_now="inconclusive", reclassified=True)}))
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-1"])
+
+
+def test_reclassifying_a_recorded_result_reaches_the_gate(repo_ws, actor, py):  # M8, through the real event
+    run = execution.execute(repo_ws, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))
+    assert gate.evaluate(repo_ws, actor, profile="change")["data"]["verdict"] == "READY"
+    result = next(rid for rid, rec in state.load(repo_ws)["results"].items() if rec["execution"] == run["execution"])
+    execution.reclassify(repo_ws, actor, result, "inconclusive", "the oracle was wrong", [run["execution"]])
+    se = _criterion(gate.evaluate(repo_ws, actor, profile="change"), "suite_executed")
+    assert se["outcome"] == "NO_EVIDENCE" and result in se["evidence"]
 
 
 def test_require_passed_is_the_default_and_false_accepts_a_failed_latest():
@@ -840,7 +907,7 @@ def test_the_detail_names_every_failure():
 @pytest.mark.parametrize("record,outcome", [
     (_finding(severity="LOW", category="test-quality"), "NOT_MET"),
     (_finding(category="security"), "MET"),
-    (_finding(category="test-quality", verification="false_positive"), "MET"),
+    (_finding(category="test-quality", verification="false_positive", justification="disproved"), "MET"),
     (_finding(category="test-quality", fstate="accepted_risk", expires_at="2030-01-01T00:00:00.000Z"), "MET"),
     (_finding(category="test-quality", fstate="accepted_risk", expires_at="2026-01-01T00:00:00.000Z"), "NOT_MET"),
     (_finding(category="test-quality", fstate="wont_fix"), "MET"),

@@ -38,11 +38,12 @@ _OPENED = "events/finding.opened.schema.json"
 _KERNEL_FIELDS = ("id", "state", "priority", "fingerprint")
 _INPUT_FIELDS = ("title", "description", "category", "severity", "severity_rationale", "component", "evidence",
                  "reproduction_steps", "impact", "probable_cause", "recommendation", "verification_status", "refs",
-                 "links", "source", "commit", "key_attributes")
+                 "links", "source", "commit", "key_attributes", "justification")
 _NO_PLACEHOLDER = "sha256:" + "0" * 64
 _CONFIRMING = ("exit_code", "structured")
 
-_CAUSE_CITATION = re.compile(r"(?=[\w./\\-]*[A-Za-z])[\w./\\-]+:[0-9]+|\bEV-[0-9a-f]{12}\b|\bEXE-[0-9A-HJKMNP-TV-Z]{26}\b")
+# The lookbehind starts the path only where its run of characters starts: without it every position rescans the run.
+_CAUSE_CITATION = re.compile(r"(?<![\w./\\-])(?=[\w./\\-]*[A-Za-z])[\w./\\-]+:[0-9]+|\bEV-[0-9a-f]{12}\b|\bEXE-[0-9A-HJKMNP-TV-Z]{26}\b")
 _DRIVE = re.compile(r"[A-Za-z]:[\\/]")
 _URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 _LINE_SUFFIX = re.compile(r":[0-9]+$")
@@ -228,6 +229,8 @@ def validate_new(st: dict, f: dict) -> List[str]:
         for key in ("impact", "recommendation"):
             if _blank(g.get(key)):
                 problems.append("%s is required unless verification_status is suspected" % key)
+    if status == "false_positive" and _blank(g.get("justification")):
+        problems.append("justification is required for false_positive: state how the finding was disproved")
     cause = g.get("probable_cause")
     if cause is not None and (not isinstance(cause, str) or not _CAUSE_CITATION.search(cause)):
         problems.append("probable_cause must cite path:line, an EV- id or an EXE- id")

@@ -191,7 +191,7 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
     recorded = _record_blocked(run, gate) if gate.blocked else _run_command(run, gate, grace_s)
     raised = {"opened": 0, "updated": 0}
     if recorded.summary is not None and recorded.summary.kind == "alerts":  # a timed-out scan's partial alerts are real too
-        raised = findings.ingest_alerts(ws, actor, _redacted(run, recorded.summary), execution_id=run.execution_id,
+        raised = findings.ingest_alerts(ws, actor, _redacted(run.redactor, recorded.summary), execution_id=run.execution_id,
                                         category=req.category)
     return {
         "execution": run.execution_id,
@@ -207,11 +207,11 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
     }
 
 
-def _redacted(run: _Run, summary: ingest.ReportSummary) -> ingest.ReportSummary:
-    """The alerts with every text field through the run's own redactor, as every other run event is (T14-R7)."""
-    clean = tuple(dataclasses.replace(a, tool=run.redactor.text(a.tool)[0], rule_id=run.redactor.text(a.rule_id)[0],
-                                      level=run.redactor.text(a.level)[0], message=run.redactor.text(a.message)[0],
-                                      path=None if a.path is None else run.redactor.text(a.path)[0]) for a in summary.alerts)
+def _redacted(redactor: redact.Redactor, summary: ingest.ReportSummary) -> ingest.ReportSummary:
+    """The alerts with every text field through a run's own redactor, as every other run event is (T14-R7)."""
+    clean = tuple(dataclasses.replace(a, tool=redactor.text(a.tool)[0], rule_id=redactor.text(a.rule_id)[0],
+                                      level=redactor.text(a.level)[0], message=redactor.text(a.message)[0],
+                                      path=None if a.path is None else redactor.text(a.path)[0]) for a in summary.alerts)
     return dataclasses.replace(summary, alerts=clean)
 
 
@@ -747,7 +747,11 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
         event = ledger.append(ws, actor, "report.ingested", {
             "execution": from_execution, "format": fmt, "kind": summary.kind, "total": total, "file": "ingested/" + name,
             "sha256": digest, "ev_id": ids.ev_id(digest), "strength": strength, "category": category})
-    return {"event": event["id"], "execution": from_execution, "strength": strength, "kind": summary.kind, "total": total}
+    raised = {"opened": 0, "updated": 0}
+    if summary.kind == "alerts":  # §8.2: a standard report becomes results or findings, or the gate never sees it
+        raised = findings.ingest_alerts(ws, actor, _redacted(redactor, summary), execution_id=from_execution, category=category)
+    return {"event": event["id"], "execution": from_execution, "strength": strength, "kind": summary.kind, "total": total,
+            "findings": raised}
 
 
 def reclassify(ws: Workspace, actor: ledger.Actor, result_id: str, new_status: str, reason: str,

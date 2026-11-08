@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from helpers import REPO, WRITE_JUNIT, WRITE_SARIF, base, req
+from helpers import REPO, WRITE_JUNIT, WRITE_SARIF, base, finishes, req
 from qa import canonical, execution, findings, ids, ingest, ledger, resource_dir, schema, state, vocab
 from qa.errors import QaError
 
@@ -795,7 +795,7 @@ def _sarif_run(py, results, driver="{'name': 's'}", **kw):
 
 def test_execute_survives_alerts_it_cannot_place(trusted, actor, py):
     results = ("[{'ruleId': 'R%d' % n, 'level': 'error', 'message': {'text': 'm'}, 'locations': [{'physicalLocation': "
-               "{'artifactLocation': {'uri': u}}}]} for n, u in enumerate(['a.py', 'https://[oops/b.py', '   ', 'c.py'])] "
+               "{'artifactLocation': {'uri': u}}}]} for n, u in enumerate(['a.py', 'https:' + '//[oops/b.py', '   ', 'c.py'])] "
                "+ [{'ruleId': '  ', 'level': 'error', 'message': {'text': 'm'}}]")
     r = execution.execute(trusted, actor, _sarif_run(py, results))
     assert r["status"] == "failed" and r["findings"] == {"opened": 5, "updated": 0}
@@ -943,4 +943,46 @@ def test_policy_schemas_refuse_a_broken_policy():
 
 def test_the_opened_schema_names_exactly_the_record():
     props = schema.load_schema("events/finding.opened.schema.json")
-    assert set(props["properties"]) == A3_KEYS and set(props["required"]) == A3_KEYS and props["additionalProperties"] is False
+    assert set(props["properties"]) == A3_KEYS | {"justification"} and set(props["required"]) == A3_KEYS and props["additionalProperties"] is False
+
+
+# --------------------------------------------------------------------------- final review: I5, M1
+
+def _dismissal(**extra):
+    return dict({"verification_status": "false_positive", "impact": "none", "recommendation": "none"}, **extra)
+
+
+@pytest.mark.parametrize("extra", [{}, {"justification": ""}, {"justification": "   "}], ids=["absent", "empty", "blank"])
+def test_dismissing_a_finding_needs_a_justification(ws, actor, extra):  # I5, §10.6
+    e, _ = findings.add(ws, actor, base())
+    with pytest.raises(QaError) as err:
+        findings.update(ws, actor, e["data"]["id"], _dismissal(**extra))
+    assert err.value.code == "finding_invalid"
+    assert state.load(ws)["findings"][e["data"]["id"]]["verification_status"] == "suspected"
+
+
+def test_a_justification_is_recorded_in_the_event_and_the_state(ws, actor):  # I5
+    e, _ = findings.add(ws, actor, base())
+    event = findings.update(ws, actor, e["data"]["id"], _dismissal(justification="the route checks ownership at app/orders/views.py:42"))
+    assert event["data"]["changes"]["justification"].startswith("the route checks")
+    assert state.load(ws)["findings"][e["data"]["id"]]["justification"].startswith("the route checks")
+
+
+def test_a_finding_can_be_opened_as_a_false_positive_only_with_a_justification(ws, actor):  # I5
+    assert any("justification" in p for p in findings.validate_new(state.load(ws), base(**_dismissal())))
+    assert findings.validate_new(state.load(ws), base(**_dismissal(justification="disproved"))) == []
+
+
+def test_other_statuses_do_not_ask_for_a_justification(ws, actor):  # I5: and record no empty field
+    e, _ = findings.add(ws, actor, base())
+    assert "justification" not in e["data"]
+
+
+def test_a_long_run_with_no_citation_is_searched_in_linear_time():  # M1: this runs under the ledger lock
+    run = "a" * 200000
+    assert finishes(lambda: findings._CAUSE_CITATION.search(run), seconds=5) is None
+
+
+@pytest.mark.parametrize("cause", ["see app/views.py:42 for it", "(views.py:7)", "1:a.py:3"])
+def test_the_citation_is_still_found_with_the_lookbehind(cause):  # M1
+    assert findings._CAUSE_CITATION.search(cause) is not None

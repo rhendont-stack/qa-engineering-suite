@@ -165,6 +165,12 @@ def test_sarif_level_and_severity_fallbacks(tmp_path):
     assert (s.alerts[0].path, s.alerts[0].start_line, s.alerts[0].tool) == ("a.py", 3, "t")
 
 
+def test_sarif_rule_named_only_by_index_keeps_its_id(tmp_path):  # M3
+    doc = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t", "rules": [{"id": "R0"}, {"id": "R1"}]}},
+                                         "results": [{"ruleIndex": 1, "message": {"text": "m"}}]}]}
+    assert ingest.parse_report("sarif", write(tmp_path, json.dumps(doc), "r.sarif"), 10**6).alerts[0].rule_id == "R1"
+
+
 def test_sarif_result_properties_override_rule(tmp_path):
     doc = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t", "rules": [
         {"id": "R1", "defaultConfiguration": {"level": "note"}, "properties": {"security-severity": "1.0"}}]}},

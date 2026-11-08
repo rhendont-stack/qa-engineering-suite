@@ -63,6 +63,8 @@ def parse(data: bytes) -> ReportSummary:
             if rule is None and isinstance(res.get("ruleIndex"), int) and 0 <= res["ruleIndex"] < len(rule_list):
                 rule = _dict(rule_list[res["ruleIndex"]])
             rule = rule or {}
+            if not rule_id and isinstance(rule.get("id"), str):
+                rule_id = rule["id"]  # named by index alone: without this, unrelated alerts merge under one rule
             level = res.get("level") or _dict(rule.get("defaultConfiguration")).get("level") or "warning"
             locs = res.get("locations") if isinstance(res.get("locations"), list) else []
             phys = _dict(_dict(locs[0]).get("physicalLocation")) if locs else {}
