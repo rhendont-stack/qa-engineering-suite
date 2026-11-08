@@ -458,7 +458,7 @@ def _alert_finding(ws: Workspace, actor: ledger.Actor, alert: Alert, execution_i
     message = alert.message.strip() if isinstance(alert.message, str) else ""
     first = message.splitlines()[0].strip() if message else ""
     path = _repo_path(ws, alert.path, cwd)
-    source: Dict[str, object] = {"skill": actor.skill, "method": "static", "tool": alert.tool, "level": alert.level,
+    source: Dict[str, object] = {"skill": actor.skill, "method": "static", "tool": (alert.tool or "").strip() or "unknown", "level": alert.level,
                                  "security_severity": _finite(alert.security_severity), "start_line": alert.start_line}
     component: Dict[str, str] = {}
     refs: Dict[str, object] = {"rule": rule}

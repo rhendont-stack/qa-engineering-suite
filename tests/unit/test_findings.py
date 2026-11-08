@@ -786,8 +786,8 @@ def test_alert_with_a_blank_rule_is_unknown(trusted, actor, run_id):
     assert found["FND-001"]["refs"]["rule"] == "unknown"
 
 
-def _sarif_run(py, results, **kw):
-    code = ("import json, sys, os; json.dump({'version': '2.1.0', 'runs': [{'tool': {'driver': {'name': 's'}}, 'results': "
+def _sarif_run(py, results, driver="{'name': 's'}", **kw):
+    code = ("import json, sys, os; json.dump({'version': '2.1.0', 'runs': [{'tool': {'driver': " + driver + "}, 'results': "
             + results + "}]}, open(sys.argv[1], 'w')); sys.exit(1)")
     return execution.RunRequest(command=py.argv(code, "{evidence}/r.sarif"), reports=(("sarif", "{evidence}/r.sarif"),),
                                 activity="static-analysis", category="security", **kw)
@@ -800,6 +800,24 @@ def test_execute_survives_alerts_it_cannot_place(trusted, actor, py):
     r = execution.execute(trusted, actor, _sarif_run(py, results))
     assert r["status"] == "failed" and r["findings"] == {"opened": 5, "updated": 0}
     assert len(state.load(trusted)["executions"]) == 1
+
+
+@pytest.mark.parametrize("driver", ["{}", "{'name': 5}", "{'name': '   '}", "{'name': ''}"])
+def test_execute_survives_a_scanner_with_no_name(trusted, actor, py, driver):
+    results = ("[{'ruleId': 'R%d' % n, 'level': 'error', 'message': {'text': 'm'}} for n in range(3)]")
+    r = execution.execute(trusted, actor, _sarif_run(py, results, driver))
+    assert r["status"] == "failed" and r["findings"] == {"opened": 3, "updated": 0}
+    assert {f["source"]["tool"] for f in state.load(trusted)["findings"].values()} == {"unknown"}
+
+
+def test_execute_survives_odd_alert_values(trusted, actor, py):
+    results = ("[{'ruleId': 'R1', 'level': 'x' * 5000, 'message': {'text': 'lone'}, "
+               "'locations': [{'physicalLocation': {'artifactLocation': {'uri': 'a\\u0000b.py'}, 'region': {'startLine': -4}}}]}, "
+               "{'ruleId': 'R2', 'level': 7, 'message': {'text': ' ' * 300 + 'x'}, 'properties': {'security-severity': '1e999'}}, "
+               "{'ruleId': 'R' * 3000, 'message': 5, 'locations': [{}]}, "
+               "{'ruleId': 'R4', 'properties': {'security-severity': 99999}, 'locations': [{'physicalLocation': {'artifactLocation': {'uri': 5}}}]}]")
+    r = execution.execute(trusted, actor, _sarif_run(py, results))
+    assert r["status"] == "failed" and r["findings"] == {"opened": 4, "updated": 0}
 
 
 def test_alert_strings_are_redacted_with_the_runs_own_environment(trusted, actor, py):
