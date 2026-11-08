@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "authorization.revoked event data",
+  "description": "A grant withdrawn through qa auth revoke. id names the grant; the event's ts is the revocation time. reason carries no pattern because it may hold redaction markers.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/auth_id"},
+    "reason": {"type": "string", "minLength": 1}
+  },
+  "required": ["id", "reason"],
+  "additionalProperties": false
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Callable, Dict, Iterable
 
 from . import ledger, schema
@@ -41,12 +42,32 @@ def _config_drift_detected(state: dict, event: dict) -> None:
                                      "accepted_hash": data["accepted_hash"]})
 
 
+def _authorization_granted(state: dict, event: dict) -> None:
+    data = event["data"]
+    grants = state["authorizations"]
+    if data["id"] in grants:  # the first grant stays, so a revoked one never becomes valid again
+        state["violations"].append({"event": event["id"], "kind": "duplicate_id"})
+        return
+    grants[data["id"]] = dict(copy.deepcopy(data), revoked_at=None, revoke_reason=None)
+
+
+def _authorization_revoked(state: dict, event: dict) -> None:
+    grant = state["authorizations"].get(event["data"]["id"])
+    if grant is None:
+        state["violations"].append({"event": event["id"], "kind": "unknown_authorization"})
+    elif grant["revoked_at"] is None:  # a repeated revocation keeps the first
+        grant["revoked_at"] = event["ts"]
+        grant["revoke_reason"] = event["data"]["reason"]
+
+
 # Later tasks add their event types here.
 REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "workspace.initialized": _workspace_initialized,
     "config.changed": _config_approved("changed"),
     "config.accepted": _config_approved("accepted"),
     "config.drift_detected": _config_drift_detected,
+    "authorization.granted": _authorization_granted,
+    "authorization.revoked": _authorization_revoked,
 }
 
 

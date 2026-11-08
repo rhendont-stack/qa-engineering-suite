@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "authorization.granted event data",
+  "description": "A scoped, expiring grant recorded by qa authorize, in the Appendix A.4 shape. environment is the id of a declared environment; targets are bare hosts or http(s) URLs, stored as given. limits is keyed by activity, and the keys an activity needs are listed here; authz.py also requires coordination for a load test on production. targets, environment, approval_quote and the text limits carry no pattern because they may hold redaction markers.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/auth_id"},
+    "environment": {"type": "string"},
+    "targets": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+    "activities": {"type": "array", "minItems": 1, "items": {"$ref": "defs.schema.json#/$defs/activity"}},
+    "limits": {
+      "type": "object",
+      "propertyNames": {"$ref": "defs.schema.json#/$defs/activity"},
+      "properties": {
+        "load-test": {
+          "type": "object",
+          "properties": {
+            "max_vus": {"$ref": "#/$defs/count"},
+            "max_rps": {"$ref": "#/$defs/count"},
+            "max_duration_s": {"$ref": "#/$defs/count"},
+            "coordination": {"$ref": "#/$defs/text"}
+          },
+          "required": ["max_vus", "max_rps", "max_duration_s"]
+        },
+        "db-write": {
+          "type": "object",
+          "properties": {"backup_statement": {"$ref": "#/$defs/text"}},
+          "required": ["backup_statement"]
+        },
+        "write-tests": {
+          "type": "object",
+          "properties": {"paths": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}}},
+          "required": ["paths"]
+        },
+        "data-egress": {
+          "type": "object",
+          "properties": {"service": {"$ref": "#/$defs/text"}, "data": {"$ref": "#/$defs/text"}},
+          "required": ["service", "data"]
+        }
+      },
+      "additionalProperties": {"type": "object"}
+    },
+    "granted_by": {"const": "user"},
+    "approval_quote": {"$ref": "#/$defs/text"},
+    "granted_at": {"$ref": "defs.schema.json#/$defs/timestamp"},
+    "expires_at": {"$ref": "defs.schema.json#/$defs/timestamp"}
+  },
+  "required": [
+    "id", "environment", "targets", "activities", "limits",
+    "granted_by", "approval_quote", "granted_at", "expires_at"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "count": {"type": "integer", "minimum": 1},
+    "text": {"type": "string", "minLength": 1}
+  }
+}
