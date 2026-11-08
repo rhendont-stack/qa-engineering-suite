@@ -58,3 +58,10 @@ class Py:
 @pytest.fixture
 def py():
     return Py()
+
+
+@pytest.fixture
+def ws(tmp_path):
+    from qa.workspace import init_workspace
+
+    return init_workspace(tmp_path / "Programación" / "My Skills")[0]

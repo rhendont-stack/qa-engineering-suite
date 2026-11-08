@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workspace configuration (.qa/config.json)",
+  "description": "Structure of the workspace policy file. Value rules (duplicate IDs, ephemeral basis, scopes, ranges) are checked by the config module, not here.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$"},
+    "project": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "trust": {"enum": ["trusted", "untrusted"]}
+      },
+      "required": ["name", "trust"],
+      "additionalProperties": false
+    },
+    "environments": {"type": "array", "items": {"$ref": "#/$defs/environment"}},
+    "standing_authorizations": {"type": "array", "items": {"$ref": "#/$defs/standing_authorization"}},
+    "write_scopes": {"type": "array", "items": {"type": "string"}},
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "timeout_seconds": {"type": "integer"},
+        "max_log_mb": {"type": "integer"},
+        "flaky_reruns": {"type": "integer"}
+      },
+      "required": ["timeout_seconds", "max_log_mb", "flaky_reruns"],
+      "additionalProperties": false
+    },
+    "gate": {
+      "type": "object",
+      "properties": {
+        "profile": {"type": "string"},
+        "overrides": {"type": "object", "additionalProperties": {"$ref": "#/$defs/override"}}
+      },
+      "required": ["profile", "overrides"],
+      "additionalProperties": false
+    },
+    "redaction": {
+      "type": "object",
+      "properties": {
+        "extra_env_names": {"type": "array", "items": {"$ref": "#/$defs/env_var_name"}}
+      },
+      "required": ["extra_env_names"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version", "project", "environments", "standing_authorizations",
+    "write_scopes", "defaults", "gate", "redaction"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "env_var_name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+    "environment": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "class": {"$ref": "defs.schema.json#/$defs/env_class"},
+        "base_urls": {"type": "array", "items": {"type": "string"}},
+        "dsn_env": {"$ref": "#/$defs/env_var_name"},
+        "ephemeral_basis": {"enum": ["suite-created", "user-declared"]}
+      },
+      "required": ["id", "class"],
+      "additionalProperties": false
+    },
+    "standing_authorization": {
+      "type": "object",
+      "properties": {
+        "environment": {"type": "string"},
+        "activities": {"type": "array", "items": {"$ref": "defs.schema.json#/$defs/activity"}}
+      },
+      "required": ["environment", "activities"],
+      "additionalProperties": false
+    },
+    "override": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "blocking": {"type": "boolean"},
+        "params": {"type": "object"},
+        "not_applicable": {"type": "string"},
+        "accepted_in": {"$ref": "defs.schema.json#/$defs/evt_id"}
+      },
+      "required": ["accepted_in"],
+      "additionalProperties": false
+    }
+  }
+}
