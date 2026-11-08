@@ -1,0 +1,24 @@
+[
+  {
+    "file": "junit/pytest-8.4.2-mixed.xml",
+    "format": "junit",
+    "producer": "pytest",
+    "version": "8.4.2",
+    "command": ".venv39/bin/python -m pytest -p no:cacheprovider -o python_files=mixed_producer.py --junitxml=tests/corpus/junit/pytest-8.4.2-mixed.xml tests/corpus/producers/pytest_mixed/mixed_producer.py",
+    "date": "2026-11-08",
+    "kind": "tests",
+    "normalizations": ["hostname", "timestamp", "absolute path", "user name"],
+    "expected": {"total": 5, "passed": 2, "failed": 1, "errors": 1, "skipped": 1}
+  },
+  {
+    "file": "sarif/gitleaks-8.30.1.sarif",
+    "format": "sarif",
+    "producer": "gitleaks",
+    "version": "8.30.1",
+    "command": "python3 tests/corpus/producers/gitleaks_sample/make_sample.py tests/corpus/sarif/gitleaks-8.30.1.sarif (runs: gitleaks dir --redact --report-format sarif --report-path <out> <tmpdir>)",
+    "date": "2026-11-08",
+    "kind": "alerts",
+    "normalizations": ["temporary directory path", "absolute path", "timestamp", "user name"],
+    "expected": {"alerts": 1, "runs": 1}
+  }
+]
