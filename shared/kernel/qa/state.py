@@ -27,9 +27,26 @@ def _workspace_initialized(state: dict, event: dict) -> None:
     state["config"]["history"].append({"event": event["id"], "kind": "initialized", "hash": config_hash})
 
 
+def _config_approved(kind: str) -> Callable[[dict, dict], None]:
+    def reduce(state: dict, event: dict) -> None:
+        config_hash = event["data"]["hash"]
+        state["config"]["accepted_hash"] = config_hash
+        state["config"]["history"].append({"event": event["id"], "kind": kind, "hash": config_hash})
+    return reduce
+
+
+def _config_drift_detected(state: dict, event: dict) -> None:
+    data = event["data"]
+    state["config"]["drift"].append({"event": event["id"], "hash": data["hash"],
+                                     "accepted_hash": data["accepted_hash"]})
+
+
 # Later tasks add their event types here.
 REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "workspace.initialized": _workspace_initialized,
+    "config.changed": _config_approved("changed"),
+    "config.accepted": _config_approved("accepted"),
+    "config.drift_detected": _config_drift_detected,
 }
 
 
@@ -42,7 +59,9 @@ def fold(events: Iterable[dict]) -> dict:
             continue
         try:
             schema.validate(event["data"], "events/" + event["type"] + ".schema.json")
-        except QaError:
+        except QaError as exc:
+            if exc.code != "schema_invalid":
+                raise
             state["violations"].append({"event": event["id"], "kind": "invalid_data"})
             continue
         reducer(state, event)

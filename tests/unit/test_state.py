@@ -56,3 +56,23 @@ def test_state_hash_ignores_gates_reports_heads():
     assert state.state_hash(a) == state.state_hash(b)
     b["findings"]["F-1"] = {}
     assert state.state_hash(a) != state.state_hash(b)
+
+
+def test_every_reducer_has_an_event_schema():
+    from qa import resource_dir
+
+    for type_ in state.REDUCERS:
+        assert (resource_dir("schemas") / "events" / (type_ + ".schema.json")).is_file(), type_
+
+
+def test_fold_reraises_non_schema_errors(monkeypatch):
+    import pytest
+    from qa.errors import QaError
+
+    def boom(*a, **k):
+        raise QaError("resource_missing", "x")
+
+    monkeypatch.setattr(state.schema, "validate", boom)
+    with pytest.raises(QaError) as e:
+        state.fold([{"id": "EVT-Z", "type": "workspace.initialized", "data": INIT}])
+    assert e.value.code == "resource_missing"
