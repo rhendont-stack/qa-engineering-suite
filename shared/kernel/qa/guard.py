@@ -79,6 +79,7 @@ _PUNCT = "();<>|&\n"
 _OPERATORS = ("&>>", "<<<", "&&", "||", ";;", "|&", ">>", "<<", "&>", ">&", "<&", ">|", "<>",
               ";", "&", "|", ">", "<", "(", ")", "\n")
 _SEPARATORS = frozenset([";", "&&", "||", "|", "|&", "&", ";;", "\n", "(", ")"])
+_PIPES = frozenset(["|", "|&"])   # keep commands in the same pipeline; other separators do not
 _OUT_REDIRECTS = frozenset([">", ">>", ">|", "&>", "&>>", "<>", ">&"])
 _IN_REDIRECTS = frozenset(["<", "<<", "<<<", "<&"])
 _KEYWORDS = frozenset(["!", "{", "}", "if", "then", "elif", "else", "fi", "do", "done", "while", "until", "esac"])
@@ -112,8 +113,17 @@ _PROTECTED = tuple((tuple(e.rstrip("/").lower().split("/")), e.endswith("/")) fo
 
 _SECRET_FLAGS = ("--password", "--token", "--secret", "--api-key")
 _VAR_REF = re.compile(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$")
+# Redaction patterns that match a key=value assignment; for these the key must be a whole secret
+# keyword (see _is_whole_secret_key). Other kinds match a secret value directly and are unchanged.
+_ASSIGNMENT_SECRET_KINDS = frozenset(["password_assignment", "secret_assignment"])
+_SECRET_KEYWORD = re.compile(r"(?i)^(?:password|passwd|pass|pwd|secret|tokens?"
+                             r"|api[_-]?keys?|private[_-]?keys?|credentials?)")
 _URL = re.compile(r"(?i)\bhttps?://[^\s'\"<>`|;&,(){}\\]+")
 
+# A concrete database connection string (postgres://..., mysql://..., not an http(s) URL).
+_INLINE_DSN = re.compile(r"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|sqlserver|mssql|jdbc|oracle"
+                         r"|mongodb|redis|clickhouse|cockroach(?:db)?|snowflake|duckdb|cassandra|db2)"
+                         r"(?:\+[a-z0-9]+)?://")
 _SQL_DESTRUCTIVE = re.compile(r"(?i)\b(?:DROP\s+\w|TRUNCATE\b)")
 _SQL_UNBOUNDED = re.compile(r"(?i)\bDELETE\s+FROM\b|\bUPDATE\s+\S+(?:\s+\S+)?\s+SET\b")
 _SQL_WHERE = re.compile(r"(?i)\bWHERE\b")
@@ -167,8 +177,9 @@ class _Unit:
     words: List[str]                 # as written, wrappers and assignments included
     argv: List[str]                  # what runs once wrappers are stripped; empty when nothing runs
     redirects: List[str] = field(default_factory=list)   # output redirection targets
-    shell: Optional[str] = None      # the shell string the command came from
+    shell: Optional[str] = None      # the whole shell string the command came from
     assignments: List[str] = field(default_factory=list)  # NAME=value words that set its environment
+    pipeline: Optional[str] = None   # the text of this command's own pipeline, for the SQL and DSN checks
 
     @property
     def program(self) -> Optional[str]:
@@ -344,12 +355,12 @@ def _subcommand(argv: List[str]) -> Tuple[Optional[str], List[str]]:
 # --------------------------------------------------------------------------- reading commands
 
 def _expand(words: List[str], shell_text: Optional[str], redirects: List[str], depth: int,
-            lenient: bool) -> List[_Unit]:
+            lenient: bool, pipeline: Optional[str] = None) -> List[_Unit]:
     """The unit for ``words`` plus the units of any command it runs (sh -c, eval, find -exec)."""
     if depth > _MAX_DEPTH:
         raise QaError("invalid_command", "the command nests other commands too deeply")
     argv, assignments = _strip_wrappers(words)
-    unit = _Unit(list(words), argv, list(redirects), shell_text, assignments)
+    unit = _Unit(list(words), argv, list(redirects), shell_text, assignments, pipeline)
     units = [unit]
     prog = unit.program
     if prog in _SHELLS:
@@ -362,7 +373,7 @@ def _expand(words: List[str], shell_text: Optional[str], redirects: List[str], d
         roots, _, commands = _find_parts(argv)
         for inner in commands:
             for root in roots:
-                units.extend(_expand([w.replace("{}", root) for w in inner], shell_text, [], depth + 1, lenient))
+                units.extend(_expand([w.replace("{}", root) for w in inner], shell_text, [], depth + 1, lenient, pipeline))
     return units
 
 
@@ -474,9 +485,15 @@ def _shell_units(text: str, depth: int, lenient: bool) -> List[_Unit]:
     if depth > _MAX_DEPTH:
         raise QaError("invalid_command", "the command nests shell strings too deeply")
     outer, bodies = _substitutions(text)
+    rows = _simple_commands(outer, lenient)
+    # Commands joined by a pipe share a pipeline; the SQL and DSN checks read only their own.
+    pipeline_words: Dict[int, List[str]] = {}
+    for words, _redirects, pid in rows:
+        pipeline_words.setdefault(pid, []).extend(words)
+    pipeline_text = {pid: " ".join(w) for pid, w in pipeline_words.items()}
     units: List[_Unit] = []
-    for words, redirects in _simple_commands(outer, lenient):
-        units.extend(_expand(words, text, redirects, depth, lenient))
+    for words, redirects, pid in rows:
+        units.extend(_expand(words, text, redirects, depth, lenient, pipeline_text[pid]))
     for body in bodies:
         units.extend(_shell_units(body, depth + 1, lenient))
     # A string with no command still gets one unit, so whole-command checks run on it.
@@ -561,9 +578,51 @@ def _closing_backtick(text: str, start: int) -> int:
     return len(text)
 
 
-def _simple_commands(text: str, lenient: bool) -> List[Tuple[List[str], List[str]]]:
-    """(words, output redirection targets) for each simple command of a shell string."""
-    lex = shlex.shlex(text, posix=True, punctuation_chars=_PUNCT)
+def _strip_fd_designators(text: str) -> str:
+    """Remove a bare file-descriptor number glued to the front of a redirect operator
+    (``2>file``, ``1>&2``), outside quotes, so the fd is not read as a command word. A space
+    before the number (``echo 2 >file``) leaves it an ordinary argument, as the shell does."""
+    out: List[str] = []
+    quote = ""
+    boundary = True   # at the start of a word (after whitespace, an operator or the start)
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if quote:
+            out.append(c)
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(text[i:i + 2])
+            boundary = False
+            i += 2
+            continue
+        if c in "'\"":
+            quote = c
+            out.append(c)
+            boundary = False
+            i += 1
+            continue
+        if boundary and c.isdigit():
+            j = i
+            while j < n and text[j].isdigit():
+                j += 1
+            if j < n and text[j] in "<>":
+                i = j        # drop the fd digits; the redirect operator keeps the boundary
+                continue
+        out.append(c)
+        boundary = c.isspace() or c in _PUNCT
+        i += 1
+    return "".join(out)
+
+
+def _simple_commands(text: str, lenient: bool) -> List[Tuple[List[str], List[str], int]]:
+    """(words, output redirection targets, pipeline index) for each simple command of a shell
+    string. Commands joined by a pipe share a pipeline index; other separators start a new one."""
+    stripped = _strip_fd_designators(text)
+    lex = shlex.shlex(stripped, posix=True, punctuation_chars=_PUNCT)
     lex.whitespace = " \t\r"   # newlines separate commands
     lex.whitespace_split = True
     lex.commenters = ""        # _substitutions dropped the comments; a '#' inside a word stays
@@ -572,24 +631,27 @@ def _simple_commands(text: str, lenient: bool) -> List[Tuple[List[str], List[str
     except ValueError:
         if not lenient:
             raise QaError("invalid_command", "the shell string does not parse")
-        tokens = text.split()
-    commands: List[Tuple[List[str], List[str]]] = []
+        tokens = stripped.split()
+    commands: List[Tuple[List[str], List[str], int]] = []
     words: List[str] = []
     redirects: List[str] = []
     pending = ""
+    pid = 0
     for tok in _split_operators(tokens):
         if pending:
             if pending in _OUT_REDIRECTS and not (pending == ">&" and (tok.isdigit() or tok == "-")):
                 redirects.append(tok)
             pending = ""
         elif tok in _SEPARATORS:
-            _flush(commands, words, redirects)
+            _flush(commands, words, redirects, pid)
             words, redirects = [], []
+            if tok not in _PIPES:
+                pid += 1
         elif tok in _OUT_REDIRECTS or tok in _IN_REDIRECTS:
             pending = tok
         else:
             words.append(tok)
-    _flush(commands, words, redirects)
+    _flush(commands, words, redirects, pid)
     return commands
 
 
@@ -608,7 +670,8 @@ def _split_operators(tokens: List[str]) -> List[str]:
     return out
 
 
-def _flush(commands: List[Tuple[List[str], List[str]]], words: List[str], redirects: List[str]) -> None:
+def _flush(commands: List[Tuple[List[str], List[str], int]], words: List[str], redirects: List[str],
+           pid: int) -> None:
     i = 0
     while i < len(words):
         if words[i] in _KEYWORDS:
@@ -620,7 +683,7 @@ def _flush(commands: List[Tuple[List[str], List[str]]], words: List[str], redire
         else:
             break
     if words[i:] or redirects:
-        commands.append((words[i:], redirects))
+        commands.append((words[i:], redirects, pid))
 
 
 def _hosts(texts: List[str]) -> List[str]:
@@ -765,7 +828,12 @@ def _check_secret_in_argv(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
 
 
 def _secret_kind(text: str) -> Optional[str]:
-    """The kind of the first redaction pattern that finds a secret in ``text``, as Task 4's Redactor applies it."""
+    """The kind of the first redaction pattern that finds a secret value in ``text``, as Task 4's
+    Redactor applies it. §12.5 is the authority (T9-R4): the check keeps secret values out of
+    argv, so an assignment pattern counts only when its key is a whole secret keyword carrying a
+    value, not when a keyword is a substring of another word (``--bypass-cache``, ``--passthrough``)
+    or names a file (``--password-file``, ``PGPASSFILE``). Value patterns (provider tokens, a URL's
+    credentials) are unchanged."""
     for p in load_patterns():
         rx = _PATTERN_RX.get(p.regex)
         if rx is None:
@@ -776,8 +844,19 @@ def _secret_kind(text: str) -> Optional[str]:
                 continue
             if p.min_entropy is not None and shannon_entropy(secret) < p.min_entropy:
                 continue
+            if p.kind in _ASSIGNMENT_SECRET_KINDS and not _is_whole_secret_key(text[m.start(0):m.start(p.group)]):
+                continue
             return p.kind
     return None
+
+
+def _is_whole_secret_key(key_text: str) -> bool:
+    """Whether ``key_text`` (the ``keyword...=`` part a redaction assignment pattern matched) is a
+    secret keyword with no further word glued after it. ``PASSWORD=`` and ``DB_PASSWORD=`` are;
+    ``pass-cache=``, ``passthrough=``, ``password-file=`` and ``PASSFILE=`` are not, so their value
+    is not treated as a secret."""
+    m = _SECRET_KEYWORD.match(key_text)
+    return m is not None and not re.search(r"[A-Za-z]", key_text[m.end():])
 
 
 def _check_url_host(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
@@ -789,8 +868,19 @@ def _check_privilege_escalation(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     return ("%s escalates privileges" % unit.program, None) if unit.program in _PRIVILEGE else None
 
 
+def _scan_texts(unit: _Unit) -> List[str]:
+    """The text the SQL and DSN checks read: this command's own pipeline, or its argv when it
+    came as an argv list. A separator other than a pipe bounds the pipeline, so a DSN named in
+    one command does not reach another."""
+    return [unit.pipeline] if unit.pipeline is not None else unit.argv[1:]
+
+
 def _all_dsns_ephemeral(ctx: _Context, texts: List[str]) -> bool:
-    """Whether the command names at least one DSN by its env-var name, and every one it names is ephemeral."""
+    """Whether the command targets a database and every database it names is ephemeral. An
+    inline connection string (``postgres://host/db``) names a concrete, undeclared database, so
+    it counts as production (§12.2) and the answer is then no."""
+    if any(_INLINE_DSN.search(t) for t in texts):
+        return False
     classes = set()
     for env in ctx.config.get("environments", []):
         name = env.get("dsn_env")
@@ -809,8 +899,8 @@ def _destructive_sql(text: str) -> bool:
 
 
 def _check_destructive_sql(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
-    # In a shell string the SQL may reach the client through a pipe or a redirection.
-    texts = unit.argv[1:] + ([unit.shell] if unit.shell is not None else [])
+    # In a shell string the SQL may reach the client through a pipe within the same pipeline.
+    texts = _scan_texts(unit)
     if not any(_destructive_sql(t) for t in texts) or _all_dsns_ephemeral(ctx, texts):
         return None
     return ("the SQL drops, truncates or changes rows without WHERE", None)
@@ -822,7 +912,7 @@ def _check_migration(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
         tool = os.path.basename(word)
         rx = _MIGRATIONS.get(tool)
         if rx is not None and rx.search(" ".join(argv[i + 1:])):
-            texts = argv + ([unit.shell] if unit.shell is not None else [])
+            texts = _scan_texts(unit)
             return ("%s migrates a database" % tool, "db-ephemeral" if _all_dsns_ephemeral(ctx, texts) else None)
     return None
 

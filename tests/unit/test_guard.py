@@ -131,6 +131,62 @@ def test_omitted_cwd_means_the_workspace_root(ws):
         assert omitted == classify(case["command"], ws, cwd=None, **kw) == classify(case["command"], ws, cwd=ws.root, **kw), case["id"]
 
 
+# --- fix round 1 -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    "2>/dev/null git push origin main",
+    "2>>build.log git push",
+    "1>&2 git push",
+    "2>&1 rm -rf /",
+    "git push 2>/dev/null",
+])
+def test_leading_fd_redirect_does_not_bypass_a_deny(ws, command):
+    # A file-descriptor designator before the program must not be read as the program.
+    assert classify(command, ws, shell=True).decision == "deny"
+
+
+def test_numeric_argument_before_a_spaced_redirect_stays_an_argument(ws):
+    # A space before '>' means 777 is chmod's argument, not an fd, so chmod-777 still fires.
+    d = classify("chmod 777 . > .qa/work/chmod.log", ws, shell=True)
+    assert (d.decision, d.rule_id) == ("deny", "chmod-777")
+
+
+def test_dsn_ephemerality_does_not_leak_across_commands(ws):
+    cfg = workspace.default_config("x")
+    cfg["environments"].append({"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
+    d = classify('psql "$EPH_DSN" -c \'select 1\' && psql "$DATABASE_URL" -c \'DROP TABLE users\'', ws, shell=True, config=cfg)
+    assert (d.decision, d.rule_id) == ("deny", "destructive-sql")
+
+
+def test_destructive_sql_piped_is_still_caught(ws):
+    assert classify("echo 'DROP TABLE users;' | psql", ws, shell=True).rule_id == "destructive-sql"
+
+
+def test_migration_with_an_inline_production_dsn_needs_db_write(ws):
+    cfg = workspace.default_config("x")
+    cfg["environments"].append({"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": [], "dsn_env": "EPH_DSN"})
+    d = classify(["alembic", "-x", "url=postgres://prod.db/app", "-x", "note=EPH_DSN", "upgrade", "head"], ws, config=cfg)
+    assert d.required_activities == ("test-execution-local", "db-write")
+
+
+@pytest.mark.parametrize("argv", [
+    ["tool", "--bypass-cache=true"],
+    ["tool", "--passthrough=value"],
+    ["tool", "--password-file=/run/secrets/db"],
+])
+def test_secret_free_flags_with_a_pass_substring_are_allowed(ws, argv):
+    assert classify(argv, ws).decision == "allow"
+
+
+def test_pgpassfile_assignment_naming_a_file_is_allowed(ws):
+    assert classify('PGPASSFILE=.qa/work/pgpass psql -c "select 1"', ws, shell=True).decision == "allow"
+
+
+def test_a_real_password_assignment_is_still_denied(ws):
+    d = classify(["env", "PGPASSWORD=hunter22", "psql"], ws)
+    assert (d.decision, d.rule_id) == ("deny", "secret-in-argv")
+
+
 def test_classify_runs_nothing_and_writes_nothing(ws, monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("the guard must not run commands or open connections")

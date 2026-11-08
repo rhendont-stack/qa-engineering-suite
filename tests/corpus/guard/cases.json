@@ -125,5 +125,12 @@
   {"id": "secret-env-by-name", "command": "PGPASSWORD=\"$PGPASSWORD\" psql -c 'select 1'", "shell": true, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
   {"id": "secret-arg-by-name", "command": "make DB_PASSWORD=$DB_PASSWORD", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "secret-in-argv", "adds": [], "hosts": []},
   {"id": "yarn", "command": ["yarn"], "shell": false, "activity": "test-execution-local", "expect": "require_grant", "rule_id": "yarn-bare", "adds": ["install-dependencies"], "hosts": []},
-  {"id": "yarn-test", "command": ["yarn", "test"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []}
+  {"id": "yarn-test", "command": ["yarn", "test"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
+  {"id": "fd-redirect-push", "command": "2>/dev/null git push origin main", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []},
+  {"id": "fd-redirect-rm", "command": "2>&1 rm -rf /", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "delete-outside-qa", "adds": [], "hosts": []},
+  {"id": "fd-dup-push", "command": "1>&2 git push", "shell": true, "activity": "test-execution-local", "expect": "deny", "rule_id": "git-write", "adds": [], "hosts": []},
+  {"id": "bypass-cache-flag", "command": ["tool", "--bypass-cache=true"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
+  {"id": "passthrough-flag", "command": ["tool", "--passthrough=value"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
+  {"id": "password-file-flag", "command": ["tool", "--password-file=/run/secrets/db"], "shell": false, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []},
+  {"id": "pgpassfile-env", "command": "PGPASSFILE=.qa/work/pgpass psql -c 'select 1'", "shell": true, "activity": "test-execution-local", "expect": "allow", "rule_id": null, "adds": [], "hosts": []}
 ]
