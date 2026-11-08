@@ -31,6 +31,8 @@ def _refuse_dtd(data: bytes) -> None:
         raise ReportInvalid("doctype_or_entity") from None
     except expat.ExpatError as exc:
         raise ReportInvalid("malformed_xml", str(exc)) from exc
+    except (ValueError, LookupError) as exc:  # an encoding expat cannot decode
+        raise ReportInvalid("unsupported_encoding", str(exc)) from exc
 
 
 def _local(tag: object) -> str:
@@ -40,7 +42,7 @@ def _local(tag: object) -> str:
 def _duration_ms(value: Optional[str]) -> Optional[int]:
     try:
         return int(round(float(value) * 1000)) if value is not None else None
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 
@@ -50,28 +52,30 @@ def parse(data: bytes) -> ReportSummary:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
         raise ReportInvalid("malformed_xml", str(exc)) from exc
+    except (ValueError, LookupError) as exc:
+        raise ReportInvalid("unsupported_encoding", str(exc)) from exc
     if _local(root.tag) not in ("testsuites", "testsuite"):
         raise ReportInvalid("not_junit", root=_local(root.tag))
 
     cases: List[CaseResult] = []
     anomalies: List[str] = []
 
-    def walk(el: ET.Element, suite_name: str) -> None:
-        for child in el:
-            tag = _local(child.tag)
-            if tag == "testsuite":
-                walk(child, child.get("name") or "")
-            elif tag == "testsuites":
-                walk(child, suite_name)
-            elif tag == "testcase":
-                cases.append(_case(child, len(cases), suite_name, anomalies))
-
-    walk_root_name = (root.get("name") or "") if _local(root.tag) == "testsuite" else ""
-    if _local(root.tag) == "testsuite":
-        # The root itself may be the suite: its testcases are direct children.
-        walk(root, walk_root_name)
-    else:
-        walk(root, "")
+    # Explicit stack, so a deeply nested document cannot exhaust the interpreter's recursion limit.
+    root_name = (root.get("name") or "") if _local(root.tag) == "testsuite" else ""
+    stack = [(iter(root), root_name)]
+    while stack:
+        children, suite_name = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            continue
+        tag = _local(child.tag)
+        if tag == "testsuite":
+            stack.append((iter(child), child.get("name") or ""))
+        elif tag == "testsuites":
+            stack.append((iter(child), suite_name))
+        elif tag == "testcase":
+            cases.append(_case(child, len(cases), suite_name, anomalies))
     return ReportSummary("junit", "tests", tuple(cases), (), 1, tuple(anomalies))
 
 

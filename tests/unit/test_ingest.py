@@ -188,3 +188,54 @@ def test_merge_sums_and_refuses_mixed_kinds(tmp_path):
     with pytest.raises(QaError) as e:
         ingest.merge([a, sarif])
     assert e.value.code == "kind_mismatch"
+
+
+@pytest.mark.parametrize("encoding", ["shift_jis", "no-such-enc"])
+def test_junit_undecodable_encoding_declaration_is_report_invalid(tmp_path, encoding):
+    p = tmp_path / "r.xml"
+    p.write_bytes(('<?xml version="1.0" encoding="%s"?><testsuite/>' % encoding).encode("ascii"))
+    with pytest.raises(ingest.ReportInvalid):
+        ingest.parse_report("junit", p, 10**6)
+
+
+@pytest.mark.parametrize("value", ["inf", "1e400", "nan", "abc"])
+def test_junit_bad_time_is_absent(tmp_path, value):
+    s = parse_junit(tmp_path, '<testsuite><testcase classname="c" name="a" time="%s"/></testsuite>' % value)
+    assert s.cases[0].duration_ms is None and s.total == 1
+
+
+def test_junit_deep_nesting_does_not_crash(tmp_path):
+    n = 2000
+    text = "<testsuites>" + '<testsuite name="s">' * n + '<testcase classname="c" name="a"/>' + "</testsuite>" * n + "</testsuites>"
+    s = parse_junit(tmp_path, text)
+    assert s.total == 1
+
+
+def sarif_with_severity(tmp_path, value):
+    doc = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": [
+        {"ruleId": "R", "message": {"text": "m"}, "properties": {"security-severity": value}}]}]}
+    return ingest.parse_report("sarif", write(tmp_path, json.dumps(doc), "r.sarif"), 10**6)
+
+
+@pytest.mark.parametrize("value", ["NaN", "inf", "-inf", 10**400, "x"])
+def test_sarif_bad_security_severity_is_absent(tmp_path, value):
+    assert sarif_with_severity(tmp_path, value).alerts[0].security_severity is None
+
+
+@pytest.mark.parametrize("doc", [
+    {"version": "2.1.0", "runs": [5]},
+    {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": 5}]},
+    {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}}]},
+    {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": None}]},
+    {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": [1, None]}]},
+])
+def test_sarif_wrong_structure_is_not_a_clean_scan(tmp_path, doc):
+    with pytest.raises(ingest.ReportInvalid) as e:
+        ingest.parse_report("sarif", write(tmp_path, json.dumps(doc), "r.sarif"), 10**6)
+    assert e.value.details["detail"] == "not_sarif_2_1_0"
+
+
+def test_sarif_empty_results_list_is_a_clean_scan(tmp_path):
+    doc = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": []}]}
+    s = ingest.parse_report("sarif", write(tmp_path, json.dumps(doc), "r.sarif"), 10**6)
+    assert (len(s.alerts), s.runs) == (0, 1)

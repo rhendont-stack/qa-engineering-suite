@@ -1,4 +1,6 @@
 """Producer for the pytest JUnit corpus entry: 2 passes, 1 failure, 1 error, 1 skip."""
+from __future__ import annotations
+
 import pytest
 
 

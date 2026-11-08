@@ -14,6 +14,7 @@ import re
 import socket
 import sys
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -22,21 +23,45 @@ TEMP_DIR = re.compile(r"(?:/private)?/(?:var/folders/[^/\s\"]+/[^/\s\"]+/T|tmp)/
 HOSTNAME_ATTR = re.compile(r'hostname="[^"]*"')
 
 
+# Names that identify nobody and occur in real tool output: never checked, never replaced.
+EXEMPT_NAMES = frozenset({"root", "runner", "localhost"})
+
+
+def home_pattern(home: str) -> Optional["re.Pattern[str]"]:
+    """A home directory matches as a path: not followed by a name character."""
+    if not home or Path(home).parent == Path(home):  # empty or the filesystem root
+        return None
+    return re.compile(re.escape(home) + r"(?![\w.-])")
+
+
+def name_pattern(name: str) -> Optional["re.Pattern[str]"]:
+    """A user or host name matches as a whole token, so `gitlab-alice-token` is not a hit."""
+    if not name or name.lower() in EXEMPT_NAMES:
+        return None
+    return re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])")
+
+
+def sensitive_patterns() -> List[Tuple[str, "re.Pattern[str]", str]]:
+    """(label, pattern, replacement token) for this machine, most specific first."""
+    host = socket.gethostname()
+    home = str(Path.home())
+    candidates = [
+        ("root directory", re.compile(re.escape(str(ROOT)) + r"(?![\w.-])"), "{ROOT}"),
+        ("home directory", home_pattern(home), "{HOME}"),
+        ("host name", name_pattern(host), "HOST"),
+        ("host name", name_pattern(host.split(".")[0]), "HOST"),
+        ("user name", name_pattern(getpass.getuser()), "USER"),
+        ("user name", name_pattern(os.path.basename(home)), "USER"),
+    ]
+    return [(label, pat, token) for label, pat, token in candidates if pat is not None]
+
+
 def normalize_text(text: str) -> str:
     text = HOSTNAME_ATTR.sub('hostname="HOST"', text)
     text = TEMP_DIR.sub("{TMP}", text)
     text = TIMESTAMP.sub("1970-01-01T00:00:00.000+00:00", text)
-    host = socket.gethostname()
-    for literal, token in (
-        (str(ROOT), "{ROOT}"),
-        (str(Path.home()), "{HOME}"),
-        (host, "HOST"),
-        (host.split(".")[0], "HOST"),
-        (getpass.getuser(), "USER"),
-        (os.path.basename(str(Path.home())), "USER"),
-    ):
-        if literal:
-            text = text.replace(literal, token)
+    for _label, pattern, token in sensitive_patterns():
+        text = pattern.sub(token, text)
     return text
 
 

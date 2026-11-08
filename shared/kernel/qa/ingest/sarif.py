@@ -1,6 +1,7 @@
 """SARIF 2.1.0: one Alert per result. Code snippets are never copied."""
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Tuple
 
 from qa import canonical
@@ -18,9 +19,11 @@ def _severity(*sources: dict) -> Optional[float]:
         if isinstance(raw, bool):
             continue
         try:
-            return float(raw)
-        except (TypeError, ValueError):
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError):
             continue
+        if math.isfinite(value):
+            return value
     return None
 
 
@@ -42,16 +45,19 @@ def parse(data: bytes) -> ReportSummary:
 
     alerts: List[Alert] = []
     for run in doc["runs"]:
-        driver = _dict(_dict(_dict(run).get("tool")).get("driver"))
+        # A real clean scan writes "results": []. Anything else is not a scan result.
+        if not isinstance(run, dict) or not isinstance(run.get("results"), list):
+            raise ReportInvalid("not_sarif_2_1_0")
+        driver = _dict(_dict(run.get("tool")).get("driver"))
         tool = driver.get("name") if isinstance(driver.get("name"), str) else ""
         rules: Dict[str, dict] = {}
         rule_list = driver.get("rules") if isinstance(driver.get("rules"), list) else []
         for r in rule_list:
             if isinstance(r, dict) and isinstance(r.get("id"), str):
                 rules[r["id"]] = r
-        results = _dict(run).get("results")
-        for res in results if isinstance(results, list) else []:
-            res = _dict(res)
+        for res in run["results"]:
+            if not isinstance(res, dict):
+                raise ReportInvalid("not_sarif_2_1_0")
             rule_id = res.get("ruleId") if isinstance(res.get("ruleId"), str) else ""
             rule = rules.get(rule_id)
             if rule is None and isinstance(res.get("ruleIndex"), int) and 0 <= res["ruleIndex"] < len(rule_list):
