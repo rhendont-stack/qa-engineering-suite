@@ -296,6 +296,43 @@ def test_a_target_the_ledger_would_redact_is_refused(ws, actor, frozen_now):
     assert chk(state.load(ws), cfg, "dast-passive", COMPASS, hosts=("compass.example.com",)).authorization == "AUTH-001"
 
 
+def test_an_environment_id_the_ledger_would_redact_is_refused(ws, actor, frozen_now):
+    # T10-R13: check compares the grant's environment with the id, and config allows any string as one
+    frozen_now.set(NOON)
+    cfg = config.load_config(ws)
+    cfg["environments"].append({"id": "compass:8443", "class": "staging", "base_urls": ["https://qa.example.com"]})
+    config.write_config(ws, cfg)
+    before = ledger.iter_all_events(ws)
+    with pytest.raises(QaError) as e:
+        _grant(ws, actor, environment_id="compass:8443", targets=["qa.example.com"])
+    assert (e.value.code, e.value.details) == ("invalid_environment", {})
+    assert "compass:8443" not in json.dumps(e.value.to_json())
+    assert ledger.iter_all_events(ws) == before   # the ledger is unchanged
+    renamed = {"id": "compass-staging", "class": "staging", "base_urls": ["https://qa.example.com"]}
+    cfg["environments"][-1] = renamed
+    config.write_config(ws, cfg)
+    _grant(ws, actor, environment_id="compass-staging", targets=["qa.example.com"])
+    assert chk(state.load(ws), cfg, "db-readonly", renamed, hosts=("qa.example.com",)).authorization == "AUTH-001"
+
+
+@pytest.mark.parametrize("secret,changes,code,details", [
+    ("AUTH-001", {}, "invalid_id", {}),
+    ("db-readonly", {}, "invalid_activity", {"index": 0}),
+    ("2026-11-07T13:00:00.000Z", {"expires_at": NOON + timedelta(hours=1)}, "invalid_expiry", {}),
+])
+def test_any_field_check_reads_that_the_ledger_would_redact_is_refused(ws, actor, frozen_now, monkeypatch,
+                                                                       secret, changes, code, details):
+    # T10-R13: no shipped pattern matches these fields, but a secret environment value equal to one does
+    frozen_now.set(NOON)
+    monkeypatch.setenv("QA_PROBE_TOKEN", secret)
+    before = ledger.iter_all_events(ws)
+    with pytest.raises(QaError) as e:
+        _grant(ws, actor, **changes)
+    assert (e.value.code, e.value.details) == (code, details)
+    assert secret not in json.dumps(e.value.to_json())
+    assert ledger.iter_all_events(ws) == before
+
+
 @pytest.mark.parametrize("activities", [["network-download"], ["dast-passive"], ["dast-active"],
                                         ["db-readonly", "dast-passive"]])
 def test_a_per_target_grant_must_list_its_targets(activities):

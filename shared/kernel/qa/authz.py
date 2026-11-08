@@ -26,10 +26,11 @@ creates one. A target is stored as given and has one of these forms:
   an IPv6 address without brackets or port, as ``ipaddress.ip_address`` reads it, with a zone,
   if any, that is a name.
 
-Each target must also be a declared host of the grant's own environment, and ``grant`` refuses
-one that the ledger's redaction would change, since a redacted target covers nothing. A grant
-for a per-target activity lists at least one target. A refusal gives the target's index, never
-its text, which may carry a secret. Targets and hosts compare by hostname, case-insensitively:
+Each target must also be a declared host of the grant's own environment. ``grant`` refuses a
+grant when the ledger's redaction would change a field ``check`` reads (the id, environment,
+activities, targets or expiry), since a redacted grant covers nothing. A grant for a per-target
+activity lists at least one target. A target refusal gives the target's index, never its text,
+which may carry a secret. Targets and hosts compare by hostname, case-insensitively:
 a URL gives its ``urlsplit`` hostname, as the guard reports hosts, and a bare host is read as
 ``config.resolve_host`` reads it. A stored target of no target form covers nothing.
 ``write-tests`` paths follow the rules ``write_scopes`` follow (§12.4), and the stored expiry,
@@ -52,9 +53,10 @@ from .workspace import Workspace
 
 # QaError codes raised here: approval_required, unknown_environment, ci_unsupported,
 # invalid_activity, targets_required, invalid_target, undeclared_target, invalid_limits,
-# invalid_expiry (build_grant, and so grant); invalid_target also for a target the ledger would
-# redact (grant); unknown_authorization, already_revoked (revoke); plus whatever
-# config.load_config, redact.load_redactor and ledger.append raise.
+# invalid_expiry (build_grant, and so grant); invalid_id, invalid_environment, invalid_activity,
+# invalid_target and invalid_expiry for a field the ledger would redact (grant);
+# unknown_authorization, already_revoked (revoke); plus whatever config.load_config,
+# redact.load_redactor and ledger.append raise.
 
 _NEVER_ON_PRODUCTION = ("db-write", "dast-active")
 # §12.2: network-download "Requires a grant listing hosts" and DAST "Requires a grant per target".
@@ -332,21 +334,44 @@ def grant(ws: Workspace, actor: ledger.Actor, *, now: Optional[datetime] = None,
     grants never share an id. ``granted_by`` is always ``"user"``: the grant records the user's
     approval, and the envelope's actor records who ran the command.
 
-    A target that the redaction ``ledger.append`` applies would change is refused
-    (``invalid_target``): stored redacted, it would cover nothing. The approval quote and the
-    limits may still be redacted.
+    A grant is refused when the redaction ``ledger.append`` applies would change a field that
+    ``check`` reads (see ``_refuse_redacted``): stored redacted, the grant would cover nothing.
+    The approval quote and the limits may still be redacted.
     """
     with ws.lock():
         if now is None:
             now = ids.now_utc()
         data = build_grant(config.load_config(ws), now=now, **build_grant_kwargs)
         data["id"] = ledger.next_human_id(ws, "AUTH")
-        clean, _ = redact.load_redactor(ws).obj(data)   # as ledger.append will redact it
-        for index, (given, kept) in enumerate(zip(data["targets"], clean["targets"])):
-            if given != kept:  # e.g. password_assignment reads a host with "pass" and its :port as a password
-                raise QaError("invalid_target", "the ledger would redact this target, and a redacted target "
-                              "covers nothing; give the host without its port", index=index)
+        _refuse_redacted(data, redact.load_redactor(ws).obj(data)[0])   # as ledger.append will redact it
         return ledger.append(ws, actor, "authorization.granted", data)
+
+
+def _refuse_redacted(data: dict, clean: dict) -> None:
+    """Refuse a grant if any field ``check`` reads differs in ``clean``, its redacted form (T10-R11, T10-R13).
+
+    The fields are ``id``, ``environment``, ``activities``, ``targets`` and ``expires_at``. A refusal
+    never gives the field's text, since the redaction reads it as a secret. ``password_assignment``
+    reads ``pass`` or ``pwd`` followed by ``:`` and a port as a password; no shipped pattern matches an
+    id, an activity or a timestamp, but a secret environment value equal to one does.
+    """
+    if clean["id"] != data["id"]:
+        raise QaError("invalid_id", "the ledger would redact this grant's id, which a secret environment value "
+                      "equals, so the grant would cover nothing")
+    if clean["environment"] != data["environment"]:
+        raise QaError("invalid_environment", "the ledger would redact this environment id, so the grant would "
+                      "cover nothing; rename the environment")
+    for index, (given, kept) in enumerate(zip(data["activities"], clean["activities"])):
+        if given != kept:
+            raise QaError("invalid_activity", "the ledger would redact this activity, which a secret environment "
+                          "value equals, so the grant would cover nothing", index=index)
+    for index, (given, kept) in enumerate(zip(data["targets"], clean["targets"])):
+        if given != kept:
+            raise QaError("invalid_target", "the ledger would redact this target, and a redacted target "
+                          "covers nothing; give the host without its port", index=index)
+    if clean["expires_at"] != data["expires_at"]:
+        raise QaError("invalid_expiry", "the ledger would redact this expiry, which a secret environment value "
+                      "equals, so the grant would cover nothing; give another expires_at")
 
 
 def revoke(ws: Workspace, actor: ledger.Actor, auth_id: str, reason: str) -> dict:
