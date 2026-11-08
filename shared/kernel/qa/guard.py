@@ -60,7 +60,7 @@ import shlex
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
 
 from . import resource_dir, schema, vocab
 from .canonical import loads
@@ -139,26 +139,59 @@ _INLINE_DSN = re.compile(r"(?i)\b%s(?:\+[a-z0-9]+)?://" % _DSN_SCHEMES)
 _URL = re.compile(r"(?i)\b(?:https?|%s(?:\+[a-z0-9]+)?)://[^\s'\"<>`|;&,(){}\\]+" % _DSN_SCHEMES)
 _UNREADABLE_HOST = "<unreadable>"   # no environment declares it and no grant can list it
 _SCHEME = re.compile(r"(?i)^([a-z][a-z0-9+.-]*)://")
-# What the network-download check reads: options whose value is not the thing fetched. One not listed
-# here makes its value read as a host nobody declared, which errs towards asking for a grant.
-_DOWNLOAD_VALUE_OPTIONS = frozenset([
-    "-o", "--output", "-D", "--dump-header", "-H", "--header", "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
-    "-F", "--form", "-u", "--user", "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar", "-T",
-    "--upload-file", "-X", "--request", "-w", "--write-out", "-m", "--max-time", "--connect-timeout", "--retry", "-x", "--proxy",
-    "-r", "--range", "-K", "--config", "--cacert", "--cert", "--key", "--resolve", "-O", "--output-document", "--output-file",
-    "-P", "--directory-prefix", "-U", "--post-data", "--post-file", "-t", "--tries", "-T", "--timeout", "--wait", "-i",
-    "--input-file", "--out", "--dir", "-s", "--split", "-j", "--max-concurrent-downloads",
+# What the network-download check reads: options whose value is not the thing fetched, per program, because a letter
+# that takes a value in one tool is a plain flag in another. One not listed here makes its value read as a host nobody
+# declared, which errs towards asking for a grant; one listed in error would hide the operand after it.
+_HTTPIE_VALUE_OPTIONS = frozenset([
+    "-o", "--output", "-a", "--auth", "-A", "--auth-type", "-p", "--print", "-s", "--style", "--session", "--session-read-only",
+    "--pretty", "--format-options", "--verify", "--cert", "--cert-key", "--proxy", "--timeout", "--max-redirects", "--ssl",
+    "--ciphers", "--default-scheme", "--boundary",
 ])
+_DOWNLOAD_VALUE_OPTIONS: Dict[str, FrozenSet[str]] = {
+    "curl": frozenset([
+        "-o", "--output", "--output-dir", "-D", "--dump-header", "-H", "--header", "-d", "--data", "--data-raw", "--data-binary",
+        "--data-urlencode", "--data-ascii", "--json", "-F", "--form", "--form-string", "-u", "--user", "-U", "--proxy-user", "-A",
+        "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar", "-T", "--upload-file", "-X", "--request", "-w",
+        "--write-out", "-m", "--max-time", "--connect-timeout", "--retry", "--retry-delay", "--retry-max-time", "-x", "--proxy",
+        "--noproxy", "-r", "--range", "-K", "--config", "--cacert", "--capath", "-E", "--cert", "--key", "--resolve", "--connect-to",
+        "-C", "--continue-at", "-z", "--time-cond", "-y", "--speed-time", "-Y", "--speed-limit", "--limit-rate", "--max-filesize",
+        "--interface", "--unix-socket", "-t", "--telnet-option", "-P", "--ftp-port", "-Q", "--quote",
+    ]),
+    "wget": frozenset([
+        "-o", "--output-file", "-a", "--append-output", "-O", "--output-document", "-P", "--directory-prefix", "-U", "--user-agent",
+        "-t", "--tries", "-T", "--timeout", "-w", "--wait", "-i", "--input-file", "-B", "--base", "-e", "--execute", "-A", "--accept",
+        "-R", "--reject", "-D", "--domains", "-I", "--include-directories", "-X", "--exclude-directories", "-l", "--level", "-Q",
+        "--quota", "--header", "--post-data", "--post-file", "--referer", "--user", "--http-user", "--ftp-user", "--proxy-user",
+        "--load-cookies", "--save-cookies", "--ca-certificate", "--ca-directory", "--certificate", "--private-key", "--limit-rate",
+    ]),
+    "aria2c": frozenset([
+        "-o", "--out", "-d", "--dir", "-s", "--split", "-j", "--max-concurrent-downloads", "-x", "--max-connection-per-server",
+        "-k", "--min-split-size", "-i", "--input-file", "-l", "--log", "-t", "--timeout", "-m", "--max-tries", "-U", "--user-agent",
+        "-T", "--torrent-file", "-M", "--metalink-file", "--header", "--referer", "--all-proxy", "--http-proxy", "--https-proxy",
+    ]),
+    "http": _HTTPIE_VALUE_OPTIONS,
+    "https": _HTTPIE_VALUE_OPTIONS,
+    "xh": _HTTPIE_VALUE_OPTIONS,
+    "xhs": _HTTPIE_VALUE_OPTIONS,
+}
 _HTTP_CLIENTS = frozenset(["http", "https", "xh", "xhs"])   # METHOD URL [items], where only the URL is a target
 _HTTP_METHOD = re.compile(r"^[A-Z]+$")
+_STDIN_WORD_BREAK = re.compile(r"(?:\s|\\[nrt])+")   # printf's backslash-n is still two characters here
 # A here-document operator, not the '<<' inside a '<<<' here-string (hence the lookbehind).
 _HEREDOC = re.compile(r"(?<!<)<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _SQL_DESTRUCTIVE = re.compile(r"(?i)\b(?:DROP\s+\w|TRUNCATE\b)")
 _SQL_UNBOUNDED = re.compile(r"(?i)\bDELETE\s+FROM\b|\bUPDATE\s+\S+(?:\s+\S+)?\s+SET\b")
 _SQL_WHERE = re.compile(r"(?i)\bWHERE\b")
+# MySQL also takes a modifier word, or no INTO at all. A table then has to follow, which keeps the REPLACE() function out.
+_SQL_ROW_SOURCE = r"[\w.`\"]+\s*(?:\(|VALUES?\b|SET\b|SELECT\b|PARTITION\b)"
 _SQL_WRITE = re.compile(r"(?i)\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO|UPSERT\s+INTO|MERGE\s+INTO|DELETE\s+FROM"
+                        r"|INSERT\s+(?:(?:LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE)\b|" + _SQL_ROW_SOURCE + r")"
+                        r"|REPLACE\s+(?:(?:LOW_PRIORITY|DELAYED)\b|" + _SQL_ROW_SOURCE + r")"
                         r"|UPDATE\s+\S+(?:\s+\S+)?\s+SET|ALTER\s+\w|CREATE\s+\w|DROP\s+\w|TRUNCATE\b|GRANT\s+\w|REVOKE\s+\w"
                         r"|COPY\s+\S+\s+FROM|LOAD\s+DATA)")
+# A join or a table list stands between these pairs, so they are read per statement, in two linear searches.
+_SQL_MULTI_TABLE = ((re.compile(r"(?i)\bUPDATE\s"), re.compile(r"(?i)\bSET\b")),
+                    (re.compile(r"(?i)\bDELETE\s"), re.compile(r"(?i)\bFROM\b")))
 # Migration tools, found anywhere in argv (so npx, bundle exec or python manage.py count), and their verbs.
 _MIGRATION_VERBS = (
     (("alembic",), r"upgrade|downgrade|stamp"),
@@ -228,6 +261,7 @@ class _Unit:
     shell: Optional[str] = None      # the whole shell string the command came from
     assignments: List[str] = field(default_factory=list)  # NAME=value words that set its environment
     pipeline: Optional[str] = None   # the text of this command's own pipeline, for the SQL and DSN checks
+    stdin: Optional[str] = None      # what it is fed: the arguments of the commands before it in the pipe, here-document bodies
 
     @property
     def program(self) -> Optional[str]:
@@ -388,12 +422,22 @@ def _match(rule: _Rule, unit: _Unit, ctx: _Context) -> Optional[_Hit]:
         return None
     if "unless_args" in m and any(a in args for a in m["unless_args"]):
         return None
-    if rule.args_rx is not None and not any(rule.args_rx.search(a) for a in args):
+    if rule.args_rx is not None and not any(rule.args_rx.search(a) for a in _regex_subjects(m, unit, args)):
         return None
     if rule.shell_rx is not None and (unit.shell is None or not rule.shell_rx.search(unit.shell)):
         return None
     check = m.get("check")
     return _CHECKS[check](ctx, unit) if check else ("", None)
+
+
+def _regex_subjects(match: dict, unit: _Unit, args: List[str]) -> List[str]:
+    """What ``args_regex`` reads: the arguments and, for a client that takes commands on stdin, those commands too.
+
+    A word at a time for a pattern anchored to one word, and the whole text for one that spans a call.
+    """
+    if not match.get("args_regex_on_stdin") or not unit.stdin:
+        return args
+    return args + [word for word in _STDIN_WORD_BREAK.split(unit.stdin) if word] + [unit.stdin]
 
 
 def _known_program(unit: _Unit, patterns: Sequence[str]) -> bool:
@@ -419,12 +463,12 @@ def _subcommand(argv: List[str]) -> Tuple[Optional[str], List[str]]:
 # --------------------------------------------------------------------------- reading commands
 
 def _expand(words: List[str], shell_text: Optional[str], redirects: List[str], depth: int,
-            lenient: bool, pipeline: Optional[str] = None) -> List[_Unit]:
+            lenient: bool, pipeline: Optional[str] = None, stdin: Optional[str] = None) -> List[_Unit]:
     """The unit for ``words`` plus the units of any command it runs (sh -c, eval, find -exec)."""
     if depth > _MAX_DEPTH:
         raise QaError("invalid_command", "the command nests other commands too deeply")
     argv, assignments = _strip_wrappers(words)
-    unit = _Unit(list(words), argv, list(redirects), shell_text, assignments, pipeline)
+    unit = _Unit(list(words), argv, list(redirects), shell_text, assignments, pipeline, stdin)
     units = [unit]
     prog = unit.program
     if prog in _SHELLS:
@@ -437,7 +481,7 @@ def _expand(words: List[str], shell_text: Optional[str], redirects: List[str], d
         roots, _, commands = _find_parts(argv)
         for inner in commands:
             for root in roots:
-                units.extend(_expand([w.replace("{}", root) for w in inner], shell_text, [], depth + 1, lenient, pipeline))
+                units.extend(_expand([w.replace("{}", root) for w in inner], shell_text, [], depth + 1, lenient, pipeline, stdin))
     return units
 
 
@@ -557,8 +601,11 @@ def _shell_units(text: str, depth: int, lenient: bool) -> List[_Unit]:
         pipeline_words.setdefault(pid, []).extend(words + inputs)
     pipeline_text = {pid: " ".join(w) for pid, w in pipeline_words.items()}
     units: List[_Unit] = []
-    for words, redirects, pid, _inputs in rows:
-        units.extend(_expand(words, text, redirects, depth, lenient, pipeline_text[pid]))
+    upstream: Dict[int, List[str]] = {}   # what the commands so far send down each pipeline
+    for words, redirects, pid, inputs in rows:
+        received = " ".join(upstream.get(pid, []) + inputs)
+        units.extend(_expand(words, text, redirects, depth, lenient, pipeline_text[pid], received))
+        upstream.setdefault(pid, []).extend(words[1:] + inputs)
     for body in bodies:
         units.extend(_shell_units(body, depth + 1, lenient))
     # A string with no command still gets one unit, so whole-command checks run on it.
@@ -1069,8 +1116,9 @@ def _check_url_host(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
 
 
 def _download_targets(argv: List[str]) -> List[str]:
-    """What a download tool fetches: its operands, without the values of the options listed above."""
+    """What a download tool fetches: its operands, without the values of that tool's own options."""
     targets: List[str] = []
+    takes_a_value = _DOWNLOAD_VALUE_OPTIONS.get(_program_name(argv[0]), frozenset())
     i, rest = 1, False
     while i < len(argv):
         word = argv[i]
@@ -1087,7 +1135,7 @@ def _download_targets(argv: List[str]) -> List[str]:
             targets.append(word[len("--url="):])
             i += 1
         else:
-            i += 2 if word in _DOWNLOAD_VALUE_OPTIONS else 1
+            i += 2 if word in takes_a_value else 1
     if _program_name(argv[0]) in _HTTP_CLIENTS:
         targets = targets[1:2] if targets and _HTTP_METHOD.match(targets[0]) else targets[:1]
     return targets
@@ -1150,10 +1198,21 @@ def _check_destructive_sql(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     return ("the SQL drops, truncates or changes rows without WHERE", None)
 
 
+def _writes_sql(text: str) -> bool:
+    if _SQL_WRITE.search(text):
+        return True
+    for statement in text.split(";"):
+        for verb, clause in _SQL_MULTI_TABLE:
+            found = verb.search(statement)
+            if found is not None and clause.search(statement, found.end()) is not None:
+                return True
+    return False
+
+
 def _check_sql_write(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     # Row-bounded changes, schema changes and DDL against an ephemeral DSN: destructive_sql denies the rest.
     texts = _scan_texts(unit)
-    if not any(_SQL_WRITE.search(t) for t in texts):
+    if not any(_writes_sql(t) for t in texts):
         return None
     return ("the SQL writes to the database", "db-ephemeral" if _all_dsns_ephemeral(ctx, texts) else None)
 

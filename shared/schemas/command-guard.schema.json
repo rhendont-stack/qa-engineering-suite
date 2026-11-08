@@ -45,6 +45,7 @@
         "unless_args": {"description": "None of these is an argument (exact match).", "$ref": "#/$defs/words"},
         "no_args": {"description": "The program has no arguments after it, once wrappers are stripped. true is the only value.", "const": true},
         "args_regex": {"description": "Some argument matches this Python regex (re.search).", "$ref": "#/$defs/regex"},
+        "args_regex_on_stdin": {"description": "args_regex also reads what the program is fed on stdin: the arguments of the commands before it in its pipe, and here-string and here-document bodies. true is the only value.", "const": true},
         "shell_regex": {"description": "The command comes from a shell string that matches this Python regex (re.search) as a whole.", "$ref": "#/$defs/regex"},
         "check": {
           "description": "A named check implemented by the guard module.",

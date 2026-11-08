@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from helpers import CORPUS
+from helpers import CORPUS, finishes
 from qa import guard, workspace
 from qa.errors import QaError
 
@@ -411,3 +411,42 @@ def test_program_names_are_read_as_a_case_insensitive_filesystem_does(ws, argv):
 @pytest.mark.parametrize("option", ["--namespace", "--super-prefix", "--config-env", "--attr-source"])
 def test_git_global_options_that_take_a_value_hide_no_subcommand(ws, option):
     assert classify(["git", option, "status", "push"], ws).decision == "deny"
+
+
+# --------------------------------------------------------------------------- guard residuals: C2, I8
+
+@pytest.mark.parametrize("program,option,takes_a_value", [
+    ("curl", "-o", True), ("curl", "-O", False), ("curl", "-s", False), ("curl", "-i", False), ("curl", "-j", False),
+    ("wget", "-O", True), ("wget", "-i", True), ("wget", "-c", False), ("wget", "-d", False), ("wget", "-r", False), ("wget", "-H", False),
+    ("aria2c", "-s", True), ("aria2c", "-o", True), ("aria2c", "-c", False), ("aria2c", "-D", False),
+    ("http", "-o", True), ("http", "-a", True), ("http", "-d", False), ("http", "-F", False), ("xh", "-b", False), ("xh", "-o", True),
+    ("/usr/bin/CURL", "-O", False),
+])
+def test_each_download_tool_has_its_own_value_options(program, option, takes_a_value):  # I8
+    assert guard._download_targets([program, option, "word"]) == ([] if takes_a_value else ["word"])
+
+
+def test_an_unknown_download_tool_swallows_nothing():  # I8: reading a value as a target asks for a grant, which is the safe side
+    assert guard._download_targets(["other", "-o", "word"]) == ["word"]
+
+
+@pytest.mark.parametrize("statement,writes", [
+    ("UPDATE a JOIN b ON a.i = b.i SET a.x = 1", True), ("DELETE a FROM a JOIN b ON a.i = b.i", True),
+    ("SELECT a FROM t FOR UPDATE", False), ("SELECT a FROM t FOR UPDATE; SET autocommit = 1", False),
+    ("DELETE; SELECT a FROM t", False), ("SELECT REPLACE(a, 'x', 'y') FROM t", False), ("SELECT 1", False),
+])
+def test_a_multi_table_write_is_read_within_one_statement(statement, writes):  # C2
+    assert guard._writes_sql(statement) is writes
+
+
+def test_a_long_statement_with_no_set_is_read_in_linear_time():  # C2
+    assert finishes(lambda: guard._writes_sql("UPDATE " * 100000), seconds=5) is False
+
+
+def test_stdin_reaches_a_client_behind_a_wrapper(ws):  # C2
+    d = classify("echo 'SET k v' | env A=1 redis-cli", ws, shell=True)
+    assert (d.decision, d.rule_id) == ("require_grant", "redis-write")
+
+
+def test_a_pipeline_after_a_separator_feeds_nothing(ws):  # C2
+    assert classify("echo 'SET k v'; redis-cli GET k", ws, shell=True).decision == "allow"

@@ -323,13 +323,13 @@
       "id": "redis-write",
       "effect": "require_grant:db-write",
       "reason": "Commands that write to a key-value store need db-write (§12.2, §12.3).",
-      "match": {"program": ["redis-cli", "valkey-cli", "keydb-cli"], "args_regex": "(?i)^(set|setex|psetex|setnx|setrange|setbit|mset|msetnx|getset|getdel|getex|append|incr|incrby|incrbyfloat|decr|decrby|del|unlink|expire|expireat|pexpire|pexpireat|persist|rename|renamenx|flushall|flushdb|hset|hsetnx|hmset|hincrby|hincrbyfloat|hdel|lpush|lpushx|rpush|rpushx|lpop|rpop|rpoplpush|lmove|lset|lrem|ltrim|linsert|sadd|srem|spop|smove|sinterstore|sunionstore|sdiffstore|zadd|zrem|zincrby|zpopmin|zpopmax|zremrangebyscore|zremrangebyrank|zremrangebylex|xadd|xdel|xtrim|pfadd|pfmerge|restore|move|copy|migrate|config|eval|evalsha|evalsha_ro|fcall|function|script|slaveof|replicaof|swapdb|bgsave|save|bitop|bitfield|geoadd|georadius)$"}
+      "match": {"program": ["redis-cli", "valkey-cli", "keydb-cli"], "args_regex_on_stdin": true, "args_regex": "(?i)^(set|setex|psetex|setnx|setrange|setbit|mset|msetnx|getset|getdel|getex|append|incr|incrby|incrbyfloat|decr|decrby|del|unlink|expire|expireat|pexpire|pexpireat|persist|rename|renamenx|flushall|flushdb|hset|hsetnx|hmset|hincrby|hincrbyfloat|hdel|lpush|lpushx|rpush|rpushx|lpop|rpop|rpoplpush|lmove|lset|lrem|ltrim|linsert|sadd|srem|spop|smove|sinterstore|sunionstore|sdiffstore|zadd|zrem|zincrby|zpopmin|zpopmax|zremrangebyscore|zremrangebyrank|zremrangebylex|xadd|xdel|xtrim|pfadd|pfmerge|restore|move|copy|migrate|config|eval|evalsha|evalsha_ro|fcall|function|script|slaveof|replicaof|swapdb|bgsave|save|bitop|bitfield|geoadd|georadius|--pipe)$"}
     },
     {
       "id": "document-store-write",
       "effect": "require_grant:db-write",
       "reason": "Shell commands that write to a document store need db-write (§12.2, §12.3).",
-      "match": {"program": ["mongosh", "mongo"], "args_regex": "(?i)\\b(insert(one|many)?|update(one|many)?|replaceone|delete(one|many)?|remove|drop(database|indexes)?|createcollection|createindex|findoneand(update|replace|delete)|bulkwrite|renamecollection)\\s*\\("}
+      "match": {"program": ["mongosh", "mongo"], "args_regex_on_stdin": true, "args_regex": "(?i)\\b(insert(one|many)?|update(one|many)?|replaceone|delete(one|many)?|remove|drop(database|indexes)?|createcollection|createindex|findoneand(update|replace|delete)|bulkwrite|renamecollection)\\s*\\("}
     },
     {
       "id": "document-store-load",
