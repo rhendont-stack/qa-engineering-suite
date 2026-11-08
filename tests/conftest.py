@@ -65,3 +65,10 @@ def ws(tmp_path):
     from qa.workspace import init_workspace
 
     return init_workspace(tmp_path / "Programación" / "My Skills")[0]
+
+
+@pytest.fixture
+def actor():
+    from qa.ledger import Actor
+
+    return Actor(role="verifier", skill="qa-test-execution", session="S-" + "0" * 26, independence="I1")
