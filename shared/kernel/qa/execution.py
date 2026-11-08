@@ -14,6 +14,7 @@ and is hashed after redaction.
 """
 from __future__ import annotations
 
+import dataclasses
 import glob
 import math
 import os
@@ -187,7 +188,8 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
     recorded = _record_blocked(run, gate) if gate.blocked else _run_command(run, gate, grace_s)
     raised = {"opened": 0, "updated": 0}
     if recorded.summary is not None and recorded.summary.kind == "alerts":  # a timed-out scan's partial alerts are real too
-        raised = findings.ingest_alerts(ws, actor, recorded.summary, execution_id=run.execution_id, category=req.category)
+        raised = findings.ingest_alerts(ws, actor, _redacted(run, recorded.summary), execution_id=run.execution_id,
+                                        category=req.category)
     return {
         "execution": run.execution_id,
         "status": recorded.verdict.status,
@@ -200,6 +202,14 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
         "findings": raised,
         "limitations": recorded.limitations,
     }
+
+
+def _redacted(run: _Run, summary: ingest.ReportSummary) -> ingest.ReportSummary:
+    """The alerts with every text field through the run's own redactor, as every other run event is (T14-R7)."""
+    clean = tuple(dataclasses.replace(a, tool=run.redactor.text(a.tool)[0], rule_id=run.redactor.text(a.rule_id)[0],
+                                      level=run.redactor.text(a.level)[0], message=run.redactor.text(a.message)[0],
+                                      path=None if a.path is None else run.redactor.text(a.path)[0]) for a in summary.alerts)
+    return dataclasses.replace(summary, alerts=clean)
 
 
 def _counts(summary: Optional[ingest.ReportSummary]) -> Dict[str, int]:

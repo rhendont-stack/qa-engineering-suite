@@ -9,6 +9,8 @@ A finding's identity is its fingerprint (§10.7): ``hash([category, rule, compon
 Adding a finding whose fingerprint matches an existing one in any state but ``verified_fixed`` records a new sighting
 instead of a duplicate, so a re-scan neither opens duplicates nor undoes an ``accepted_risk`` or ``wont_fix`` decision.
 Known limitation: the fingerprint has no line number, so two alerts of one rule in one file are one finding, seen twice.
+An alert path is made repo-relative from the run's recorded directory; one nobody can place keeps its raw text in
+``key_attributes``, so different such paths stay different findings.
 """
 from __future__ import annotations
 
@@ -187,6 +189,13 @@ def validate_new(st: dict, f: dict) -> List[str]:
         if anchor == TOOL_PROVISIONAL:
             if not isinstance(g.get("severity"), str):
                 problems.append("severity is required under %s: it is the tool's, mapped to the scale" % TOOL_PROVISIONAL)
+            source = g.get("source")
+            if not isinstance(source, dict) or _blank(source.get("tool")):
+                problems.append("source.tool is required under %s: the anchor is for a tool's untriaged alert" % TOOL_PROVISIONAL)
+            if modifiers:
+                problems.append("modifiers must be empty under %s: they have nothing to adjust" % TOOL_PROVISIONAL)
+            if g.get("verification_status") != "suspected":
+                problems.append("verification_status must be suspected under %s: triage moves out of the anchor" % TOOL_PROVISIONAL)
         else:
             try:
                 severity = compute_severity(anchor, modifiers, rubric)
@@ -231,13 +240,13 @@ def _evidence_problems(st: dict, g: dict) -> List[str]:
     if not isinstance(evidence, list):
         return []  # the schema pass says so
     problems = []
+    known = state.known_references(st)
     cited: List[Optional[str]] = []
     for reference in evidence:
         if isinstance(reference, str) and reference.startswith(("EXE-", "EV-")):
-            strengths = _cited_strengths(st, reference)
-            if not strengths:
+            if reference not in known:
                 problems.append("evidence %s resolves to no recorded execution or evidence file" % reference)
-            cited.extend(strengths)
+            cited.extend(_cited_strengths(st, reference))
     if g.get("verification_status") == "confirmed" and not any(s in _CONFIRMING for s in cited):
         problems.append("a confirmed finding must cite an execution of strength exit_code or structured in evidence")
     return problems
@@ -329,10 +338,23 @@ def update(ws: Workspace, actor: ledger.Actor, fid: str, changes: dict) -> dict:
             final[key] = copy.deepcopy(value)
         merged.update(final)
         _recompute(merged, final, changes)
-        errors = validate_new(st, merged)
+        errors = _provisional_problems(current, merged)
+        errors += validate_new(st, merged)
         if errors:
             raise QaError("finding_invalid", "the finding would no longer be valid", errors=errors)
         return ledger.append(ws, actor, "finding.updated", {"id": fid, "changes": final})
+
+
+def _provisional_problems(current: dict, merged: dict) -> List[str]:
+    """Only an alert's own finding is provisional; triage leaves the anchor, nobody enters it or edits its severity."""
+    anchor = merged.get("severity_rationale", {}).get("anchor") if isinstance(merged.get("severity_rationale"), dict) else None
+    if anchor != TOOL_PROVISIONAL:
+        return []
+    if current["severity_rationale"]["anchor"] != TOOL_PROVISIONAL:
+        return ["severity_rationale.anchor cannot become %s: only a tool's alert starts there" % TOOL_PROVISIONAL]
+    if merged.get("severity") != current["severity"]:
+        return ["severity cannot be edited under %s: triage to a rubric anchor instead" % TOOL_PROVISIONAL]
+    return []
 
 
 def _recompute(merged: dict, final: dict, changes: dict) -> None:
@@ -395,13 +417,18 @@ def _alert_severity(alert: Alert) -> str:
     return _LEVELS.get(alert.level, "HIGH")  # an unknown level must not read as harmless (T13-R6)
 
 
-def _repo_path(ws: Workspace, raw: Optional[str]) -> Optional[str]:
-    """``raw`` as a repo-relative POSIX path, or None when it cannot be a stable one."""
-    if not isinstance(raw, str) or not raw:
+def _repo_path(ws: Workspace, raw: Optional[str], cwd: str = ".") -> Optional[str]:
+    """``raw`` as a repo-relative POSIX path, or None when it cannot be a stable one.
+
+    A relative path is taken from ``cwd``, the run's directory relative to the workspace root."""
+    if not isinstance(raw, str) or not raw.strip():
         return None
     path = raw
     if _URI_SCHEME.match(raw):
-        parts = urlsplit(raw)
+        try:
+            parts = urlsplit(raw)
+        except ValueError:  # e.g. an unclosed IPv6 bracket
+            return None
         if parts.scheme.lower() != "file" or parts.netloc not in ("", "localhost"):
             return None
         path = unquote(parts.path)
@@ -419,33 +446,36 @@ def _repo_path(ws: Workspace, raw: Optional[str]) -> Optional[str]:
     else:
         if ".." in path.split("/"):
             return None
-        relative = posixpath.normpath(path)
+        relative = posixpath.normpath(posixpath.join(cwd, path))
     if relative in ("", ".") or _location_problem(relative) is not None:
         return None
     return relative
 
 
 def _alert_finding(ws: Workspace, actor: ledger.Actor, alert: Alert, execution_id: str, category: str,
-                   commit: Optional[str]) -> dict:
-    rule = alert.rule_id or "unknown"
+                   commit: Optional[str], cwd: str) -> dict:
+    rule = (alert.rule_id or "").strip() or "unknown"
     message = alert.message.strip() if isinstance(alert.message, str) else ""
     first = message.splitlines()[0].strip() if message else ""
-    path = _repo_path(ws, alert.path)
+    path = _repo_path(ws, alert.path, cwd)
     source: Dict[str, object] = {"skill": actor.skill, "method": "static", "tool": alert.tool, "level": alert.level,
                                  "security_severity": _finite(alert.security_severity), "start_line": alert.start_line}
     component: Dict[str, str] = {}
     refs: Dict[str, object] = {"rule": rule}
+    key_attributes: Dict[str, str] = {}
     if path is not None:
         component["path"] = path
         refs["location"] = path
-    elif alert.path:
+    elif isinstance(alert.path, str) and alert.path.strip():
         source["uri"] = alert.path
+        key_attributes["uri"] = alert.path  # different paths nobody can place stay different findings
     return {
         "title": first[:_TITLE_CHARS].strip() or rule, "description": message or rule,
         "category": category, "severity": _alert_severity(alert),
         "severity_rationale": {"anchor": TOOL_PROVISIONAL, "modifiers": []}, "component": component,
         "evidence": [execution_id], "reproduction_steps": [], "verification_status": "suspected", "refs": refs,
         "source": source, "commit": commit,
+        "key_attributes": key_attributes,
     }
 
 
@@ -456,6 +486,8 @@ def ingest_alerts(ws: Workspace, actor: ledger.Actor, summary: ReportSummary, *,
         st = state.load(ws)
         git = st["executions"].get(execution_id, {}).get("git")
         commit = git["commit"] if isinstance(git, dict) else None
+        command = st["executions"].get(execution_id, {}).get("command")
+        cwd = command["cwd"] if isinstance(command, dict) and command.get("cwd") else "."
         counter = [int(ledger.next_human_id(ws, "FND").split("-")[1]) - 1]
 
         def next_id() -> str:
@@ -463,7 +495,7 @@ def ingest_alerts(ws: Workspace, actor: ledger.Actor, summary: ReportSummary, *,
             return ledger.format_human_id("FND", counter[0])
 
         for alert in summary.alerts:
-            _, created = _add(ws, actor, _alert_finding(ws, actor, alert, execution_id, category, commit), st, next_id)
+            _, created = _add(ws, actor, _alert_finding(ws, actor, alert, execution_id, category, commit, cwd), st, next_id)
             opened += created
             updated += not created
     return {"opened": opened, "updated": updated}

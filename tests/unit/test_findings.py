@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -63,7 +65,8 @@ def test_default_criticality_is_recorded(ws, actor):
 
 
 def test_tool_provisional_keeps_the_tool_severity(ws):
-    f = base(severity="CRITICAL", severity_rationale={"anchor": "TOOL-PROVISIONAL", "modifiers": []})
+    f = base(severity="CRITICAL", severity_rationale={"anchor": "TOOL-PROVISIONAL", "modifiers": []},
+             source={"skill": "s", "method": "static", "tool": "scanner"})
     assert not [m for m in findings.validate_new(state.load(ws), f) if "severity" in m]
 
 
@@ -461,11 +464,49 @@ def test_update_refuses_a_declared_severity_the_rubric_does_not_give(ws, actor):
     assert e.value.code == "finding_invalid"
 
 
-def test_update_accepts_a_declared_severity_under_tool_provisional(ws, actor):
-    findings.add(ws, actor, base())
-    e = findings.update(ws, actor, "FND-001", {"severity_rationale": {"anchor": "TOOL-PROVISIONAL", "modifiers": []}, "severity": "LOW"})
-    assert e["data"]["changes"]["severity"] == "LOW" and e["data"]["changes"]["priority"] == "P2"
-    assert _updated(ws)["severity"] == "LOW"
+def test_update_cannot_move_a_finding_into_tool_provisional(ws, actor):
+    findings.add(ws, actor, base(severity_rationale={"anchor": "SEC-C1", "modifiers": []}))
+    for changes in ({"severity_rationale": {"anchor": "TOOL-PROVISIONAL", "modifiers": []}, "severity": "INFORMATIONAL"},
+                    {"severity_rationale": {"anchor": "TOOL-PROVISIONAL", "modifiers": []},
+                     "source": {"skill": "s", "method": "static", "tool": "t"}}):
+        with pytest.raises(QaError) as e:
+            findings.update(ws, actor, "FND-001", changes)
+        assert e.value.code == "finding_invalid"
+    assert (_updated(ws)["severity"], _updated(ws)["priority"]) == ("CRITICAL", "P0")
+
+
+def _alert_finding(ws, actor, run_id):
+    findings.ingest_alerts(ws, actor, _summary(_alert(security_severity=9.1)), execution_id=run_id, category="security")
+
+
+def test_update_cannot_change_a_provisional_severity_by_hand(trusted, actor, run_id):
+    _alert_finding(trusted, actor, run_id)
+    with pytest.raises(QaError) as e:
+        findings.update(trusted, actor, "FND-001", {"severity": "INFORMATIONAL"})
+    assert e.value.code == "finding_invalid" and _updated(trusted)["severity"] == "CRITICAL"
+    findings.update(trusted, actor, "FND-001", {"severity": "CRITICAL", "title": "same severity is fine"})
+
+
+def test_triage_moves_out_of_tool_provisional_and_may_change_the_status(trusted, actor, run_id):
+    _alert_finding(trusted, actor, run_id)
+    findings.update(trusted, actor, "FND-001", {"severity_rationale": {"anchor": "SEC-M1", "modifiers": []},
+                                                "verification_status": "probable", "impact": "i", "recommendation": "r"})
+    assert (_updated(trusted)["severity"], _updated(trusted)["verification_status"]) == ("MEDIUM", "probable")
+
+
+@pytest.mark.parametrize("over,needle", [
+    (dict(source={"skill": "s", "method": "manual"}), "source.tool"),
+    (dict(source={"skill": "s", "method": "static", "tool": " "}), "source.tool"),
+    (dict(severity_rationale={"anchor": "TOOL-PROVISIONAL", "modifiers": ["dev_only"]}), "modifiers"),
+    (dict(verification_status="probable", impact="i", recommendation="r"), "verification_status"),
+])
+def test_tool_provisional_is_only_for_untriaged_alerts(ws, over, needle):
+    f = base(severity="INFORMATIONAL", severity_rationale={"anchor": "TOOL-PROVISIONAL", "modifiers": []},
+             source={"skill": "s", "method": "static", "tool": "scanner"})
+    f.update(over)
+    problems = findings.validate_new(state.load(ws), f)
+    assert any(needle in m for m in problems)
+    assert not any("severity" in m for m in problems if needle == "source.tool")
 
 
 def test_update_recomputes_priority_when_criticality_changes(ws, actor):
@@ -730,13 +771,70 @@ def test_alert_commit_comes_from_the_execution(trusted, actor, run_id):
     ("https://example.com/a.py", None, "https://example.com/a.py"), ("file://server/share/a.py", None, "file://server/share/a.py"),
     ("a.py:12", None, "a.py:12"), (".", None, "."), ("/", None, "/"),
     ("/outside/root/a.py", None, "/outside/root/a.py"), ("file:///outside/root/a.py", None, "file:///outside/root/a.py"),
-    (None, None, None), ("", None, None),
+    (None, None, None), ("", None, None), ("   ", None, None),
+    ("https://[oops/a.py", None, "https://[oops/a.py"), ("file://[oops/a.py", None, "file://[oops/a.py"),
 ])
 def test_alert_path_forms(trusted, actor, run_id, raw, path, uri):
     _, found = _ingest(trusted, actor, run_id, _alert(path=raw))
     f = found["FND-001"]
     assert f["component"].get("path") == path and f["refs"].get("location") == path and f["source"].get("uri") == uri
     assert ("path" in f["component"]) == (path is not None)
+
+
+def test_alert_with_a_blank_rule_is_unknown(trusted, actor, run_id):
+    _, found = _ingest(trusted, actor, run_id, _alert(rule_id="   "))
+    assert found["FND-001"]["refs"]["rule"] == "unknown"
+
+
+def _sarif_run(py, results, **kw):
+    code = ("import json, sys, os; json.dump({'version': '2.1.0', 'runs': [{'tool': {'driver': {'name': 's'}}, 'results': "
+            + results + "}]}, open(sys.argv[1], 'w')); sys.exit(1)")
+    return execution.RunRequest(command=py.argv(code, "{evidence}/r.sarif"), reports=(("sarif", "{evidence}/r.sarif"),),
+                                activity="static-analysis", category="security", **kw)
+
+
+def test_execute_survives_alerts_it_cannot_place(trusted, actor, py):
+    results = ("[{'ruleId': 'R%d' % n, 'level': 'error', 'message': {'text': 'm'}, 'locations': [{'physicalLocation': "
+               "{'artifactLocation': {'uri': u}}}]} for n, u in enumerate(['a.py', 'https://[oops/b.py', '   ', 'c.py'])] "
+               "+ [{'ruleId': '  ', 'level': 'error', 'message': {'text': 'm'}}]")
+    r = execution.execute(trusted, actor, _sarif_run(py, results))
+    assert r["status"] == "failed" and r["findings"] == {"opened": 5, "updated": 0}
+    assert len(state.load(trusted)["executions"]) == 1
+
+
+def test_alert_strings_are_redacted_with_the_runs_own_environment(trusted, actor, py):
+    secret = 'Zx8"kQ02pLm7Qw3Er5Ty'
+    results = ("[{'ruleId': 'R1', 'level': 'error', 'message': {'text': 'leaked ' + os.environ['MY_API_TOKEN'] + ' here'}, "
+               "'locations': [{'physicalLocation': {'artifactLocation': {'uri': 'a.py'}}}]}]")
+    environ = dict(os.environ, MY_API_TOKEN=secret)
+    execution.execute(trusted, actor, _sarif_run(py, results), environ=environ)
+    ledger_text = "".join(p.read_text(encoding="utf-8") for p in trusted.path("ledger").iterdir())
+    assert secret not in ledger_text and "Zx8" not in ledger_text
+    assert "leaked" in state.load(trusted)["findings"]["FND-001"]["description"]
+
+
+def test_evidence_resolution_uses_known_references(ws, monkeypatch):
+    f = base(evidence=["EV-0123456789ab"])
+    assert _has(findings.validate_new(state.load(ws), f), "resolves to no")
+    monkeypatch.setattr(state, "known_references", lambda st: {"EV-0123456789ab"})
+    assert not _has(findings.validate_new(state.load(ws), f), "resolves to no")
+
+
+def test_relative_alert_paths_are_joined_with_the_runs_directory(trusted, actor, py):
+    for pkg in ("a", "b"):
+        (trusted.root / "packages" / pkg).mkdir(parents=True)
+    out = [execution.execute(trusted, actor, _sarif_run(py, "[{'ruleId': 'R', 'level': 'error', 'message': {'text': 'm'}, "
+           "'locations': [{'physicalLocation': {'artifactLocation': {'uri': 'src/index.ts'}}}]}]", cwd=Path("packages") / pkg))
+           for pkg in ("a", "b")]
+    assert [o["findings"] for o in out] == [{"opened": 1, "updated": 0}] * 2
+    assert [f["component"]["path"] for f in state.load(trusted)["findings"].values()] == ["packages/a/src/index.ts", "packages/b/src/index.ts"]
+
+
+def test_unnormalizable_paths_stay_different_findings(trusted, actor, run_id):
+    out, found = _ingest(trusted, actor, run_id, *[_alert(path=p) for p in ("../a.py", "../b.py", "C:\\c.py")], _alert(path="  "), _alert(path=None))
+    assert out == {"opened": 4, "updated": 1}
+    assert [f["key_attributes"] for f in found.values()] == [{"uri": "../a.py"}, {"uri": "../b.py"}, {"uri": "C:\\c.py"}, {}]
+    assert "uri" not in found["FND-004"]["source"]
 
 
 def test_alert_absolute_and_file_paths_under_the_root(trusted, actor, run_id):
