@@ -1,0 +1,32 @@
+{
+  "defaults": {
+    "flaky_reruns": 3,
+    "max_log_mb": 50,
+    "timeout_seconds": 900
+  },
+  "environments": [
+    {
+      "base_urls": [
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://[::1]"
+      ],
+      "class": "local",
+      "id": "local"
+    }
+  ],
+  "gate": {
+    "overrides": {},
+    "profile": "release"
+  },
+  "project": {
+    "name": "qa-engineering-suite",
+    "trust": "trusted"
+  },
+  "redaction": {
+    "extra_env_names": []
+  },
+  "schema_version": "1",
+  "standing_authorizations": [],
+  "write_scopes": []
+}
