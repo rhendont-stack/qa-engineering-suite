@@ -450,3 +450,70 @@ def test_stdin_reaches_a_client_behind_a_wrapper(ws):  # C2
 
 def test_a_pipeline_after_a_separator_feeds_nothing(ws):  # C2
     assert classify("echo 'SET k v'; redis-cli GET k", ws, shell=True).decision == "allow"
+
+
+# --------------------------------------------------------------------------- guard round 2: statement start, line continuations
+
+@pytest.mark.parametrize("text", [
+    "INSERT t TABLE s", "insert t table s", "REPLACE t TABLE s", "UPDATE t SET a = 1", "DELETE t WHERE a = 1",
+    "  \n INSERT t TABLE s", "-- note\nINSERT t TABLE s", "# note\nINSERT t TABLE s", "/* a */ /* b */ INSERT t TABLE s",
+    "(INSERT t TABLE s)", "SELECT 1; REPLACE t TABLE s", "SELECT 1;\n-- note\nDELETE t WHERE a = 1",
+    "--execute=INSERT t TABLE s", "-eDELETE t WHERE a = 1", "INSERT`t`TABLE s", "UPDATE/* a */t SET a = 1",
+])
+def test_a_statement_that_begins_with_a_write_verb_is_a_write(text):
+    assert guard._begins_a_write(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "", "SELECT 1", "SHOW TABLES", "SELECT REPLACE(a, 'b', 'c') FROM t", "SELECT INSERT(a, 1, 2, 'b') FROM t",
+    "REPLACE(a, 'b', 'c')", "update", "update.db", "delete-me.db", "replace_me", "-- note INSERT t TABLE s",
+    "/* INSERT t TABLE s", "/* INSERT t TABLE s */ SELECT 1",
+])
+def test_anything_else_does_not_begin_a_write(text):
+    assert guard._begins_a_write(text) is False
+
+
+@pytest.mark.parametrize("text", [";" * 200000, "/* ; " * 50000, "; /* " * 50000, "(" * 200000, "; -- x\n" * 30000], ids=["a", "b", "c", "d", "e"])
+def test_statement_starts_are_found_in_linear_time(text):
+    assert finishes(lambda: guard._begins_a_write(text), seconds=5) is False
+
+
+def _commands(text):
+    return [unit.argv for unit in guard._shell_units(text, 0, False)]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("git \\\n  push", [["git", "push"]]),
+    ("git \\\n\\\n  push", [["git", "push"]]),
+    ("gi\\\nt push", [["git", "push"]]),
+    ('echo "a\\\nb"', [["echo", "ab"]]),
+    ("echo 'a\\\nb'", [["echo", "a\\\nb"]]),
+    ("echo a\\\\\nb", [["echo", "a\\"], ["b"]]),
+    ("# a \\\ngit status", [["git", "status"]]),
+    ("echo $(git \\\n  status)", [["echo", guard._SUBST], ["git", "status"]]),
+])
+def test_a_line_continuation_is_removed_before_words_are_formed(text, expected):
+    assert _commands(text) == expected
+
+
+def test_a_heredoc_operator_after_a_continuation_still_opens_its_body():
+    assert _commands("cat \\\n  <<EOF\ngit push\nEOF") == [["cat"]]
+
+
+def test_a_heredoc_body_after_a_continued_operator_line_is_its_body():
+    assert _commands("cat <<EOF \\\n  -n\ngit push\nEOF") == [["cat", "-n"]]
+
+
+def test_an_unquoted_heredoc_body_loses_its_continuations():
+    assert guard._extract_heredocs("cat <<EOF\na\\\nb\nEOF") == "cat <<< 'ab'"
+
+
+def test_a_quoted_heredoc_body_keeps_them():
+    assert "\\" in guard._extract_heredocs("cat <<'EOF'\na\\\nb\nEOF")
+
+
+@pytest.mark.parametrize("command,decision", [
+    ("git \\\n  status", "allow"), ("git \\\n  push", "deny"), ("echo 'git \\\n  push'", "allow"),
+], ids=["read", "write", "single_quoted"])
+def test_a_continued_command_is_decided_like_the_joined_one(ws, command, decision):
+    assert classify(command, ws, shell=True).decision == decision

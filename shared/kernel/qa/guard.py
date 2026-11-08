@@ -179,6 +179,7 @@ _HTTP_METHOD = re.compile(r"^[A-Z]+$")
 _STDIN_WORD_BREAK = re.compile(r"(?:\s|\\[nrt])+")   # printf's backslash-n is still two characters here
 # A here-document operator, not the '<<' inside a '<<<' here-string (hence the lookbehind).
 _HEREDOC = re.compile(r"(?<!<)<<-?\s*([\"']?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_BODY_CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\n")   # an even run of backslashes before it escapes itself
 _SQL_DESTRUCTIVE = re.compile(r"(?i)\b(?:DROP\s+\w|TRUNCATE\b)")
 _SQL_UNBOUNDED = re.compile(r"(?i)\bDELETE\s+FROM\b|\bUPDATE\s+\S+(?:\s+\S+)?\s+SET\b")
 _SQL_WHERE = re.compile(r"(?i)\bWHERE\b")
@@ -189,6 +190,10 @@ _SQL_WRITE = re.compile(r"(?i)\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO|
                         r"|REPLACE\s+(?:(?:LOW_PRIORITY|DELAYED)\b|" + _SQL_ROW_SOURCE + r")"
                         r"|UPDATE\s+\S+(?:\s+\S+)?\s+SET|ALTER\s+\w|CREATE\s+\w|DROP\s+\w|TRUNCATE\b|GRANT\s+\w|REVOKE\s+\w"
                         r"|COPY\s+\S+\s+FROM|LOAD\s+DATA)")
+# Through a listed client, a statement that begins with one of these writes, whatever follows the verb. The lookahead
+# leaves out a database or file named after a verb, and the REPLACE() and INSERT() functions.
+_SQL_WRITE_VERB = re.compile(r"(?i)(?:INSERT|REPLACE|UPDATE|DELETE)(?=[\s`\"\[]|/\*)")
+_OPTION_HOLDING_SQL = re.compile(r"-[A-Za-z]|--[\w-]+=")   # -eSQL, --execute=SQL
 # A join or a table list stands between these pairs, so they are read per statement, in two linear searches.
 _SQL_MULTI_TABLE = ((re.compile(r"(?i)\bUPDATE\s"), re.compile(r"(?i)\bSET\b")),
                     (re.compile(r"(?i)\bDELETE\s"), re.compile(r"(?i)\bFROM\b")))
@@ -261,7 +266,7 @@ class _Unit:
     shell: Optional[str] = None      # the whole shell string the command came from
     assignments: List[str] = field(default_factory=list)  # NAME=value words that set its environment
     pipeline: Optional[str] = None   # the text of this command's own pipeline, for the SQL and DSN checks
-    stdin: Optional[str] = None      # what it is fed: the arguments of the commands before it in the pipe, here-document bodies
+    stdin: List[str] = field(default_factory=list)   # what it is fed: arguments of the commands before it in the pipe, here-document bodies
 
     @property
     def program(self) -> Optional[str]:
@@ -437,7 +442,8 @@ def _regex_subjects(match: dict, unit: _Unit, args: List[str]) -> List[str]:
     """
     if not match.get("args_regex_on_stdin") or not unit.stdin:
         return args
-    return args + [word for word in _STDIN_WORD_BREAK.split(unit.stdin) if word] + [unit.stdin]
+    whole = " ".join(unit.stdin)
+    return args + [word for word in _STDIN_WORD_BREAK.split(whole) if word] + [whole]
 
 
 def _known_program(unit: _Unit, patterns: Sequence[str]) -> bool:
@@ -463,12 +469,12 @@ def _subcommand(argv: List[str]) -> Tuple[Optional[str], List[str]]:
 # --------------------------------------------------------------------------- reading commands
 
 def _expand(words: List[str], shell_text: Optional[str], redirects: List[str], depth: int,
-            lenient: bool, pipeline: Optional[str] = None, stdin: Optional[str] = None) -> List[_Unit]:
+            lenient: bool, pipeline: Optional[str] = None, stdin: Sequence[str] = ()) -> List[_Unit]:
     """The unit for ``words`` plus the units of any command it runs (sh -c, eval, find -exec)."""
     if depth > _MAX_DEPTH:
         raise QaError("invalid_command", "the command nests other commands too deeply")
     argv, assignments = _strip_wrappers(words)
-    unit = _Unit(list(words), argv, list(redirects), shell_text, assignments, pipeline, stdin)
+    unit = _Unit(list(words), argv, list(redirects), shell_text, assignments, pipeline, list(stdin))
     units = [unit]
     prog = unit.program
     if prog in _SHELLS:
@@ -592,7 +598,8 @@ def _find_parts(argv: List[str]) -> Tuple[List[str], bool, List[List[str]]]:
 def _shell_units(text: str, depth: int, lenient: bool) -> List[_Unit]:
     if depth > _MAX_DEPTH:
         raise QaError("invalid_command", "the command nests shell strings too deeply")
-    outer, bodies = _substitutions(_extract_heredocs(text))
+    joined = _extract_heredocs(text)   # with its line continuations removed, so the shell_regex rules read it this way too
+    outer, bodies = _substitutions(joined)
     rows = _simple_commands(outer, lenient)
     # Commands joined by a pipe share a pipeline; the SQL and DSN checks read only their own.
     # A here-string or here-document body (inputs) belongs to its command's pipeline, not another.
@@ -603,13 +610,12 @@ def _shell_units(text: str, depth: int, lenient: bool) -> List[_Unit]:
     units: List[_Unit] = []
     upstream: Dict[int, List[str]] = {}   # what the commands so far send down each pipeline
     for words, redirects, pid, inputs in rows:
-        received = " ".join(upstream.get(pid, []) + inputs)
-        units.extend(_expand(words, text, redirects, depth, lenient, pipeline_text[pid], received))
+        units.extend(_expand(words, joined, redirects, depth, lenient, pipeline_text[pid], upstream.get(pid, []) + inputs))
         upstream.setdefault(pid, []).extend(words[1:] + inputs)
     for body in bodies:
         units.extend(_shell_units(body, depth + 1, lenient))
     # A string with no command still gets one unit, so whole-command checks run on it.
-    return units or [_Unit([], [], [], text)]
+    return units or [_Unit([], [], [], joined)]
 
 
 def _substitutions(text: str) -> Tuple[str, List[str]]:
@@ -700,14 +706,22 @@ def _extract_heredocs(text: str) -> str:
     separate commands. The body lines and the closing delimiter are removed. The operator is read
     as the shell does: a ``<<`` inside quotes, escaped with a backslash or in a comment does not
     open a body, a ``<<`` body ends only at a line that is exactly its delimiter, and ``<<-``
-    strips leading tabs from each line first."""
+    strips leading tabs from each line first.
+
+    A backslash-newline goes here too, before any word is formed: outside quotes and inside double
+    quotes it joins two lines, inside single quotes or a comment it does not, and in a body it
+    joins lines only when the delimiter is unquoted."""
     lines = text.split("\n")
     out: List[str] = []
     quote = ""   # the quote open at the start of the current line, if any
     i = 0
     while i < len(lines):
         line = lines[i]
-        m, quote = _heredoc_operator(line, quote)
+        m, quote, resume = _heredoc_operator(line, quote)
+        while resume is not None and i + 1 < len(lines):
+            i += 1
+            line = line[:-1] + lines[i]
+            m, quote, resume = _heredoc_operator(line, quote, resume[0], resume[1], m)
         if m is None:
             out.append(line)
             i += 1
@@ -721,22 +735,26 @@ def _extract_heredocs(text: str) -> str:
                 break
             body.append(lines[j])
             j += 1
-        out.append(line[:m.start()] + "<<< " + _shell_quote(" ".join(body)) + line[m.end():])
+        text_of_body = "\n".join(body) if m.group(1) else _BODY_CONTINUATION.sub(r"\1", "\n".join(body))
+        out.append(line[:m.start()] + "<<< " + _shell_quote(text_of_body.replace("\n", " ")) + line[m.end():])
         i = j + 1   # skip the body and the closing delimiter
     return "\n".join(out)
 
 
-def _heredoc_operator(line: str, quote: str) -> Tuple[Optional["re.Match[str]"], str]:
+def _heredoc_operator(line: str, quote: str, i: int = 0, word_start: bool = True, found: Optional["re.Match[str]"] = None
+                      ) -> Tuple[Optional["re.Match[str]"], str, Optional[Tuple[int, bool]]]:
     """The first here-document operator of ``line`` that is outside quotes, not escaped and not in
     a comment, or None, together with the quote still open at the end of the line. ``quote`` is
     the one open when the line starts, so a double-quoted string that spans lines hides a ``<<``
-    on its later lines too."""
-    found: Optional["re.Match[str]"] = None
-    word_start = True
-    i, n = 0, len(line)
+    on its later lines too. When the line ends in a continuation, the third value is where to
+    resume (index, word_start) once the next line is joined; ``i``, ``word_start`` and ``found``
+    take it back, so a run of continued lines is scanned once."""
+    n = len(line)
     while i < n:
         c = line[i]
         if c == "\\" and quote != "'":
+            if i + 1 == n:
+                return found, quote, (i, word_start)
             i += 2   # the next character is literal, inside double quotes or outside quotes
             word_start = False
             continue
@@ -755,7 +773,7 @@ def _heredoc_operator(line: str, quote: str) -> Tuple[Optional["re.Match[str]"],
                 continue
         word_start = not quote and (c.isspace() or c in _PUNCT)
         i += 1
-    return found, quote
+    return found, quote, None
 
 
 def _strip_fd_designators(text: str) -> str:
@@ -1209,10 +1227,45 @@ def _writes_sql(text: str) -> bool:
     return False
 
 
+def _past_lead_in(text: str, i: int) -> int:
+    """The index after the whitespace, comments and opening parentheses at ``i``, where a statement's first word is."""
+    n = len(text)
+    while i < n:
+        if text[i].isspace() or text[i] == "(":
+            i += 1
+        elif text.startswith("--", i) or text[i] == "#":
+            end = text.find("\n", i)
+            i = n if end < 0 else end + 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+        else:
+            break
+    return i
+
+
+def _begins_a_write(text: str) -> bool:
+    """Whether a statement in ``text`` begins with a write verb. A ``;`` inside a literal counts, on the safe side."""
+    attached = _OPTION_HOLDING_SQL.match(text)
+    i = attached.end() if attached else 0
+    while True:
+        i = _past_lead_in(text, i)
+        if _SQL_WRITE_VERB.match(text, i):
+            return True
+        i = text.find(";", i) + 1
+        if i == 0:
+            return False
+
+
+def _statement_texts(unit: _Unit) -> List[str]:
+    """Where a statement can begin: each argument, each word the client is fed, and those words read as one text."""
+    return unit.argv[1:] + unit.stdin + [" ".join(unit.stdin)]
+
+
 def _check_sql_write(ctx: _Context, unit: _Unit) -> Optional[_Hit]:
     # Row-bounded changes, schema changes and DDL against an ephemeral DSN: destructive_sql denies the rest.
     texts = _scan_texts(unit)
-    if not any(_writes_sql(t) for t in texts):
+    if not any(_begins_a_write(t) for t in _statement_texts(unit)) and not any(_writes_sql(t) for t in texts):
         return None
     return ("the SQL writes to the database", "db-ephemeral" if _all_dsns_ephemeral(ctx, texts) else None)
 
