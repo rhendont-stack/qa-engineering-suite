@@ -30,12 +30,26 @@ def _reject_constant(name: str) -> Any:
     raise ValueError("non-finite number: %s" % name)
 
 
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if value in (float("inf"), float("-inf")):
+        raise ValueError("non-finite number: %s" % text)
+    return value
+
+
 def loads(data: Union[bytes, str]) -> Any:
     try:
         text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data
-        return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_reject_constant)
+        return json.loads(
+            text,
+            object_pairs_hook=_no_duplicates,
+            parse_constant=_reject_constant,
+            parse_float=_finite_float,
+        )
     except ValueError as exc:  # includes JSONDecodeError and UnicodeDecodeError
         raise QaError("invalid_json", str(exc)) from exc
+    except RecursionError as exc:
+        raise QaError("invalid_json", "nesting too deep") from exc
 
 
 def sha256_bytes(b: bytes) -> str:

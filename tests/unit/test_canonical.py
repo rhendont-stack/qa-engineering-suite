@@ -29,7 +29,11 @@ def test_sha256_file_streams_large_files(tmp_path):
     assert canonical.sha256_file(tmp_path / "f") == canonical.sha256_bytes(data)
 
 
-@pytest.mark.parametrize("text", ['{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}', '[1,'])
+@pytest.mark.parametrize(
+    "text",
+    ['{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}', '[1,', "1e999", "-1e999", "[" * 100000],
+    ids=["duplicate", "nan", "infinity", "truncated", "overflow-pos", "overflow-neg", "deep-nesting"],
+)
 def test_loads_rejects(text):
     with pytest.raises(QaError) as e:
         canonical.loads(text)
