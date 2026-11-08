@@ -1,0 +1,102 @@
+{
+  "patterns": [
+    {
+      "kind": "private_key",
+      "regex": "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\\s\\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\\Z)",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "github_token",
+      "regex": "(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "gitlab_token",
+      "regex": "(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "aws_access_key",
+      "regex": "(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "slack_token",
+      "regex": "(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "stripe_key",
+      "regex": "(?<![A-Za-z0-9])[sr]k_(?:live|test)_[A-Za-z0-9]{16,}",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "google_api_key",
+      "regex": "(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "npm_token",
+      "regex": "(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "jwt",
+      "regex": "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "anthropic_key",
+      "regex": "(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "openai_key",
+      "regex": "(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{20,}",
+      "group": 0,
+      "min_len": 0,
+      "min_entropy": null
+    },
+    {
+      "kind": "url_credentials",
+      "regex": "[A-Za-z][A-Za-z0-9+.-]*://[^\\s/:@]+:([^\\s/]+)@",
+      "group": 1,
+      "min_len": 1,
+      "min_entropy": null
+    },
+    {
+      "kind": "password_assignment",
+      "regex": "(?i)(?<![A-Za-z0-9_.-])[\\\"']?[A-Za-z0-9_.-]*(?:pass(?:word)?|passwd|pwd)[A-Za-z0-9_.-]*[\\\"']?\\s*[=:]\\s*[\\\"']?((?<=\\\")[^\\\"\\n]+(?=\\\")|(?<=')[^'\\n]+(?=')|[^\\s\\\"'&;,]+)",
+      "group": 1,
+      "min_len": 4,
+      "min_entropy": null
+    },
+    {
+      "kind": "secret_assignment",
+      "regex": "(?i)(?<![A-Za-z0-9_.-])[\\\"']?[A-Za-z0-9_.-]*(?:secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]*[\\\"']?\\s*[=:]\\s*[\\\"']?((?<=\\\")[^\\\"\\n]+(?=\\\")|(?<=')[^'\\n]+(?=')|[^\\s\\\"'&;,]+)",
+      "group": 1,
+      "min_len": 8,
+      "min_entropy": 3.0
+    }
+  ]
+}
