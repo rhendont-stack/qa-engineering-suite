@@ -2,7 +2,7 @@
   "patterns": [
     {
       "kind": "private_key",
-      "regex": "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:[ \\t]*\\r?\\n(?:(?!-----BEGIN )[\\s\\S])*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|(?:\\r?\\n[ \\t]*(?:Proc-Type:[^\\r\\n]*|DEK-Info:[^\\r\\n]*|[A-Za-z0-9+/=]+)?[ \\t]*(?=\\r?\\n|\\Z))*)",
+      "regex": "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:[ \\t]*\\r?\\n(?:(?!-----BEGIN )[\\s\\S])*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|(?:\\r?\\n[ \\t]*(?:(?:Proc-Type:[^\\r\\n]*|DEK-Info:[^\\r\\n]*|[A-Za-z0-9+/=]+)[ \\t]*)?(?=\\r?\\n|\\Z))*)",
       "group": 0,
       "min_len": 0,
       "min_entropy": null
@@ -79,21 +79,21 @@
     },
     {
       "kind": "url_credentials",
-      "regex": "[A-Za-z][A-Za-z0-9+.-]*://[^\\s/:@]+:([^\\s/]+)@",
+      "regex": "(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\\s/:@]+:([^\\s/]+)@",
       "group": 1,
       "min_len": 1,
       "min_entropy": null
     },
     {
       "kind": "password_assignment",
-      "regex": "(?i)(?<![A-Za-z0-9_.-])[\\\"']?[A-Za-z0-9_.-]*(?:pass(?:word)?|passwd|pwd)[A-Za-z0-9_.-]*[\\\"']?\\s*[=:]\\s*[\\\"']?((?<=\\\")[^\\\"\\n]+(?=\\\")|(?<=')[^'\\n]+(?=')|[^\\s\\\"'&;,]+)",
+      "regex": "(?i)(?:pass(?:word)?|passwd|pwd)[A-Za-z0-9_.-]{0,128}[\\\"']?\\s*[=:]\\s*[\\\"']?((?<=\\\")[^\\\"\\n]+(?=\\\")|(?<=')[^'\\n]+(?=')|[^\\s\\\"'&;,]+)",
       "group": 1,
       "min_len": 4,
       "min_entropy": null
     },
     {
       "kind": "secret_assignment",
-      "regex": "(?i)(?<![A-Za-z0-9_.-])[\\\"']?[A-Za-z0-9_.-]*(?:secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]*[\\\"']?\\s*[=:]\\s*[\\\"']?((?<=\\\")[^\\\"\\n]+(?=\\\")|(?<=')[^'\\n]+(?=')|[^\\s\\\"'&;,]+)",
+      "regex": "(?i)(?:secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]{0,128}[\\\"']?\\s*[=:]\\s*[\\\"']?((?<=\\\")[^\\\"\\n]+(?=\\\")|(?<=')[^'\\n]+(?=')|[^\\s\\\"'&;,]+)",
       "group": 1,
       "min_len": 8,
       "min_entropy": 3.0

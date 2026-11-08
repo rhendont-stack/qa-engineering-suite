@@ -201,3 +201,28 @@ def test_header_mentioned_in_a_sentence_keeps_following_lines(redactor):
     text = 'expected "' + PEM_HEAD + '" here\nsecond line of the log\nthird line\n'
     out, _ = redactor.text(text)
     assert out.endswith('" here\nsecond line of the log\nthird line\n')
+
+
+@pytest.mark.parametrize("keyword", ["password", "token"])
+def test_assignment_patterns_are_linear_on_long_keyword_runs(redactor, keyword):
+    import time
+
+    run = keyword * (200_000 // len(keyword))
+    start = time.monotonic()
+    out, _ = redactor.text(run + "=" + "Zx81" + "kQ02pLm7 and " + keyword + "=" + "Qw3Er5Ty")
+    assert time.monotonic() - start < 2.0
+    assert "Qw3Er5Ty" not in out
+
+
+@pytest.mark.parametrize("text", [
+    "a" * 200_000,
+    "http://" + "a" * 200_000,
+    "-----BEGIN PRIVATE" + " KEY-----\n" + " " * 200_000 + "x",
+    "-----BEGIN PRIVATE" + " KEY-----\n" * 5000,
+], ids=["long_run", "long_scheme_host", "blank_pem_line", "many_headers"])
+def test_other_patterns_are_linear(redactor, text):
+    import time
+
+    start = time.monotonic()
+    redactor.text(text)
+    assert time.monotonic() - start < 2.0
