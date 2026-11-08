@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from qa.errors import QaError
+from qa.workspace import FileTooLarge, read_limited
 
 
 class ReportInvalid(QaError):
@@ -87,19 +88,26 @@ _PARSERS = {"junit": _junit.parse, "ctrf": _ctrf.parse, "sarif": _sarif.parse}
 FORMAT_KINDS = {"junit": "tests", "ctrf": "tests", "sarif": "alerts"}
 
 
+def read_report(path: Path, max_bytes: int) -> bytes:
+    """A report's bytes. The path is the user's, so a symlink is followed, but only to a regular file under the cap."""
+    try:
+        return read_limited(Path(path), max_bytes, follow=True)
+    except FileTooLarge as exc:
+        raise ReportInvalid("too_large", max_bytes=max_bytes) from exc
+    except OSError as exc:
+        raise ReportInvalid("unreadable", str(exc)) from exc
+
+
 def parse_report(fmt: str, path: Path, max_bytes: int) -> ReportSummary:
+    if fmt not in _PARSERS:
+        raise ReportInvalid("unknown_format", format=fmt)
+    return parse_bytes(fmt, read_report(path, max_bytes))
+
+
+def parse_bytes(fmt: str, data: bytes) -> ReportSummary:
     parser = _PARSERS.get(fmt)
     if parser is None:
         raise ReportInvalid("unknown_format", format=fmt)
-    path = Path(path)
-    try:
-        if path.stat().st_size > max_bytes:
-            raise ReportInvalid("too_large", max_bytes=max_bytes)
-        data = path.read_bytes()
-    except OSError as exc:
-        raise ReportInvalid("unreadable", str(exc)) from exc
-    if len(data) > max_bytes:
-        raise ReportInvalid("too_large", max_bytes=max_bytes)
     try:
         summary = parser(data)
         # JSON can spell a lone surrogate (\ud800) or nest too deep to dump; the ledger could store neither.

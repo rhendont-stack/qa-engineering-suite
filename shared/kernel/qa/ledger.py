@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple
@@ -9,7 +10,7 @@ from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple
 from . import ids, redact, resource_dir, schema
 from .canonical import dumps, hash_obj, loads
 from .errors import QaError
-from .workspace import Workspace
+from .workspace import Workspace, read_limited
 
 # QaError codes raised here: invalid_session, unknown_event_type, ledger_partial_line,
 # ledger_corrupt, ledger_write_failed; schema_invalid comes from schema.validate.
@@ -19,6 +20,7 @@ _TYPE_RE = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+")
 _LEDGER_FILE_RE = re.compile(r"(S-[0-9A-HJKMNP-TV-Z]{26})\.jsonl")
 _ENVELOPE = "envelope.schema.json"
 _TAIL_BLOCK = 65536
+MAX_LEDGER_BYTES = 1 << 28  # a whole-file read of a session: past this it is not a ledger the kernel wrote
 
 
 @dataclass(frozen=True)
@@ -62,9 +64,11 @@ def _parse_envelope(raw: bytes) -> Optional[dict]:
 def _read_lines(path: Path) -> List[Tuple[int, Optional[dict]]]:
     """(line number, envelope or None) for every line, a partial trailing line included."""
     try:
-        raw = path.read_bytes()
+        raw = read_limited(path, MAX_LEDGER_BYTES)
     except FileNotFoundError:
         return []
+    except OSError as exc:
+        raise QaError("ledger_corrupt", "session file cannot be read", file=path.name, error=type(exc).__name__)
     parts = raw.split(b"\n")
     if parts and parts[-1] == b"":
         parts.pop()
@@ -74,10 +78,14 @@ def _read_lines(path: Path) -> List[Tuple[int, Optional[dict]]]:
 def _last_line(path: Path) -> Optional[bytes]:
     """The last complete line of ``path``; None when absent or empty; refuses a partial one."""
     try:
-        f = open(str(path), "rb")
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
     except FileNotFoundError:
         return None
-    with f:
+    except OSError as exc:
+        raise QaError("ledger_corrupt", "session file cannot be read", file=path.name, error=type(exc).__name__)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise QaError("ledger_corrupt", "session file is not a regular file", file=path.name)
         pos = f.seek(0, os.SEEK_END)
         data = b""
         while pos > 0:
@@ -126,7 +134,7 @@ def append(ws: Workspace, actor: Actor, type: str, data: dict) -> dict:
         envelope["hash"] = hash_obj(envelope)
         schema.validate(envelope, _ENVELOPE)
         line = dumps(envelope) + b"\n"
-        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             if os.write(fd, line) != len(line):
                 raise QaError("ledger_write_failed", "short write to the ledger", file=path.name)
@@ -154,7 +162,7 @@ def _session_files(ws: Workspace) -> Tuple[List[Tuple[str, Path]], List[str]]:
     if d.is_dir():
         for p in sorted(d.iterdir()):
             m = _LEDGER_FILE_RE.fullmatch(p.name)
-            if m and p.is_file():
+            if m and stat.S_ISREG(os.lstat(str(p)).st_mode):  # a symlink could point the chain at any file
                 files.append((m.group(1), p))
             else:
                 foreign.append(p.name)

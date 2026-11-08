@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
+from helpers import finishes
 from qa import ingest
 from qa.errors import QaError
 
@@ -245,3 +247,28 @@ def test_sarif_empty_results_list_is_a_clean_scan(tmp_path):
     doc = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "t"}}, "results": []}]}
     s = ingest.parse_report("sarif", write(tmp_path, json.dumps(doc), "r.sarif"), 10**6)
     assert (len(s.alerts), s.runs) == (0, 1)
+
+
+def test_a_report_over_the_cap_is_too_large(tmp_path):  # I9: a regular file, never a device
+    path = write(tmp_path, "<testsuite/>" + " " * 200, "r.xml")
+    with pytest.raises(ingest.ReportInvalid) as e:
+        ingest.parse_report("junit", path, 100)
+    assert (e.value.code, e.value.details["detail"]) == ("report_invalid", "too_large")
+
+
+def test_a_symlink_the_caller_named_is_followed(tmp_path):  # I9: this one is a path the user gave
+    path = write(tmp_path, "<testsuite><testcase classname='c' name='t'/></testsuite>", "r.xml")
+    link = tmp_path / "link.xml"
+    link.symlink_to(path)
+    assert ingest.parse_report("junit", link, 10**6).total == 1
+
+
+def test_parse_bytes_needs_no_file():  # I9: so one read serves the parse and the stored copy
+    assert ingest.parse_bytes("junit", b"<testsuite><testcase classname='c' name='t'/></testsuite>").total == 1
+
+
+def test_a_fifo_report_is_unreadable_without_hanging(tmp_path):  # I9
+    os.mkfifo(str(tmp_path / "r.xml"))
+    with pytest.raises(ingest.ReportInvalid) as e:
+        finishes(lambda: ingest.parse_report("junit", tmp_path / "r.xml", 10**6))
+    assert e.value.details["detail"] == "unreadable"

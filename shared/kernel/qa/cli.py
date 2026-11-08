@@ -367,7 +367,7 @@ def cmd_doctor(args: argparse.Namespace, ctx: Context) -> int:
 
 def cmd_guard_check(args: argparse.Namespace, ctx: Context) -> int:
     # A newer major may hold fields this kernel's schema refuses; a read still answers, flagged schema_newer (§15.7).
-    cfg = loads(ctx.ws.path("config.json").read_bytes()) if "schema_newer" in ctx.limitations else config.load_config(ctx.ws)
+    cfg = loads(workspace.read_config(ctx.ws)) if "schema_newer" in ctx.limitations else config.load_config(ctx.ws)
     decision = guard.classify(_command_words(args), shell=args.shell, ws_root=ctx.ws.root, qa_dir=ctx.ws.qa_dir,
                               config=cfg, declared_activity=args.activity, cwd=_working_directory(ctx.ws))
     ctx.reply(**dataclasses.asdict(decision))
@@ -395,7 +395,7 @@ def cmd_auth_revoke(args: argparse.Namespace, ctx: Context) -> int:
 
 
 def cmd_config_show(args: argparse.Namespace, ctx: Context) -> int:
-    ctx.reply(config=loads(ctx.ws.path("config.json").read_bytes()), hash=config.current_hash(ctx.ws),
+    ctx.reply(config=loads(workspace.read_config(ctx.ws)), hash=config.current_hash(ctx.ws),
               accepted_hash=config.accepted_hash(state.load(ctx.ws)))
     return 0
 
@@ -542,8 +542,6 @@ def _given_session(args: argparse.Namespace) -> Optional[str]:
 
 def _default_session(ws: Workspace) -> str:
     try:
-        if not ws.path("default-session").is_file():  # a FIFO would hang the read
-            raise OSError("not a regular file")
         return workspace.read_default_session(ws)
     except (OSError, UnicodeDecodeError) as exc:
         raise QaError("invalid_session", "default-session cannot be read", error=type(exc).__name__)

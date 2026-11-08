@@ -19,7 +19,7 @@ from . import KERNEL_VERSION, config, gitinfo, ids, integrity, ledger, resource_
 from .canonical import hash_obj, loads
 from .errors import QaError
 from .findings import SEVERITIES
-from .workspace import Workspace, write_atomic
+from .workspace import Workspace, read_config, write_atomic
 
 # QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, unknown_criterion,
 # invalid_override, blank_rationale, approval_required, unknown_proposal, already_accepted; plus ledger.append's.
@@ -415,7 +415,7 @@ def accept(ws: Workspace, actor: ledger.Actor, proposal_event_id: str, approval:
         if any(h["kind"] == "gate_policy_accepted" and h["proposal"] == proposal_event_id for h in history):
             raise QaError("already_accepted", "this proposal was already accepted", proposal=proposal_event_id)
         cfg = config.load_config(ws)
-        before = ws.path("config.json").read_bytes()
+        before = read_config(ws)
         cfg["gate"]["overrides"][proposal["criterion"]] = dict(proposal["override"], accepted_in=proposal_event_id)
         new_hash = config.write_config(ws, cfg)
         try:

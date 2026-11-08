@@ -11,11 +11,12 @@ from . import gitinfo, ledger, schema
 from .canonical import loads, sha256_bytes, sha256_file
 from .errors import QaError
 from .ledger import Problem
-from .workspace import Workspace, write_atomic
+from .workspace import Workspace, read_limited, write_atomic
 
 MANIFEST = "MANIFEST.sha256"
 _MANIFEST_LINE = re.compile(r"([0-9a-f]{64})  (.+)")
 _MANIFEST_NAME = "manifest.json"
+_MAX_MANIFEST_BYTES = 1 << 26
 _UNSAFE_PATH = "the path is absolute or leaves its directory, so it was not opened"
 _DETAILS = {"missing": "the recorded file is gone", "modified": "the content differs from the recorded hash"}
 # kernel_integrity's lists, and the kind of problem each entry becomes.
@@ -38,9 +39,7 @@ def _is_regular(path: Path) -> bool:
 
 def read_regular(path: Path) -> bytes:
     """``path``'s bytes. Anything but a regular file is an ``OSError``: ``read_bytes`` on a device grows without end."""
-    if not _is_regular(path):
-        raise OSError("not a regular file: %s" % path)
-    return path.read_bytes()
+    return read_limited(path, _MAX_MANIFEST_BYTES)
 
 
 def _difference(path: Path, expected: str) -> Optional[str]:
@@ -80,7 +79,7 @@ def _check_manifest(directory: Path, execution_id: str, recorded: dict) -> List[
     if difference is not None:
         return [Problem(difference, where, _DETAILS[difference])] + _absent_files(directory, execution_id, recorded["files"])
     try:
-        entries = loads(path.read_bytes())
+        entries = loads(read_regular(path))
     except (OSError, QaError):
         entries = None
     if not isinstance(entries, dict):

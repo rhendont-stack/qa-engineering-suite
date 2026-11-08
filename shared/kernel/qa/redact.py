@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from . import resource_dir, schema
 from .canonical import loads
 from .errors import QaError
-from .workspace import Workspace
+from .workspace import Workspace, read_config, read_limited
 
 # QaError codes raised here: redaction_policy_invalid, redaction_key_invalid, plus
 # invalid_json / schema_invalid from reading and validating the policy and config.
@@ -22,6 +22,7 @@ RedactionPattern = namedtuple("RedactionPattern", "kind regex group min_len min_
 ENV_NAME_GLOBS = ("*_TOKEN", "*_SECRET", "*_KEY", "*PASSWORD*")
 MIN_ENV_VALUE_LEN = 8
 KEY_BYTES = 32
+_MAX_KEY_READ = 4096  # past the key's size, so a wrong key still reports its length
 
 _MARKER_RE = re.compile(r"\[REDACTED:[a-z_]+:[0-9a-f]{8}\]")
 _PATTERNS: Optional[List[RedactionPattern]] = None
@@ -181,13 +182,13 @@ def _env_values(environ: Mapping[str, str], extra_names: List[str]) -> Dict[str,
 
 def load_redactor(ws: Workspace, environ: Optional[Mapping[str, str]] = None) -> Redactor:
     try:
-        key = ws.path("redaction.key").read_bytes()
+        key = read_limited(ws.path("redaction.key"), _MAX_KEY_READ)
     except OSError as exc:
         raise QaError("redaction_key_invalid", "cannot read .qa/redaction.key", error=str(exc))
     if len(key) != KEY_BYTES:
         raise QaError("redaction_key_invalid", "redaction key must be exactly 32 bytes",
                       length=len(key))
-    cfg = loads(ws.path("config.json").read_bytes())
+    cfg = loads(read_config(ws))
     schema.validate(cfg, "config.schema.json")
     extra = cfg["redaction"]["extra_env_names"]
     env = os.environ if environ is None else environ

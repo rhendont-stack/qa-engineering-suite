@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import re
 import stat
 import threading
 
 import pytest
 
+from helpers import finishes
 from qa import schema, workspace
 from qa.errors import QaError
 
@@ -161,3 +163,138 @@ def test_lock_excludes_other_thread(ws):
     t.start()
     t.join()
     assert result == ["lock_timeout", "got"]
+
+
+# --------------------------------------------------------------------------- final review: I9 (no device, no FIFO before the guard)
+
+def test_read_limited_reads_a_regular_file(tmp_path):
+    (tmp_path / "f").write_bytes(b"abc")
+    assert workspace.read_limited(tmp_path / "f", 3) == b"abc"
+
+
+def test_read_limited_refuses_a_file_over_the_cap(tmp_path):
+    (tmp_path / "f").write_bytes(b"abcd")
+    with pytest.raises(workspace.FileTooLarge):
+        workspace.read_limited(tmp_path / "f", 3)
+
+
+def test_read_limited_refuses_a_symlink_unless_asked_to_follow(tmp_path):
+    (tmp_path / "f").write_bytes(b"abc")
+    (tmp_path / "link").symlink_to(tmp_path / "f")
+    with pytest.raises(OSError):
+        workspace.read_limited(tmp_path / "link", 3)
+    assert workspace.read_limited(tmp_path / "link", 3, follow=True) == b"abc"
+
+
+def test_read_limited_refuses_a_directory(tmp_path):
+    with pytest.raises(OSError):
+        workspace.read_limited(tmp_path, 3)
+
+
+def test_read_limited_reports_a_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        workspace.read_limited(tmp_path / "gone", 3)
+
+
+def _link_to_a_copy(path):
+    """Replace the regular file at ``path`` with a symlink to a copy of it."""
+    copy = path.with_name(path.name + ".copy")
+    copy.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(copy)
+
+
+def test_a_symlinked_config_is_refused(ws):
+    _link_to_a_copy(ws.path("config.json"))
+    with pytest.raises(QaError) as e:
+        workspace.check_schema_version(ws, for_write=False)
+    assert e.value.code == "config_invalid"
+
+
+def test_a_config_over_the_cap_is_refused(ws):
+    path = ws.path("config.json")
+    path.write_bytes(path.read_bytes() + b" " * workspace.MAX_CONFIG_BYTES)
+    with pytest.raises(QaError) as e:
+        workspace.check_schema_version(ws, for_write=False)
+    assert e.value.code == "config_invalid"
+
+
+def test_a_missing_config_is_a_named_error(ws):  # the raw FileNotFoundError of the review
+    ws.path("config.json").unlink()
+    with pytest.raises(QaError) as e:
+        workspace.read_config(ws)
+    assert e.value.code == "config_invalid"
+
+
+def test_a_default_session_over_the_cap_is_refused(ws):
+    ws.path("default-session").write_bytes(b" " * 1000 + b"S-" + b"0" * 26)
+    with pytest.raises(OSError):
+        workspace.read_default_session(ws)
+
+
+@pytest.mark.parametrize("name", (".",) + workspace.SUBDIRS, ids=("qa",) + workspace.SUBDIRS)
+def test_a_redirected_workspace_directory_is_refused_on_entry(ws, tmp_path, name):
+    target = ws.qa_dir if name == "." else ws.path(name)
+    moved = tmp_path / ("moved-" + target.name)
+    target.rename(moved)
+    target.symlink_to(moved, target_is_directory=True)
+    with pytest.raises(QaError) as e:
+        workspace.find_workspace(ws.root)
+    assert e.value.code == "invalid_workspace"
+    with pytest.raises(QaError) as e:
+        workspace.find_workspace(ws.root, ws.root)
+    assert e.value.code == "invalid_workspace"
+    with pytest.raises(QaError) as e:
+        workspace.init_workspace(ws.root)
+    assert e.value.code == "invalid_workspace"
+
+
+def test_a_missing_subdirectory_is_not_a_redirect(ws):
+    ws.path("work").rmdir()
+    assert workspace.find_workspace(ws.root).root == ws.root
+
+
+def test_the_lock_does_not_follow_a_symlink(ws, tmp_path):
+    target = tmp_path / "planted-lock"
+    if ws.path("lock").exists():
+        ws.path("lock").unlink()
+    ws.path("lock").symlink_to(target)
+    with pytest.raises(QaError) as e:
+        with ws.lock():
+            pass
+    assert e.value.code == "invalid_workspace" and not target.exists()
+
+
+def _fifo_at(path):
+    if path.exists():
+        path.unlink()
+    os.mkfifo(str(path))
+
+
+def test_read_limited_refuses_a_fifo_without_hanging(tmp_path):
+    _fifo_at(tmp_path / "f")
+    with pytest.raises(OSError):
+        finishes(lambda: workspace.read_limited(tmp_path / "f", 3))
+
+
+def test_a_fifo_at_the_config_is_a_named_error(ws):
+    _fifo_at(ws.path("config.json"))
+    with pytest.raises(QaError) as e:
+        finishes(lambda: workspace.read_config(ws))
+    assert e.value.code == "config_invalid"
+
+
+def test_a_fifo_at_the_default_session_is_refused(ws):
+    _fifo_at(ws.path("default-session"))
+    with pytest.raises(OSError):
+        finishes(lambda: workspace.read_default_session(ws))
+
+
+def test_a_fifo_at_the_lock_is_refused(ws):
+    _fifo_at(ws.path("lock"))
+    def enter():
+        with ws.lock():
+            pass
+    with pytest.raises(QaError) as e:
+        finishes(enter)
+    assert e.value.code == "invalid_workspace"

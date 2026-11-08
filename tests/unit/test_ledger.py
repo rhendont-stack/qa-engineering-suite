@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 import pytest
 
+from helpers import finishes
 from qa import canonical, ledger
 from qa.errors import QaError
 
@@ -192,3 +194,47 @@ def test_validate_session_id_accepts_a_real_id():
     assert ledger.validate_session_id("S-" + "0" * 26) == "S-" + "0" * 26
     with pytest.raises(QaError):
         ledger.validate_session_id("S-" + "0" * 26 + "\n")
+
+
+# --------------------------------------------------------------------------- final review: I9
+
+def _session_path(ws, actor):
+    return ws.path("ledger", actor.session + ".jsonl")
+
+
+def test_append_does_not_follow_a_dangling_symlink(ws, actor, tmp_path):
+    target = tmp_path / "planted"
+    _session_path(ws, actor).symlink_to(target)
+    with pytest.raises(QaError) as e:
+        ledger.append(ws, actor, "workspace.initialized", INIT)
+    assert e.value.code == "ledger_corrupt" and not target.exists()
+
+
+def test_a_symlinked_session_is_foreign_and_not_read(ws, actor, tmp_path):
+    copy = tmp_path / "elsewhere.jsonl"
+    copy.write_bytes(b"")
+    _session_path(ws, actor).symlink_to(copy)
+    files, foreign = ledger._session_files(ws)
+    assert files == [] and foreign == [actor.session + ".jsonl"]
+    with pytest.raises(QaError) as e:
+        list(ledger.iter_session(ws, actor.session))
+    assert e.value.code == "ledger_corrupt"
+
+
+def test_a_ledger_over_the_cap_is_refused(ws, actor, monkeypatch):
+    _session_path(ws, actor).write_bytes(b"x" * 100)
+    monkeypatch.setattr(ledger, "MAX_LEDGER_BYTES", 10)
+    with pytest.raises(QaError) as e:
+        list(ledger.iter_session(ws, actor.session))
+    assert e.value.code == "ledger_corrupt"
+
+
+def test_a_fifo_session_is_refused_without_hanging(ws, actor):
+    os.mkfifo(str(_session_path(ws, actor)))
+    assert ledger._session_files(ws)[0] == []
+    with pytest.raises(QaError) as e:
+        finishes(lambda: list(ledger.iter_session(ws, actor.session)))
+    assert e.value.code == "ledger_corrupt"
+    with pytest.raises(QaError) as e:
+        finishes(lambda: ledger.append(ws, actor, "workspace.initialized", INIT))
+    assert e.value.code == "ledger_corrupt"

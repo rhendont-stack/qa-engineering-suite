@@ -29,7 +29,7 @@ from . import (KERNEL_VERSION, authz, config, envinfo, findings, gitinfo, guard,
                runner, schema, state, status, vocab)
 from .canonical import dumps, loads, sha256_bytes, sha256_file
 from .errors import QaError
-from .workspace import Workspace, write_atomic
+from .workspace import FileTooLarge, Workspace, read_limited, write_atomic
 
 EVIDENCE_TOKEN = "{evidence}"
 _SCOPES = ("targeted", "full")
@@ -545,10 +545,10 @@ def _stored_name(redactor: redact.Redactor, path: str, taken: Set[str]) -> str:
 def _read_report(run: _Run, source: str) -> Optional[bytes]:
     name = os.path.basename(source)
     try:
-        if os.lstat(source).st_size > run.max_bytes:
-            run.note("report_invalid: %s is over the defaults.max_log_mb cap and was not stored" % name)
-            return None
-        return Path(source).read_bytes()
+        return read_limited(Path(source), run.max_bytes)
+    except FileTooLarge:
+        run.note("report_invalid: %s is over the defaults.max_log_mb cap and was not stored" % name)
+        return None
     except OSError as exc:
         run.note("report_invalid: %s could not be read (%s)" % (name, type(exc).__name__))
         return None
@@ -731,8 +731,8 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     if record is None:
         raise QaError("unknown_execution", "no such execution", execution=from_execution)
     path = Path(path)
-    summary = ingest.parse_report(fmt, path, config.load_config(ws)["defaults"]["max_log_mb"] * _MIB)
-    original = path.read_bytes()
+    original = ingest.read_report(path, config.load_config(ws)["defaults"]["max_log_mb"] * _MIB)
+    summary = ingest.parse_bytes(fmt, original)
     strength = _ingest_strength(ws, record, sha256_bytes(original))
     redactor = redact.load_redactor(ws)
     clean = redactor.bytes_(original)[0]

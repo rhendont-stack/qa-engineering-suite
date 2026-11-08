@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import pytest
 
+from helpers import finishes
 from qa import QaError, redact, workspace
 
 GH = "gh" + "p_" + "a1B2c3D4e5" * 3 + "f6G7h8"   # 36 chars after the prefix, built at runtime
@@ -226,3 +228,30 @@ def test_other_patterns_are_linear(redactor, text):
     start = time.process_time()
     redactor.text(text)
     assert time.process_time() - start < 2.0
+
+
+def test_a_symlinked_key_is_refused(ws):  # I9
+    key = ws.path("redaction.key")
+    copy = ws.path("redaction.copy")
+    copy.write_bytes(key.read_bytes())
+    key.unlink()
+    key.symlink_to(copy)
+    with pytest.raises(QaError) as e:
+        redact.load_redactor(ws)
+    assert e.value.code == "redaction_key_invalid"
+
+
+def test_a_fifo_at_the_key_is_refused_without_hanging(ws):  # I9: the review's probe blocked qa run
+    key = ws.path("redaction.key")
+    key.unlink()
+    os.mkfifo(str(key))
+    with pytest.raises(QaError) as e:
+        finishes(lambda: redact.load_redactor(ws))
+    assert e.value.code == "redaction_key_invalid"
+
+
+def test_a_key_over_the_read_cap_is_refused(ws):  # I9: a regular file, never a device
+    ws.path("redaction.key").write_bytes(b"k" * 100000)
+    with pytest.raises(QaError) as e:
+        redact.load_redactor(ws)
+    assert e.value.code == "redaction_key_invalid"

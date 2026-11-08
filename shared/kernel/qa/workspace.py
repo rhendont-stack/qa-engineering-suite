@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import re
+import stat
 import threading
 import time
 from dataclasses import dataclass
@@ -21,17 +22,51 @@ except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
     import msvcrt
 
-# QaError codes raised here: no_workspace, lock_timeout, schema_too_new, schema_invalid,
-# invalid_session, invalid_json (from canonical.loads).
+# QaError codes raised here: no_workspace, invalid_workspace, config_invalid, lock_timeout, schema_too_new,
+# schema_invalid, invalid_session, invalid_json (from canonical.loads).
 
 SUBDIRS = ("ledger", "evidence", "state", "reports", "work")
 GITIGNORE = "*\n!.gitignore\n!config.json\n"
 _POLL_S = 0.05
-_VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
+_VERSION_RE = re.compile(r"[0-9]+(\.[0-9]+)*")
+MAX_CONFIG_BYTES = 1 << 20
+_MAX_SESSION_BYTES = 256
 
 # Reentrancy state, keyed by the resolved lock path: key -> [thread id, depth].
 _HELD: Dict[str, List[int]] = {}
 _GUARD = threading.Lock()
+
+
+class FileRefused(OSError):
+    """Not a regular file. An ``OSError``, so every caller that already handles an unreadable file handles this."""
+
+
+class FileTooLarge(FileRefused):
+    """A regular file over the size the caller allows."""
+
+
+def read_limited(path: Path, limit: int, *, follow: bool = False) -> bytes:
+    """``path``'s bytes when it is a regular file of at most ``limit`` bytes, otherwise an ``OSError``.
+
+    Opening with ``O_NONBLOCK`` keeps a FIFO from hanging and ``fstat`` answers for the object actually opened, so no
+    file can be swapped in after the check. ``follow`` is for a path the user named; a file inside ``.qa/`` is never a
+    symlink the kernel made.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | (0 if follow else getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(str(path), flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise FileRefused("not a regular file: %s" % path)
+        if info.st_size > limit:
+            raise FileTooLarge("over %d bytes: %s" % (limit, path))
+        with open(fd, "rb", closefd=False) as handle:
+            data = handle.read(limit + 1)
+    finally:
+        os.close(fd)
+    if len(data) > limit:  # it grew after the fstat
+        raise FileTooLarge("over %d bytes: %s" % (limit, path))
+    return data
 
 
 @dataclass(frozen=True)
@@ -62,7 +97,7 @@ class Workspace:
                 with _GUARD:
                     _HELD[key][1] -= 1
             return
-        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        fd = _open_lock(lock_path)
         try:
             _acquire(fd, timeout_s, key)
             with _GUARD:
@@ -75,6 +110,19 @@ class Workspace:
                 _release(fd)
         finally:
             os.close(fd)
+
+
+def _open_lock(lock_path: Path) -> int:
+    """The lock file's descriptor; a symlink would create its target, and a FIFO is no lock."""
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(str(lock_path), flags, 0o600)
+    except OSError as exc:
+        raise QaError("invalid_workspace", ".qa/lock cannot be opened", error=type(exc).__name__)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise QaError("invalid_workspace", ".qa/lock is not a regular file")
+    return fd
 
 
 def _try_lock(fd: int) -> bool:
@@ -166,7 +214,7 @@ def init_workspace(root: Path) -> Tuple[Workspace, bool]:
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     root = root.resolve()
-    ws = Workspace(root=root, qa_dir=root / ".qa")
+    ws = _not_redirected(Workspace(root=root, qa_dir=root / ".qa"))
     ws.qa_dir.mkdir(exist_ok=True)
     for d in SUBDIRS:
         ws.path(d).mkdir(exist_ok=True)
@@ -185,17 +233,37 @@ def _create_new(path: Path, data: bytes) -> bool:
     return True
 
 
+def _not_redirected(ws: Workspace) -> Workspace:
+    """``ws``, or ``invalid_workspace`` if ``.qa`` or a directory in it is a symlink: writes would land somewhere else."""
+    for directory in (ws.qa_dir,) + tuple(ws.path(name) for name in SUBDIRS):
+        try:
+            mode = os.lstat(str(directory)).st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(mode):
+            raise QaError("invalid_workspace", "%s is not a real directory" % directory.name, path=str(directory))
+    return ws
+
+
 def find_workspace(start: Path, explicit: Optional[Path] = None) -> Workspace:
     if explicit is not None:
         root = Path(explicit).resolve()
         if (root / ".qa" / "config.json").is_file():
-            return Workspace(root=root, qa_dir=root / ".qa")
+            return _not_redirected(Workspace(root=root, qa_dir=root / ".qa"))
         raise QaError("no_workspace", "no .qa/config.json in the given workspace", path=str(root))
     here = Path(start).resolve()
     for candidate in [here] + list(here.parents):
         if (candidate / ".qa" / "config.json").is_file():
-            return Workspace(root=candidate, qa_dir=candidate / ".qa")
+            return _not_redirected(Workspace(root=candidate, qa_dir=candidate / ".qa"))
     raise QaError("no_workspace", "no .qa/config.json found here or in any parent", start=str(here))
+
+
+def read_config(ws: Workspace) -> bytes:
+    """config.json's bytes, or ``config_invalid``: it is a file git can carry as a symlink."""
+    try:
+        return read_limited(ws.path("config.json"), MAX_CONFIG_BYTES)
+    except OSError as exc:
+        raise QaError("config_invalid", "config.json cannot be read", errors=[type(exc).__name__])
 
 
 def check_schema_version(ws: Workspace, *, for_write: bool) -> Optional[str]:
@@ -203,9 +271,9 @@ def check_schema_version(ws: Workspace, *, for_write: bool) -> Optional[str]:
 
     Reads the raw file first: a newer major may carry fields this kernel's schema rejects.
     """
-    cfg = loads(ws.path("config.json").read_bytes())
+    cfg = loads(read_config(ws))
     version = cfg.get("schema_version") if isinstance(cfg, dict) else None
-    if not isinstance(version, str) or not _VERSION_RE.match(version):
+    if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
         raise QaError("schema_invalid", "schema_version must be dot-separated integers",
                       version=version if isinstance(version, str) else None)
     if int(version.split(".")[0]) <= int(SCHEMA_VERSION.split(".")[0]):
@@ -217,7 +285,7 @@ def check_schema_version(ws: Workspace, *, for_write: bool) -> Optional[str]:
 
 
 def read_default_session(ws: Workspace) -> str:
-    value = ws.path("default-session").read_text(encoding="utf-8").strip()
+    value = read_limited(ws.path("default-session"), _MAX_SESSION_BYTES).decode("utf-8").strip()
     if schema.errors(value, {"$ref": "defs.schema.json#/$defs/session_id"}):
         raise QaError("invalid_session", "default-session is not a session ID")
     return value

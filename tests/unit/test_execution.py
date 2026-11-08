@@ -1433,6 +1433,21 @@ def test_ingesting_a_test_report_raises_no_findings(trusted, actor, tmp_path, ba
     assert out["findings"] == {"opened": 0, "updated": 0} and state.load(trusted)["findings"] == {}
 
 
+def test_ingest_stores_the_bytes_it_parsed(trusted, actor, tmp_path, base_run, monkeypatch):  # I9: one read, not two
+    other = tmp_path / "x.xml"
+    other.write_text(PASS_XML)
+    original = ingest.read_report
+
+    def read_then_swap(path, limit):
+        data = original(path, limit)
+        other.write_text('<testsuite><testcase classname="c" name="other"/></testsuite>')
+        return data
+
+    monkeypatch.setattr(ingest, "read_report", read_then_swap)
+    execution.ingest_file(trusted, actor, "junit", other, from_execution=base_run["execution"])
+    assert (_dir(trusted, base_run) / "ingested" / "x.xml").read_text() == PASS_XML
+
+
 def test_ingest_repeated_basename_gets_a_suffix(trusted, actor, tmp_path, base_run):
     other = tmp_path / "x.xml"
     other.write_text(PASS_XML)

@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 from . import KERNEL_VERSION, SCHEMA_VERSION, ledger, schema, state, vocab
 from .canonical import loads, sha256_bytes
 from .errors import QaError
-from .workspace import Workspace, config_bytes, write_atomic
+from .workspace import Workspace, config_bytes, read_config, write_atomic
 
 # QaError codes raised here: config_invalid, approval_required, use_gate_policy_accept, config_drift
 # (set_value only; check_drift returns it), plus whatever ledger.append raises.
@@ -19,7 +19,7 @@ _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 
 def current_hash(ws: Workspace) -> str:
-    return sha256_bytes(ws.path("config.json").read_bytes())
+    return sha256_bytes(read_config(ws))
 
 
 def accepted_hash(st: dict) -> Optional[str]:
@@ -35,8 +35,10 @@ def _schema_errors(cfg: Any) -> List[str]:
 def _read_schema_valid(ws: Workspace) -> dict:
     """Parse config.json and check its structure; raise config_invalid otherwise."""
     try:
-        cfg = loads(ws.path("config.json").read_bytes())
+        cfg = loads(read_config(ws))
     except QaError as exc:
+        if exc.code == "config_invalid":
+            raise
         raise QaError("config_invalid", "config.json is not valid JSON", errors=[exc.message or exc.code])
     errs = _schema_errors(cfg)
     if errs:
@@ -172,7 +174,7 @@ def set_value(ws: Workspace, actor: ledger.Actor, key: str, value: Any, approval
         if current_hash(ws) != accepted_hash(state.load(ws)):
             raise QaError("config_drift", "config.json was edited outside the CLI; accept it first")
         cfg = load_config(ws)
-        before = ws.path("config.json").read_bytes()
+        before = read_config(ws)
         parts = key.split(".")
         node: Any = cfg
         for part in parts[:-1]:
