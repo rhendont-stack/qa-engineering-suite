@@ -24,8 +24,9 @@ The kernel's test suite has passed on these platforms:
 |---|---|
 | macOS arm64 | 3.9 and 3.15 |
 | Linux arm64, in containers | 3.9 and 3.15 |
+| Linux x86_64, on GitHub Actions | 3.9 and 3.15 |
 
-Counts, skipped tests and limitations are in the [milestone 1 report](docs/reports/milestone-1.md). The GitHub Actions workflow has not run yet, and Linux x86_64 has no evidence so far.
+Counts, skipped tests and limitations of the local runs are in the [milestone 1 report](docs/reports/milestone-1.md). GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
 
 ## Try the kernel
 
