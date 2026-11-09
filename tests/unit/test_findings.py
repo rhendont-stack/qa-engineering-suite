@@ -144,6 +144,7 @@ def _spec_table():
     return table
 
 
+@pytest.mark.skipif(not SPEC.is_file(), reason="the design documents are not published")
 def test_every_anchor_matches_the_spec_table():
     anchors = findings.load_rubric()["anchors"]
     letter = {"CRITICAL": "C", "HIGH": "H", "MEDIUM": "M", "LOW": "L", "INFORMATIONAL": "I"}

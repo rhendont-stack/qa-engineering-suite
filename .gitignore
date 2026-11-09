@@ -7,3 +7,8 @@ tests/corpus/producers/**/node_modules/
 tests/corpus/producers/**/build/
 tests/corpus/producers/**/.gradle/
 tests/corpus/producers/**/target/
+.superpowers/
+# Internal design documents: kept on disk, not published
+docs/proposal/
+docs/requirements/
+docs/superpowers/

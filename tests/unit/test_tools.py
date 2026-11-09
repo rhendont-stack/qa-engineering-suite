@@ -66,6 +66,7 @@ def test_check_docs_cited_deviation_must_exist(tmp_path):
 def test_check_docs_usage_error_without_three_files():
     r = subprocess.run([sys.executable, "-I", str(TOOLS / "check_docs.py")], capture_output=True, text=True)
     assert r.returncode == 2 and "usage" in (r.stdout + r.stderr).lower()
+@pytest.mark.skipif(not (REPO / "docs" / "proposal" / "phase-2-architecture.md").is_file(), reason="the design documents are not published")
 def test_check_docs_passes_on_the_proposal():
     docs = REPO / "docs"
     r = subprocess.run([sys.executable, "-I", str(TOOLS / "check_docs.py"), str(docs / "proposal" / "phase-1-research.md"),
