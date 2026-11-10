@@ -851,7 +851,7 @@ def test_the_report_has_a_traceability_section_with_counts_and_one_row_per_gap(w
     st = _traced_state(ws, actor)
     lines = section(render_markdown(st), "Traceability")
     matrix = trace.matrix(st, COMMIT)
-    assert "Target commit: %s" % COMMIT[:12] in "\n".join(lines)
+    assert "Target commit: %s (newest execution; no gate recorded)" % COMMIT[:12] in lines
     for kind in trace.GAP_KINDS:
         assert "| %s | %d |" % (md_cell(kind), matrix["counts"][kind]) in lines
     rows = [l for l in lines if l.startswith("| ") and any(l.startswith("| %s | %s |" % (g["id"], md_cell(g["kind"]))) for g in matrix["gaps"])]
@@ -865,11 +865,26 @@ def test_the_traceability_section_is_byte_stable(ws, actor):
     assert section(render_markdown(st), "Traceability") == section(render_markdown(state.load(ws)), "Traceability")
 
 
+def _fake_gate(commit):
+    return {"GATE-001": {"id": "GATE-001", "target": {"commit": commit}, "criteria": [], "conditions": [],
+                         "verdict": "INSUFFICIENT_EVIDENCE", "profile": "change", "independence": "I1", "state_hash": SHA}}
+
+
 def test_the_traceability_target_is_the_gates_when_there_is_one(ws, actor):
     st = _traced_state(ws, actor)
-    st["gates"] = {"GATE-001": {"id": "GATE-001", "target": {"commit": "b" * 40}, "criteria": [], "conditions": [],
-                                  "verdict": "INSUFFICIENT_EVIDENCE", "profile": "change", "independence": "I1", "state_hash": SHA}}
-    assert "Target commit: %s" % ("b" * 12) in "\n".join(section(render_markdown(st), "Traceability"))
+    st["gates"] = _fake_gate("b" * 40)
+    assert "Target commit: %s (the target of GATE-001)" % ("b" * 12) in section(render_markdown(st), "Traceability")
+
+
+def test_a_gate_with_no_commit_labels_the_fallback_commit(ws, actor):
+    st = _traced_state(ws, actor)
+    st["gates"] = _fake_gate(None)
+    assert "Target commit: %s (newest execution; GATE-001 recorded no commit)" % COMMIT[:12] in section(render_markdown(st), "Traceability")
+
+
+def test_without_a_gate_the_commit_is_labelled_as_the_newest_execution(ws, actor):
+    st = _traced_state(ws, actor)
+    assert "Target commit: %s (newest execution; no gate recorded)" % COMMIT[:12] in section(render_markdown(st), "Traceability")
 
 
 def test_the_traceability_section_without_records_says_so(ws):

@@ -1430,10 +1430,29 @@ def test_a_confirmation_of_the_current_statement_still_counts(trusted, actor):
     assert state.load(trusted)["requirements"]["REQ-001"]["confirmed"]["approval"] == "yes"
 
 
-def test_a_legacy_confirmation_without_a_statement_hash_still_folds(trusted, actor):
+def test_a_confirmation_without_a_statement_hash_binds_nothing_and_does_not_fold(trusted, actor):
     records.add(trusted, actor, "requirement", test_records.req(provenance="inferred"))
     write_event_at(trusted, actor, T0, "requirement.confirmed", {"id": "REQ-001", "approval": "yes"})
-    assert state.load(trusted)["requirements"]["REQ-001"]["confirmed"]["approval"] == "yes"
+    folded = state.load(trusted)
+    assert "confirmed" not in folded["requirements"]["REQ-001"]
+    assert folded["violations"][-1]["kind"] == "invalid_data"   # the schema requires the hash, so the fold refuses the event
+
+
+def test_an_assumption_decision_without_a_statement_hash_does_not_fold(trusted, actor):
+    records.add(trusted, actor, "assumption", {"statement": "Prices are in euros.", "impact": "totals"})
+    write_event_at(trusted, actor, T0, "assumption.decided",
+                   {"id": "ASM-001", "status": "confirmed", "confirmed_by": "user", "approval": "yes"})
+    assert state.load(trusted)["assumptions"]["ASM-001"]["status"] == "open"
+
+
+def test_the_decision_schemas_require_the_statement_hash():
+    for name in ("requirement.confirmed", "assumption.decided"):
+        assert "statement_hash" in schema.load_schema("events/%s.schema.json" % name)["required"]
+
+
+def test_a_single_requirement_is_not_pluralised(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    assert _rv(traced)["detail"].startswith("1 requirement verified: ")
 
 
 def _critical_chain(ws, actor, **tc_changes):

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "requirement.confirmed event data",
-  "description": "The user confirmed a requirement. statement_hash is the hash of the statement that was confirmed, inside the MAC; the state honours the confirmation only while the requirement still has that statement (absent in events recorded before it existed). authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority and folds to nothing.",
+  "description": "The user confirmed a requirement. statement_hash is the hash of the statement that was confirmed, inside the MAC; the state honours the confirmation only while the requirement still has that statement, and never an event without it. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority and folds to nothing.",
   "type": "object",
   "properties": {
     "id": {"$ref": "defs.schema.json#/$defs/req_id"},
@@ -9,6 +9,6 @@
     "statement_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
     "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
   },
-  "required": ["id", "approval"],
+  "required": ["id", "approval", "statement_hash"],
   "additionalProperties": false
 }

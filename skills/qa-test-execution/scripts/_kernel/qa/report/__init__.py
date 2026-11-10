@@ -130,24 +130,25 @@ def _finding_section(st: dict) -> List[str]:
     return _table(("ID", "Title", "Severity", "Priority", "State", "Verification"), rows)
 
 
-def _traceability_target(st: dict, gate: Optional[dict]) -> Optional[str]:
-    """The commit the matrix is about: the latest gate's target, else the newest recorded execution's. None when there is none."""
-    commits = []
+def _traceability_target(st: dict, gate: Optional[dict]) -> Tuple[Optional[str], str]:
+    """The commit the matrix is about and where it came from: the latest gate's target, else the newest execution's."""
     if gate is not None:
-        commits.append((gate.get("target") or {}).get("commit"))
+        commit = (gate.get("target") or {}).get("commit")
+        if isinstance(commit, str) and trace._FULL_COMMIT.match(commit):
+            return commit, "the target of %s" % gate["id"]
     runs = sorted(st["executions"].values(), key=lambda e: (e["started_at"], e["id"]), reverse=True)
-    commits += [(run["git"] or {}).get("commit") for run in runs]
-    return next((c for c in commits if isinstance(c, str) and re.fullmatch(r"[0-9a-f]{40}", c)), None)
+    commit = next((c for c in ((run["git"] or {}).get("commit") for run in runs) if isinstance(c, str) and trace._FULL_COMMIT.match(c)), None)
+    return commit, "newest execution; %s" % ("no gate recorded" if gate is None else "%s recorded no commit" % gate["id"])
 
 
 def _traceability_section(st: dict, gate: Optional[dict]) -> List[str]:
     if not (st["requirements"] or st["testcases"]):
         return ["No requirements or test cases recorded."]
-    target = _traceability_target(st, gate)
+    target, source = _traceability_target(st, gate)
     if target is None:
         return ["No execution on a recorded commit; the matrix needs one."]
     matrix = trace.matrix(st, target)
-    lines = ["Target commit: %s" % target[:12], ""]
+    lines = ["Target commit: %s (%s)" % (target[:12], source), ""]
     lines += _table(("Gap kind", "Count"), [_row(kind, matrix["counts"][kind]) for kind in trace.GAP_KINDS])
     if matrix["gaps"]:
         lines += [""] + _table(("Record", "Gap"), [_row(g["id"], g["kind"]) for g in matrix["gaps"]])

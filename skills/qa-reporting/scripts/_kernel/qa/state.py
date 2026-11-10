@@ -152,7 +152,7 @@ def _requirement_confirmed(state: dict, event: dict) -> None:
     record = state["requirements"].get(data["id"])
     if record is None:
         _violation(state, event, "unknown_requirement")
-    elif data.get("statement_hash", statement_hash(record["statement"])) != statement_hash(record["statement"]):
+    elif data.get("statement_hash") != statement_hash(record["statement"]):
         _violation(state, event, "stale_confirmation")  # signed for words the requirement no longer has
     else:
         record["confirmed"] = {"approval": data["approval"], "event": event["id"]}
@@ -180,7 +180,7 @@ def _assumption_decided(state: dict, event: dict) -> None:
     record = state["assumptions"].get(data["id"])
     if record is None:
         _violation(state, event, "unknown_assumption")
-    elif data.get("statement_hash", statement_hash(record["statement"])) != statement_hash(record["statement"]):
+    elif data.get("statement_hash") != statement_hash(record["statement"]):
         _violation(state, event, "stale_decision")
     else:
         record.update(status=data["status"], confirmed_by=data["confirmed_by"], approval=data["approval"])

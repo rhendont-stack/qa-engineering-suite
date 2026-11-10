@@ -262,3 +262,23 @@ def test_cli_walks_the_creation_order(ws, qa_cli, tmp_path):
     assert code == 2 and out["error"]["code"] == "invalid_json"
     code, out = qa_cli("asm", "decide", "ASM-001", "maybe", "--approval", "yes")
     assert code == 2 and out["error"]["code"] == "records_invalid"
+
+
+def test_provenance_of_a_recorded_requirement_cannot_be_changed(ws, actor):
+    records.add(ws, actor, "requirement", req(provenance="inferred"))
+    before = state.load(ws)
+    err = refused("records_invalid", records.add, ws, actor, "requirement", {"id": "REQ-001", "provenance": "documented"})
+    assert "provenance" in str(err.details) or "provenance" in err.message
+    assert state.load(ws) == before
+    records.add(ws, actor, "requirement", {"id": "REQ-001", "provenance": "inferred", "priority": "should"})   # unchanged value is fine
+    assert state.load(ws)["requirements"]["REQ-001"]["provenance"] == "inferred"
+
+
+def test_provenance_cannot_be_changed_through_req_import(ws, actor, qa_cli, tmp_path):
+    records.add(ws, actor, "requirement", req(provenance="assumed"))
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps([req(statement="Second."), {"id": "REQ-001", "provenance": "documented"}]), encoding="utf-8")
+    code, out = qa_cli("req", "import", "--json", str(path))
+    assert code != 0 and out["error"]["code"] == "records_invalid"
+    st = state.load(ws)
+    assert list(st["requirements"]) == ["REQ-001"] and st["requirements"]["REQ-001"]["provenance"] == "assumed"

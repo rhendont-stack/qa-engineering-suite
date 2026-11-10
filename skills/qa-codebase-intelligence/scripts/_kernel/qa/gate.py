@@ -364,7 +364,7 @@ def _requirements_verified(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     if unconfirmed:
         parts.append("unconfirmed %s: %s" % ("requirement" if len(unconfirmed) == 1 else "requirements", ", ".join(unconfirmed)))
     result = _NOT_MET if failed else (_NO_EVIDENCE if parts else _MET)
-    detail = "; ".join(parts) or "%d requirements verified: %s" % (len(scope), ", ".join(scope))
+    detail = "; ".join(parts) or "%d %s verified: %s" % (len(scope), "requirement" if len(scope) == 1 else "requirements", ", ".join(scope))
     return result, detail, sorted(evidence)
 
 

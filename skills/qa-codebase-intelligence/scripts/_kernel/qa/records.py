@@ -148,6 +148,8 @@ def _prepare(ws: Workspace, shadow: _Shadow, kind: str, data: object) -> Tuple[s
             raise QaError("unknown_record", "no such %s to change" % kind, id=identifier)
         record = {name: value for name, value in existing.items() if name not in _DERIVED.get(kind, ())}
         record.update(given)
+        if kind == "requirement" and record.get("provenance") != existing.get("provenance"):
+            raise _invalid("a requirement keeps its provenance; a decision to confirm it is a confirmation", id=identifier, fields=["provenance"])
         if kind == "criterion" and record["requirement"] != existing["requirement"]:
             raise _invalid("an acceptance criterion keeps its requirement", id=identifier)
         created = False

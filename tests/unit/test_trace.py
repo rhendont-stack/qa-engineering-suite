@@ -371,8 +371,10 @@ def test_each_gap_is_reported(ws, actor, kind):
 
 
 def test_an_assumed_requirement_is_a_gap_until_the_user_confirms_it(ws, actor):
-    chain(ws, actor)
-    records.add(ws, actor, "requirement", dict(req(), id="REQ-001", provenance="assumed"))
+    records.add(ws, actor, "requirement", dict(req(), provenance="assumed"))
+    records.add(ws, actor, "criterion", ac())
+    records.add(ws, actor, "testcase", tc())
+    trace.link(ws, actor, "TC-001", "automated_by", TEST_ID)
     assert {"kind": "req_only_characterization_or_assumed", "id": "REQ-001"} in gaps(ws)
 
 
