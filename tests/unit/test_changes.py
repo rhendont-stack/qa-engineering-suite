@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import unicodedata
 
 import pytest
 
-from qa import authority, authz, changes, ledger, state
+from helpers import write_event_at
+from qa import authority, authz, changes, config, ids, ledger, state
 from qa.canonical import sha256_bytes
 from qa.errors import QaError
 
@@ -19,8 +21,9 @@ def git(root, *args):
 
 
 @pytest.fixture
-def project(ws):
-    """A git repository holding one tracked test and one tracked production file."""
+def project(ws, actor):
+    """A git repository holding one tracked test and one tracked production file, in a workspace whose config is accepted."""
+    config.record_initialized(ws, actor)
     git(ws.root, "init", "-q", "-b", "main")
     (ws.root / "tests").mkdir()
     (ws.root / "src").mkdir()
@@ -212,3 +215,84 @@ def test_the_commands(project, actor, qa_cli):
     assert (code, out["error"]["code"]) == (2, "justification_required")
     code, out = qa_cli("changes", "record", "tests/test_old.py", "--kind", "modified", "--justification", "j", "--approval", "a")
     assert code == 0 and len(out["files"]) == 1
+
+
+def test_creating_a_file_git_tracks_is_refused(project, actor):
+    grant(project, actor)
+    write(project, "tests/test_old.py", "changed\n")
+    refused("already_tracked", changes.record, project, actor, ["tests/test_old.py"], kind="created", testcase=None)
+    assert file_events(project) == []
+
+
+def _same_file_under(project, variant):
+    try:
+        return os.path.samefile(str(project.root / variant), str(project.root / "tests" / "test_old.py"))
+    except OSError:
+        return False
+
+
+def test_a_case_variant_of_a_tracked_file_is_the_same_file(project, actor):
+    if not _same_file_under(project, "tests/TEST_OLD.py"):
+        pytest.skip("this filesystem is case-sensitive")
+    grant(project, actor)
+    write(project, "tests/test_old.py", "changed\n")
+    refused("justification_required", changes.record, project, actor, ["tests/TEST_OLD.py"], kind="modified", testcase=None)
+    changes.record(project, actor, ["tests/TEST_OLD.py", "tests/test_old.py"], kind="modified", testcase=None,
+                   justification="j", approval="a")
+    assert list(state.load(project)["files"]) == ["tests/test_old.py"]  # one canonical key, one record
+    assert len(state.load(project)["files"]["tests/test_old.py"]) == 1
+    refused("already_tracked", changes.record, project, actor, ["tests/Test_Old.py"], kind="created", testcase=None)
+
+
+def test_a_decomposed_spelling_of_a_tracked_file_is_the_same_file(project, actor):
+    nfc = unicodedata.normalize("NFC", "tests/test_\u00e9.py")
+    nfd = unicodedata.normalize("NFD", nfc)
+    write(project, nfc, "a\n")
+    git(project.root, "add", "tests")
+    git(project.root, "commit", "-q", "-m", "c2")
+    if not os.path.lexists(str(project.root / nfd)):
+        pytest.skip("this filesystem keeps the two spellings apart")
+    grant(project, actor)
+    write(project, nfc, "b\n")
+    refused("justification_required", changes.record, project, actor, [nfd], kind="modified", testcase=None)
+    changes.record(project, actor, [nfd], kind="modified", testcase=None, justification="j", approval="a")
+    assert list(state.load(project)["files"]) == [nfc]
+
+
+@pytest.mark.parametrize("breakage", ["tracked_authority", "ledger_unverified", "authority_key_invalid", "config_drift"])
+def test_nothing_is_recorded_where_execution_would_refuse(project, actor, breakage):
+    grant(project, actor)
+    write(project, "tests/test_new.py", "x")
+    if breakage == "tracked_authority":
+        git(project.root, "add", "-f", ".qa")
+        git(project.root, "commit", "-q", "-m", "qa")
+    elif breakage == "ledger_unverified":
+        session = next((project.qa_dir / "ledger").glob("*.jsonl"))
+        session.write_bytes(session.read_bytes().replace(b'"write-tests"', b'"write-tests "', 1))
+    elif breakage == "authority_key_invalid":
+        (project.qa_dir / "authority.key").write_bytes(b"short")
+    else:
+        cfg = config.load_config(project)
+        cfg["write_scopes"] = ["tests/**"]
+        project.path("config.json").write_bytes(__import__("qa.workspace", fromlist=["x"]).config_bytes(cfg))
+    with pytest.raises(QaError) as caught:
+        changes.record(project, actor, ["tests/test_new.py"], kind="created", testcase=None)
+    assert caught.value.code in ("authority_refused", "config_drift")
+    assert [e for e in file_events(project)] == []
+
+
+def test_a_grant_this_machine_did_not_sign_authorizes_nothing(project, actor):
+    write(project, "tests/test_new.py", "x")
+    write_event_at(project, actor, ids.now_utc(), "authorization.granted", {
+        "id": "AUTH-901", "environment": "local", "targets": [], "activities": ["write-tests"],
+        "limits": {"write-tests": {"paths": ["tests/**"]}}, "granted_by": "user", "approval_quote": "q",
+        "granted_at": "2026-11-10T10:00:00.000Z", "expires_at": "2999-01-01T00:00:00.000Z"}, signed=False)
+    refused("write_not_authorized", changes.record, project, actor, ["tests/test_new.py"], kind="created", testcase=None)
+
+
+def test_the_workspace_directory_is_never_recorded(project, actor):
+    ledger.append(project, actor, "authorization.granted", {
+        "id": "AUTH-902", "environment": "local", "targets": [], "activities": ["write-tests"],
+        "limits": {"write-tests": {"paths": ["**"]}}, "granted_by": "user", "approval_quote": "q",
+        "granted_at": "2026-11-10T10:00:00.000Z", "expires_at": "2999-01-01T00:00:00.000Z"})
+    refused("protected_path", changes.record, project, actor, [".qa/config.json"], kind="modified", testcase=None)

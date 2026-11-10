@@ -5,14 +5,19 @@ called after a file is written: it checks the path, the grant and, for a change 
 and only then records one ``file.created`` or ``file.modified`` event per path, with the sha256 of the bytes on disk. The
 checks, in this order, and a refusal records nothing at all:
 
+- the workspace's authority holds: the refusals ``execution`` applies to a run (``integrity.authority``: a tracked ``.qa/``, a
+  ledger that does not verify, an unusable key) and a drifted ``config.json`` refuse a record too (``authority_refused``,
+  ``config_drift``), since a grant counts for nothing there;
 - the kind is ``created`` or ``modified`` and at least one path is given (``invalid_kind``, ``invalid_path``);
 - every path is resolved inside the workspace root without following a symlink: a ``..`` component, a path outside the root,
-  a symlink anywhere on the way, a missing file or one that is not a regular file is ``invalid_path``;
-- no path is agent or IDE configuration (``vocab.PROTECTED_PATHS``, any depth, any case): ``protected_path``, whatever grants exist;
+  a symlink anywhere on the way, a missing file or one that is not a regular file is ``invalid_path``. A path is then
+  spelled as the filesystem lists it, so on one that ignores case or Unicode form every spelling is one file, one key;
+- no path is agent or IDE configuration (``vocab.PROTECTED_PATHS``, any depth, any case) or under ``.qa/``: ``protected_path``,
+  whatever grants exist;
 - a grant that this machine recorded (``state.load`` holds no other), is not revoked, has not expired and names the activity
   ``write-tests`` has ``paths`` globs matching the path, or it is ``write_not_authorized``; the globs match as
   ``fnmatch.fnmatchcase`` matches, with ``**/`` also standing for no directory, as the ``write_scopes`` rules read them;
-- ``modified`` of a file git tracks (or of any file when git cannot say) needs ``justification`` and ``approval``
+- ``modified`` of a file git tracks needs ``justification`` and ``approval``
   (``justification_required``, ``approval_required``), and the approval travels in its own signed event,
   ``file.modification_approved``, over the path and the bytes' sha256.
 
@@ -25,15 +30,16 @@ import fnmatch
 import os
 import re
 import stat
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import gitinfo, ids, ledger, state, vocab
+from . import gitinfo, ids, integrity, ledger, state, vocab, worktree
 from .canonical import sha256_bytes
 from .errors import QaError
 from .workspace import Workspace
 
 # QaError codes raised here: invalid_kind, invalid_path, invalid_testcase, protected_path, write_not_authorized,
-# justification_required, approval_required; plus whatever ledger.append raises.
+# justification_required, approval_required, already_tracked, git_unavailable, authority_refused, config_drift; plus whatever ledger.append raises.
 
 KINDS = ("created", "modified")
 ACTIVITY = "write-tests"
@@ -59,7 +65,7 @@ def resolve(ws: Workspace, raw: Any) -> str:
     rel = os.path.relpath(os.path.normpath(os.path.join(root, raw)), root)
     if rel == "." or rel == ".." or rel.startswith(".." + os.sep) or os.path.isabs(rel):
         raise _invalid("the path is outside the project", path=raw)
-    here = root
+    here, spelled = root, []
     for part in rel.split(os.sep):
         here = os.path.join(here, part)
         try:
@@ -68,20 +74,52 @@ def resolve(ws: Workspace, raw: Any) -> str:
             raise _invalid("no such file", path=raw)
         if stat.S_ISLNK(mode):
             raise _invalid("a symbolic link is never followed", path=raw)
+        actual = _on_disk(os.path.dirname(here), part)
+        spelled.append(actual)
+        here = os.path.join(os.path.dirname(here), actual)
     if not stat.S_ISREG(mode):
         raise _invalid("not a regular file", path=raw)
-    return rel.replace(os.sep, "/")
+    return "/".join(spelled)
+
+
+def _fold(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _on_disk(parent: str, part: str) -> str:
+    """``part`` as the directory ``parent`` spells it. On a filesystem that ignores case or Unicode form, a variant reaches
+    the same file; its one true spelling is the entry the filesystem lists, so a file has one name here."""
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return part
+    if part in names:
+        return part
+    for name in names:
+        if _fold(name) == _fold(part) and os.path.samefile(os.path.join(parent, name), os.path.join(parent, part)):
+            return name
+    return part
 
 
 def _read(ws: Workspace, rel: str) -> bytes:
     try:
-        with open(os.path.join(str(ws.root), rel), "rb") as handle:
+        fd = os.open(os.path.join(str(ws.root), rel), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError as exc:
+        raise _invalid("the file cannot be read: %s" % exc.strerror, path=rel)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise _invalid("not a regular file", path=rel)
+        with open(fd, "rb", closefd=False) as handle:
             return handle.read()
     except OSError as exc:
         raise _invalid("the file cannot be read: %s" % exc.strerror, path=rel)
+    finally:
+        os.close(fd)
 
 
 def _is_protected(rel: str) -> bool:
+    if rel.split("/")[0].lower() == ".qa":  # the workspace's own ledger, key and evidence are never project files
+        return True
     segments = [s.lower() for s in rel.split("/") if s not in ("", ".")]
     for entry, is_dir in _PROTECTED:
         n = len(entry)
@@ -129,6 +167,10 @@ def record(ws: Workspace, actor: ledger.Actor, paths: List[str], *, kind: str, t
         raise QaError("invalid_testcase", "a test case id looks like TC-001")
     with ws.lock():
         st = state.load(ws)
+        refused_authority = integrity.authority(ws)["refused"]  # as execution does: a shipped or unverifiable ledger authorizes nothing
+        if refused_authority:
+            raise QaError("authority_refused", refused_authority[0], limitations=[r.split(":")[0] for r in refused_authority])
+        worktree._refuse_drift(ws, st)
         rels: List[str] = []
         for raw in paths:
             rel = resolve(ws, raw)
@@ -143,8 +185,16 @@ def record(ws: Workspace, actor: ledger.Actor, paths: List[str], *, kind: str, t
             if grants[rel] is None:
                 raise QaError("write_not_authorized", "no valid write-tests grant covers this path: record one with `qa authorize`",
                               path=rel)
-        tracked_set = gitinfo.tracked_files(ws.root) if kind == "modified" else set()
-        tracked = {rel: tracked_set is None or rel in tracked_set for rel in rels}  # git cannot say: assume it tracks
+        tracked_set = gitinfo.tracked_files(ws.root)
+        if tracked_set is None:
+            raise QaError("git_unavailable", "git cannot say which files it tracks here, and a tracked file needs approval")
+        folded = {_fold(name) for name in tracked_set}  # on a filesystem that ignores case or Unicode form, spelling is no proof
+        tracked = {rel: _fold(rel) in folded for rel in rels}
+        if kind == "created":
+            for rel in rels:
+                if tracked[rel]:
+                    raise QaError("already_tracked", "git tracks this file, so writing it is a modification: record it as "
+                                  "modified, with a justification and the user's approval", path=rel)
         if kind == "modified" and any(tracked.values()):
             if not _text(justification):
                 raise QaError("justification_required", "modifying a file git tracks needs the reason for the change (§12.4)")
