@@ -64,10 +64,18 @@ temporary root and outside the copy, and the settings name that script as ``apiK
 agent's file tools and to the sandbox. The directory is deleted in the same ``finally`` that deletes the copy.
 
 Escaped processes: ``Sweeper`` polls the process table every 0.5 s from the moment the CLI starts and records every
-descendant (pid and start time). When the run ends, each recorded process still alive with the same start time is killed, so
-a grandchild that left the process group (``setsid``) does not outlive the run; a reused pid has another start time and is
-left alone. A fixture tree holding any symlink is refused with exit 2 before anything is copied. A case field
-``allow_write: true`` adds ``Edit`` and ``Write`` to the tools of both configurations.
+descendant (pid and start time), polls once more when the CLI has exited, and kills each recorded process still alive with the
+same start time, so a grandchild that left the process group (``setsid``) does not outlive the run; a reused pid has another
+start time and is left alone. Limits, stated plainly: a process that forks, detaches and whose parent exits between two polls
+is re-parented to pid 1 before it is recorded. On Linux the harness makes itself a child subreaper (``PR_SET_CHILD_SUBREAPER``),
+so such orphans re-parent to the harness and the final poll finds them; on macOS and elsewhere there is no subreaper and that
+case is NOT covered. The process table comes from ``ps`` (``/proc`` on Linux when ``ps`` cannot run); if neither gives a
+table the sweeper is blind, the ledger line says ``sweeper_blind: true`` and a warning goes to stderr, so a count of 0 swept
+is then not evidence that nothing escaped. A process that detaches and is killed only by this sweeper is also not guaranteed
+to be seen when it is started after the final poll. A fixture tree holding any symlink is refused with exit 2 before anything is copied. A case field
+``allow_write: true`` allows ``Edit`` and ``Write`` only inside the copy (``Edit(//<copy>/**)``, never a bare allow) in both
+configurations, and adds ``Edit`` and ``Write`` denies for the repository, the real home, any ``benchmark`` directory and the
+key helper's directory, the same places the ``Read`` denies cover; a deny wins over an allow.
 
 Exit codes: 0 the run finished and was recorded; 1 it failed or timed out and was recorded; 2 bad arguments; 3 refused
 because the budget is reached or a recorded cost is unknown.
@@ -109,6 +117,7 @@ KEY_VAR = "ANTHROPIC_API_KEY"
 # 2026-11-10 (three runs, every ``init`` event reported this value). While it is None no source is accepted.
 HELPER_KEY_SOURCE: Optional[str] = "apiKeyHelper"
 WRITE_TOOLS = ["Edit", "Write"]
+PR_SET_CHILD_SUBREAPER = 36
 SWEEP_INTERVAL = 0.5
 MARKER = "[REDACTED:%s]" % KEY_VAR
 DEFAULT_LEDGER = REPO / ".superpowers" / "eval-ledger" / "costs.jsonl"
@@ -419,9 +428,14 @@ def append_line(path: Path, record: Dict[str, Any]) -> None:
 
 # -- the CLI ----------------------------------------------------------------------------------------------------------
 
+def probe_env() -> Dict[str, str]:
+    """The environment for the CLI's ``--help`` probes: the same minimal set as the agent's, so no key passes."""
+    return {"PATH": os.environ.get("PATH", os.defpath), "HOME": os.environ.get("HOME", os.devnull)}
+
+
 def cli_help(exe: str) -> str:
     try:
-        r = subprocess.run([exe, "--help"], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([exe, "--help"], capture_output=True, text=True, timeout=60, env=probe_env())
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return r.stdout + r.stderr
@@ -430,14 +444,14 @@ def cli_help(exe: str) -> str:
 def plugin_eval_available(exe: str) -> bool:
     """Detected only. Its case layout is not the harness's case file, so the run still goes through ``claude -p``."""
     try:
-        return subprocess.run([exe, "plugin", "eval", "--help"], capture_output=True, timeout=60).returncode == 0
+        return subprocess.run([exe, "plugin", "eval", "--help"], capture_output=True, timeout=60, env=probe_env()).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
 
 def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path, tools: List[str], cap: str,
                    runtime_venv: Optional[str] = None, helper_command: Optional[str] = None,
-                   helper_dir: Optional[Path] = None) -> Dict[str, Any]:
+                   helper_dir: Optional[Path] = None, allow_write: bool = False) -> Dict[str, Any]:
     """Everything that depends on the installed CLI's flags and settings schema, in one place.
 
     Raises ``Refused`` when an essential flag is missing. Confirmed from the CLI's help and docs: flag names, the ``Bash(prefix *)``
@@ -464,6 +478,10 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
         denied.append("Read(//%s/**)" % real.lstrip("/"))
         deny_read.append(real)
     denied.append("Read(**/benchmark/**)")
+    if allow_write:      # a deny wins over an allow: the file tools may write the copy and nothing else listed here
+        for rule in list(denied):
+            for tool in WRITE_TOOLS:
+                denied.append(tool + rule[len("Read"):])
     # Built-in file tools run outside the sandbox, so both the permission denies and the sandbox denies are needed. The
     # sandbox is always required: if the CLI cannot start it, the run fails rather than running unconfined.
     settings: Dict[str, Any] = {
@@ -488,14 +506,24 @@ def build_command(exe: str, model: str, plan: Dict[str, Any]) -> List[str]:
     return [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model] + plan["args"]
 
 
+def _find_cat() -> str:
+    """The absolute path of ``cat``, resolved when the helper is written so the script never searches a PATH."""
+    for candidate in (shutil.which("cat"), "/bin/cat", "/usr/bin/cat"):
+        if candidate and os.path.isabs(candidate) and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise Refused("no cat executable was found for the key helper; refusing to run")
+
+
 def write_key_helper(key: str, helper_dir: Path) -> str:
     """Writes the key to a mode-0600 file and a mode-0700 script that prints it, both in ``helper_dir`` (made mode 0700).
 
     Returns the ``apiKeyHelper`` command. The directory must be outside the agent's copy; the caller deletes it."""
+    cat = _find_cat()
     helper_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(str(helper_dir), 0o700)
     key_file, script = helper_dir / "key", helper_dir / "helper.sh"
-    for path, mode, text in ((key_file, 0o600, key), (script, 0o700, "#!/bin/sh\nexec cat -- %s\n" % shlex.quote(str(key_file)))):
+    body = "#!/bin/sh\nexec %s -- %s\n" % (shlex.quote(cat), shlex.quote(str(key_file)))
+    for path, mode, text in ((key_file, 0o600, key), (script, 0o700, body)):
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
         try:
             os.fchmod(fd, mode)
@@ -614,19 +642,49 @@ def extract_metrics(stdout: str) -> Dict[str, Any]:
                        "cache_creation": _count(usage.get("cache_creation_input_tokens"))}}
 
 
+def _proc_table() -> Dict[int, Tuple[int, str]]:
+    """The same table from ``/proc`` (Linux); the start time is the kernel's tick count, which is all a comparison needs."""
+    table: Dict[int, Tuple[int, str]] = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return table
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name, "r", encoding="utf-8", errors="replace") as handle:
+                fields = handle.read().rsplit(")", 1)[1].split()
+            table[int(name)] = (int(fields[1]), "t" + fields[19])
+        except (OSError, IndexError, ValueError):
+            continue
+    return table
+
+
 def process_table() -> Dict[int, Tuple[int, str]]:
-    """pid -> (ppid, start time) for every process, from ``ps``; empty when ``ps`` cannot run."""
+    """pid -> (ppid, start time) for every process, from ``ps``, or ``/proc`` when ``ps`` cannot run; empty when neither works."""
     env = {"PATH": os.environ.get("PATH", os.defpath), "LC_ALL": "C"}
     try:
         done = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,lstart="], capture_output=True, text=True, timeout=20, env=env)
     except (OSError, subprocess.TimeoutExpired):
-        return {}
+        return _proc_table()
     table: Dict[int, Tuple[int, str]] = {}
     for line in done.stdout.splitlines():
         parts = line.split(None, 2)
         if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
             table[int(parts[0])] = (int(parts[1]), " ".join(parts[2].split()))
-    return table
+    return table or _proc_table()
+
+
+def become_subreaper() -> bool:
+    """Linux only: orphans of the CLI's descendants re-parent to this process instead of pid 1, so a final poll finds them."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import ctypes
+        return ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
+    except (OSError, AttributeError, ImportError):
+        return False
 
 
 class Sweeper:
@@ -635,18 +693,22 @@ class Sweeper:
     A process that leaves the process group (``setsid``) survives ``killpg``; it is still a descendant while its parent lives,
     so polling often enough sees it. A pid reused later has a different start time and is never killed."""
 
-    def __init__(self, root_pid: int) -> None:
+    def __init__(self, root_pid: int, extra_roots: Sequence[int] = ()) -> None:
         self.root = root_pid
+        self.roots = [root_pid] + [r for r in extra_roots if r != root_pid]
+        self.blind = False
         self.seen: Dict[Tuple[int, str], bool] = {}
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def poll(self) -> None:
         table = process_table()
+        if not table:
+            self.blind = True       # a live system always has this process in its table
         children: Dict[int, List[int]] = {}
         for pid, (ppid, _start) in table.items():
             children.setdefault(ppid, []).append(pid)
-        stack, visited = [self.root], {self.root}
+        stack, visited = list(self.roots), set(self.roots)
         while stack:
             for child in children.get(stack.pop(), []):
                 if child not in visited:
@@ -692,7 +754,9 @@ def _kill_group(proc: "subprocess.Popen[str]") -> None:
 def execute(argv: List[str], prompt: str, workdir: Path, timeout: int, env: Dict[str, str]) -> Dict[str, Any]:
     """Runs the CLI in its own process group, so a timeout or interrupt kills its children too."""
     started = utcnow()
-    outcome: Dict[str, Any] = {"timed_out": False, "interrupted": False, "exit_code": None, "stdout": "", "stderr": "", "swept": []}
+    subreaper = become_subreaper()
+    outcome: Dict[str, Any] = {"timed_out": False, "interrupted": False, "exit_code": None, "stdout": "", "stderr": "", "swept": [], "sweeper_blind": False,
+                               "subreaper": subreaper}
     pending: Optional[BaseException] = None
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -701,7 +765,7 @@ def execute(argv: List[str], prompt: str, workdir: Path, timeout: int, env: Dict
         outcome["stderr"] = "could not start the CLI: %s" % exc
         outcome["wall_ms"] = 0
         return outcome
-    sweeper = Sweeper(proc.pid)
+    sweeper = Sweeper(proc.pid, (os.getpid(),) if outcome["subreaper"] else ())
     sweeper.start()
     try:
         out, err = proc.communicate(prompt, timeout=timeout)
@@ -709,6 +773,7 @@ def execute(argv: List[str], prompt: str, workdir: Path, timeout: int, env: Dict
     except subprocess.TimeoutExpired:
         _kill_group(proc)
         sweeper.stop()
+        sweeper.poll()
         outcome["swept"] = sweeper.kill_survivors()        # an escaped process may hold the pipes open
         out, err = proc.communicate()
         outcome.update(timed_out=True, stdout=out or "", stderr=err or "")
@@ -719,6 +784,8 @@ def execute(argv: List[str], prompt: str, workdir: Path, timeout: int, env: Dict
         pending = exc
     finally:
         sweeper.stop()
+        sweeper.poll()                                     # once more now that the CLI is gone: orphans may have re-parented
+        outcome["sweeper_blind"] = sweeper.blind
         outcome["swept"] = sorted(set(outcome["swept"]) | set(sweeper.kill_survivors()))
     outcome["wall_ms"] = int((utcnow() - started).total_seconds() * 1000)
     outcome["pending"] = pending
@@ -770,6 +837,7 @@ def _on_sigterm(_signum: int, _frame: Any) -> None:
 
 
 def main(argv: Sequence[str]) -> int:
+    signal.signal(signal.SIGTERM, _on_sigterm)       # before anything is created, so a SIGTERM always reaches a ``finally``
     args = parse(argv)
     case = load_case(Path(args.case))
     out, ledger = Path(args.out), Ledger(Path(args.ledger))
@@ -791,8 +859,6 @@ def main(argv: Sequence[str]) -> int:
         tools.append("Skill")
     if case.get("agents"):
         tools.append("Task")
-    if case.get("allow_write") is True:
-        tools += WRITE_TOOLS
     venv = case.get("runtime_venv")
     venv_real = os.path.realpath(str(resolve(venv))) if venv else None
     run_id = uuid.uuid4().hex[:12]
@@ -804,13 +870,20 @@ def main(argv: Sequence[str]) -> int:
         return refuse(str(exc))
     finally:
         shutil.rmtree(str(setup_home), ignore_errors=True)
-    helper_dir = Path(tempfile.mkdtemp(prefix="qa-eval-key-"))       # outside the copy, deleted with it, whichever way this ends
+    if case.get("allow_write") is True:       # the allow covers the copy only; the settings deny the rest
+        scope = os.path.realpath(str(workdir)).lstrip("/")
+        tools += ["%s(//%s/**)" % (tool, scope) for tool in WRITE_TOOLS]
+    helper_dir: Optional[Path] = None
     try:
+        helper_dir = Path(tempfile.mkdtemp(prefix="qa-eval-key-"))   # outside the copy, deleted with it, whichever way this ends
         helper_command = write_key_helper(key, helper_dir)
         return _run_in(args, case, key, exe, help_text, tools, venv_real, run_id, workdir, out, ledger, setup_log,
                        helper_command, helper_dir)
+    except Refused as exc:
+        return refuse(str(exc))
     finally:
-        shutil.rmtree(str(helper_dir), ignore_errors=True)
+        if helper_dir is not None:
+            shutil.rmtree(str(helper_dir), ignore_errors=True)
         if not args.keep_workdir:
             shutil.rmtree(str(workdir), ignore_errors=True)
 
@@ -825,16 +898,17 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
             with ledger.locked():
                 cap = run_cap(check_budget(ledger.read(), args.budget_usd))
                 plan = isolation_plan(help_text, args.config, workdir, home / "config", tools, cap, venv_real,
-                                      helper_command, helper_dir)
+                                      helper_command, helper_dir, case.get("allow_write") is True)
                 ledger.append({"event": "start", "run_id": run_id, "timestamp": now_utc(), "case_id": case["id"],
                                "config": args.config, "model": args.model})
         except Refused as exc:
             return refuse(str(exc))
         command = build_command(exe, args.model, plan)
-        signal.signal(signal.SIGTERM, _on_sigterm)
         outcome = execute(command, case["prompt"], workdir, args.timeout, child_env(home, home / "config", os.path.join(venv_real, "bin") if venv_real else None))
     finally:
         shutil.rmtree(str(home), ignore_errors=True)
+    if outcome["sweeper_blind"]:
+        print("warning: the sweeper could not read the process table; 0 swept does not show that nothing escaped", file=sys.stderr)
     pending = outcome.pop("pending", None)
     stdout, stderr = redact(outcome["stdout"], key), redact(outcome["stderr"], key)
     metrics = extract_metrics(outcome["stdout"])
@@ -855,7 +929,7 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
               "workdir": str(workdir), "status": status, "exit_code": outcome["exit_code"],
               "timed_out": outcome["timed_out"], "cost_usd": cost, "cost_unknown": cost is None,
               "duration_ms": metrics["duration_ms"], "wall_ms": outcome["wall_ms"], "tokens": metrics["tokens"],
-              "api_key_source": metrics["api_key_source"], "swept_pids": len(outcome["swept"]), "skills_listed": metrics["skills"], "skill_tool_present": metrics["skill_tool"]}
+              "api_key_source": metrics["api_key_source"], "swept_pids": len(outcome["swept"]), "sweeper_blind": outcome["sweeper_blind"], "skills_listed": metrics["skills"], "skill_tool_present": metrics["skill_tool"]}
     try:                                       # first the ledger line, before anything that can fail
         ledger.append(record)
     except OSError as exc:

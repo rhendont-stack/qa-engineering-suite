@@ -24,6 +24,16 @@ RUNNER = textwrap.dedent('''\
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.HELPER_KEY_SOURCE = sys.argv[2]
+    import os
+    if os.environ.get("QA_TEST_BLIND"):                       # test hooks, set by a test and absent in life
+        module.process_table = lambda: {}
+    if os.environ.get("QA_TEST_SIGTERM_AFTER_HELPER"):
+        real = module.write_key_helper
+        def write_then_term(key, folder):
+            result = real(key, folder)
+            os.kill(os.getpid(), 15)
+            return result
+        module.write_key_helper = write_then_term
     sys.exit(module.main(sys.argv[3:]))
 ''')
 # Names the platform adds to a child's environment on its own: Python sets LC_CTYPE, macOS sets __CF_USER_TEXT_ENCODING.
@@ -37,6 +47,9 @@ FAKE = textwrap.dedent('''\
     argv = sys.argv[1:]
     cfg = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude.cfg")))
     mode = cfg.get("MODE", "ok")
+    if cfg.get("HELP_LOG") and (argv[:1] in (["--help"], ["plugin"])):
+        with open(cfg["HELP_LOG"], "a") as fh:
+            fh.write(json.dumps({"argv": argv, "env": dict(os.environ)}) + "\\n")
     if argv[:1] == ["--help"]:
         omit = cfg.get("HELP_OMIT", "").split(",")
         for flag in ("-p, --print", "--output-format <f>", "--allowedTools <tools>", "--model <m>", "--setting-sources <s>",
@@ -87,6 +100,15 @@ FAKE = textwrap.dedent('''\
                           "time.sleep(60)", cfg["PIDFILE"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
         time.sleep(1.6)
+    if mode == "orphan":
+        # The escaped child is detached and this process exits the moment the child has said hello: inside one poll.
+        subprocess.Popen([sys.executable, "-c", "import os, sys, time; os.setsid(); open(sys.argv[1], 'w').write(str(os.getpid())); "
+                          "time.sleep(60)", cfg["PIDFILE"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if os.path.exists(cfg["PIDFILE"]) and open(cfg["PIDFILE"]).read():
+                break
+            time.sleep(0.05)
     if mode == "crash":
         print("boom", file=sys.stderr)
         sys.exit(7)
@@ -181,7 +203,7 @@ def world(tmp_path):
 
 def run(w, *extra, config="with-skill", budget="5", case=None, mode="ok", env=None, keep=True, direct=False):
     environ = dict(os.environ, PATH=str(w.bin) + os.pathsep + os.environ["PATH"], TMPDIR=str(w.tmp), ANTHROPIC_API_KEY=SECRET)
-    fake = {"MODE": mode, "LOG": str(w.log)}
+    fake = {"MODE": mode, "LOG": str(w.log), "HELP_LOG": str(w.root / "help.log")}
     for k in [k for k in (env or {}) if k.startswith("FAKE_")]:
         fake[k[5:]] = env[k]
     env = {k: v for k, v in (env or {}).items() if not k.startswith("FAKE_")}
@@ -880,6 +902,11 @@ def test_copy_qa_state_redacts_encoded_forms_too(tmp_path):
 # --------------------------------------------------------------------------- milestone 3, task 1: key helper, sweeper, symlinks
 
 def _alive(pid):
+    if os.path.isdir("/proc/self"):                            # Linux: a zombie is not alive, a missing entry is gone
+        try:
+            return open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return False
     state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
     return bool(state) and not state.startswith("Z")
 
@@ -953,8 +980,6 @@ def test_the_shipped_constant_accepts_only_the_measured_source(world):
 
 def test_escaped_setsid_grandchild_is_killed(world):
     import time
-    if shutil.which("ps") is None:
-        pytest.skip("tool missing: ps")
     pidfile = world.root / "escaped.pid"
     pid = None
     try:
@@ -1007,7 +1032,103 @@ def test_allow_write_adds_edit_and_write_only_when_declared(world):
     world.case.write_text(json.dumps(spec))
     run(world)
     run(world, config="baseline")
-    assert {"Edit", "Write"} <= set(_allowed(world, 2)) and {"Edit", "Write"} <= set(_allowed(world, 3))
+    copy = os.path.realpath(calls(world)[2]["cwd"])
+    for index in (2, 3):
+        allowed = _allowed(world, index)
+        assert "Edit" not in allowed and "Write" not in allowed        # never a bare allow: any path
+        assert "Edit(//%s/**)" % copy.lstrip("/") in allowed or "Edit(//%s/**)" % os.path.realpath(calls(world)[index]["cwd"]).lstrip("/") in allowed
+        assert any(t.startswith("Write(//") for t in allowed)
     spec["allow_write"] = "yes"
     world.case.write_text(json.dumps(spec))
     assert run(world).returncode == 2 and len(calls(world)) == 4
+
+
+# --------------------------------------------------------------------------- task 1, fix round 1
+
+def test_allow_write_is_scoped_to_the_copy_and_denied_everywhere_else(world):
+    spec = json.loads(world.case.read_text())
+    spec["allow_write"] = True
+    world.case.write_text(json.dumps(spec))
+    assert run(world, env={"HOME": str(world.root / "realhome")}).returncode == 0
+    call = calls(world)[0]
+    settings, helper = json.loads(call["settings"]), call["helper"]
+    deny = settings["permissions"]["deny"]
+    copy = os.path.realpath(call["cwd"])
+    for tool in ("Edit", "Write"):
+        for folder in (str(REPO), os.path.realpath(str(world.root / "realhome")), helper["dir"]):
+            assert "%s(//%s/**)" % (tool, folder.lstrip("/")) in deny, (tool, folder)
+        assert "%s(**/benchmark/**)" % tool in deny
+        allowed = _allowed(world, 0)
+        assert "%s(//%s/**)" % (tool, copy.lstrip("/")) in allowed and tool not in allowed
+    assert not helper["dir"].startswith(copy + os.sep) and not copy.startswith(helper["dir"] + os.sep)     # the allow cannot reach the helper
+    run(world, config="baseline")
+    assert "Edit(//%s/**)" % os.path.realpath(calls(world)[1]["cwd"]).lstrip("/") in _allowed(world, 1)
+
+
+def test_without_allow_write_no_write_rules_are_added(world):
+    run(world)
+    settings = json.loads(calls(world)[0]["settings"])
+    assert not [d for d in settings["permissions"]["deny"] if d.startswith(("Edit(", "Write("))]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="child subreaper is Linux only")
+def test_an_orphan_that_escapes_within_one_poll_is_swept_on_linux(world):
+    import time
+    pidfile = world.root / "orphan.pid"
+    pid = None
+    try:
+        r = run(world, mode="orphan", env={"FAKE_PIDFILE": str(pidfile)})
+        assert r.returncode == 0, r.stdout + r.stderr
+        pid = int(pidfile.read_text())
+        for _ in range(40):
+            if not _alive(pid):
+                break
+            time.sleep(0.1)
+        assert not _alive(pid)
+    finally:
+        if pid and _alive(pid):
+            os.kill(pid, 9)
+
+
+def test_a_blind_sweeper_is_recorded_and_warned_about(world):
+    r = run(world, env={"QA_TEST_BLIND": "1"})
+    assert r.returncode == 0 and records(world)[0]["sweeper_blind"] is True and "sweeper" in r.stderr.lower()
+    r = run(world)
+    assert records(world)[1]["sweeper_blind"] is False and "sweeper" not in r.stderr.lower()
+
+
+def test_process_table_falls_back_to_proc_when_ps_cannot_run(monkeypatch):
+    harness = _harness_module()
+    def broken(*_a, **_k):
+        raise FileNotFoundError("ps")
+    monkeypatch.setattr(harness.subprocess, "run", broken)
+    table = harness.process_table()
+    if os.path.isdir("/proc/self"):
+        assert os.getpid() in table and isinstance(table[os.getpid()][1], str)
+    else:
+        assert table == {}
+
+
+def test_sigterm_right_after_the_helper_is_written_still_deletes_it(world):
+    r = run(world, env={"QA_TEST_SIGTERM_AFTER_HELPER": "1"}, keep=False)
+    assert r.returncode != 0 and calls(world) == []
+    assert _left_in_tmp(world) == []                       # neither the helper directory nor the copy is left
+
+
+def test_cli_help_and_plugin_probe_get_no_key(world):
+    assert run(world).returncode == 0
+    seen = [json.loads(line) for line in (world.root / "help.log").read_text().splitlines()]
+    assert {tuple(x["argv"][:1]) for x in seen} == {("--help",), ("plugin",)}
+    for item in seen:
+        assert "ANTHROPIC_API_KEY" not in item["env"] and SECRET not in json.dumps(item["env"])
+
+
+def test_the_helper_script_names_cat_by_absolute_path_and_refuses_without_one(tmp_path, monkeypatch):
+    harness = _harness_module()
+    harness.write_key_helper(SECRET, tmp_path / "a")
+    line = (tmp_path / "a" / "helper.sh").read_text().splitlines()[1].split()
+    assert line[0] == "exec" and os.path.isabs(line[1]) and os.access(line[1], os.X_OK)
+    monkeypatch.setattr(harness.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(harness.os.path, "isfile", lambda _p: False)
+    with pytest.raises(harness.Refused):
+        harness.write_key_helper(SECRET, tmp_path / "b")
