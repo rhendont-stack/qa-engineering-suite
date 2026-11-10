@@ -392,23 +392,30 @@ def scan(ws: Workspace, actor: ledger.Actor, root: Path) -> dict:
 # --------------------------------------------------------------------------- matrix
 
 def resolve_target(ws: Workspace, st: dict, target: Optional[str]) -> str:
-    """The full commit the matrix is about. An abbreviation (7 or more hex digits) is resolved once against the commits the
+    """The full commit the matrix is about (see ``target_facts``)."""
+    return target_facts(ws, st, target)["commit"]
+
+
+def target_facts(ws: Workspace, st: dict, target: Optional[str]) -> dict:
+    """``{commit, source, dirty}``: ``source`` is ``given`` or ``head``; ``dirty`` (the working tree now) only for ``head``.
+
+    An abbreviation (7 or more hex digits) is resolved once against the commits the
     state records: exactly one must match. No target means the workspace's current HEAD; commits are never combined."""
     if target is None:
         facts, limitation = gitinfo.git_info(ws.root)
         commit = facts.get("commit") if facts else None
         if not isinstance(commit, str) or not _FULL_COMMIT.match(commit):
             raise QaError("target_unavailable", "the current commit cannot be read; name one with --target", reason=limitation)
-        return commit
+        return {"commit": commit, "source": "head", "dirty": bool(facts.get("dirty"))}
     target = target.strip().lower()
     if _FULL_COMMIT.match(target):
-        return target
+        return {"commit": target, "source": "given", "dirty": None}
     if not re.match(r"^[0-9a-f]{7,63}$", target):
         raise QaError("target_invalid", "the target is a full commit id, or an abbreviation of at least 7 hex digits", target=target)
     recorded = sorted({(e.get("git") or {}).get("commit") for e in st["executions"].values()} - {None})
     found = [c for c in recorded if _FULL_COMMIT.match(c) and c.startswith(target)]
     if len(found) == 1:
-        return found[0]
+        return {"commit": found[0], "source": "given", "dirty": None}
     raise QaError("target_unknown" if not found else "target_ambiguous",
                   "the abbreviation names no recorded commit" if not found else "the abbreviation names several recorded commits",
                   target=target, candidates=found)
@@ -447,7 +454,7 @@ def _by_source(st: dict, relation: str) -> Dict[str, List[str]]:
     return out
 
 
-def matrix(st: dict, target_commit: str) -> dict:
+def matrix(st: dict, target_commit: str, *, target_source: Optional[str] = None, tree_dirty: Optional[bool] = None) -> dict:
     """The traceability matrix over ``st`` for one full commit: no clock, no file, no write; the same state gives the same matrix."""
     if not isinstance(target_commit, str) or not _FULL_COMMIT.match(target_commit):
         raise QaError("target_required", "the matrix is about one full commit id; resolve_target gives it", target=target_commit)
@@ -470,9 +477,13 @@ def matrix(st: dict, target_commit: str) -> dict:
         for test_id in sorted(set(automated.get(tc, []))):
             found = _latest(st, test_id, target_commit)
             entry = found[0] if found else None
+            git = (st["executions"].get(entry["execution"], {}).get("git") or {}) if entry else {}
             tests.append({"test_id": test_id, "commit": target_commit if entry else None,
+                          "dirty": bool(git.get("dirty")) if entry else None,
                           "status": entry["status"] if entry else None, "flaky": bool(entry and entry["flaky"]),
                           "result": entry["result"] if entry else None, "execution": entry["execution"] if entry else None})
+            if tests[-1]["dirty"]:
+                tests[-1]["diff_hash"] = git.get("diff_hash")
         cases[tc] = {"id": tc, "oracle": tcs[tc]["oracle"], "status": _test_case_status(tests),
                      "red_check": bool(red.get(tc)), "tests": tests}
         if not tests:
@@ -521,12 +532,18 @@ def matrix(st: dict, target_commit: str) -> dict:
     counts = {kind: sum(1 for g in gaps if g["kind"] == kind) for kind in GAP_KINDS}
     for row in rows:
         row["gaps"].sort(key=lambda g: (order[g["kind"]], _order(g["id"])))
-    return {"target": target_commit, "requirements": rows, "testcases": [cases[t] for t in cases], "gaps": gaps, "counts": counts}
+    out = {"target": target_commit, "requirements": rows, "testcases": [cases[t] for t in cases], "gaps": gaps, "counts": counts}
+    if target_source is not None:  # head: the working tree's state when the matrix was made is part of what it says
+        out["target_source"] = target_source
+        if target_source == "head":
+            out["tree_dirty"] = bool(tree_dirty)
+    return out
 
 
-def write_matrix(ws: Workspace, st: dict, target_commit: str) -> Tuple[dict, Path]:
+def write_matrix(ws: Workspace, st: dict, target_commit: str, *, target_source: Optional[str] = None,
+                 tree_dirty: Optional[bool] = None) -> Tuple[dict, Path]:
     """Compute the matrix, check it against its schema, and write ``.qa/trace/matrix.json`` (the same state, the same bytes)."""
-    result = matrix(st, target_commit)
+    result = matrix(st, target_commit, target_source=target_source, tree_dirty=tree_dirty)
     problems = schema.errors(result, schema.load_schema("trace-matrix.schema.json"), base="trace-matrix.schema.json")
     if problems:
         raise QaError("matrix_invalid", "the matrix does not fit its schema", errors=problems)

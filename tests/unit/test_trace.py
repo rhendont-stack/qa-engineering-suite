@@ -479,6 +479,37 @@ def test_no_target_means_the_current_commit_and_refuses_when_it_is_unknown(ws, a
     refused("target_unavailable", trace.resolve_target, ws, st, None)
 
 
+def test_a_dirty_tree_run_shows_dirty_on_its_row(ws, actor):
+    chain(ws, actor)
+    data = test_compare._execution(exe_id("A"))
+    data["started_at"] = data["ended_at"] = "2026-11-10T10:01:00.000Z"
+    data["git"] = {"commit": COMMIT_A, "branch": None, "dirty": True, "diff_hash": "sha256:" + "1" * 64}
+    ledger.append(ws, actor, "execution.recorded", data)
+    ledger.append(ws, actor, "result.recorded", test_compare._result(1, exe_id("A"), TEST_ID, "passed"))
+    row = trace.matrix(state.load(ws), COMMIT_A)["testcases"][0]["tests"][0]
+    assert (row["dirty"], row["diff_hash"]) == (True, "sha256:" + "1" * 64) and row["status"] == "passed"
+    record_run(ws, actor, "B", COMMIT_B, [(TEST_ID, "passed", {})], 2)
+    clean = trace.matrix(state.load(ws), COMMIT_B)["testcases"][0]["tests"][0]
+    assert clean["dirty"] is False and "diff_hash" not in clean
+    assert trace.matrix(state.load(ws), "c" * 40)["testcases"][0]["tests"][0]["dirty"] is None
+
+
+@pytest.mark.parametrize("dirty", [True, False])
+def test_the_head_default_reports_whether_the_tree_is_dirty(ws, actor, monkeypatch, dirty):
+    chain(ws, actor)
+    monkeypatch.setattr(trace.gitinfo, "git_info", lambda root: ({"commit": COMMIT_A, "dirty": dirty}, None))
+    st = state.load(ws)
+    facts = trace.target_facts(ws, st, None)
+    assert facts == {"commit": COMMIT_A, "source": "head", "dirty": dirty}
+    result, path = trace.write_matrix(ws, st, facts["commit"], target_source="head", tree_dirty=dirty)
+    assert (result["target_source"], result["tree_dirty"]) == ("head", dirty)
+    assert schema.errors(json.loads(path.read_text()), schema.load_schema("trace-matrix.schema.json"), base="trace-matrix.schema.json") == []
+    given = trace.target_facts(ws, st, COMMIT_A)
+    assert given == {"commit": COMMIT_A, "source": "given", "dirty": None}
+    assert "tree_dirty" not in trace.matrix(st, COMMIT_A, target_source="given", tree_dirty=None)
+    assert "target_source" not in trace.matrix(st, COMMIT_A)
+
+
 def test_matrix_does_not_change_the_state_it_reads(ws, actor):
     chain(ws, actor)
     record_run(ws, actor, "A", COMMIT_A, [(TEST_ID, "passed", {})], 1)
@@ -533,6 +564,7 @@ def test_the_commands_link_scan_and_write_the_matrix(ws, actor, qa_cli, tmp_path
     assert (code, out["error"]["code"]) == (2, "invalid_link")
     code, out = qa_cli("trace", "matrix", "--target", COMMIT_A)
     assert code == 0 and out["path"] == ".qa/trace/matrix.json" and out["counts"]["tc_never_executed"] == 1
+    assert (out["target_source"], "tree_dirty" in out) == ("given", False)
     assert out["target"] == COMMIT_A and set(out["counts"]) == set(trace.GAP_KINDS)
     first = (ws.root / out["path"]).read_bytes()
     assert qa_cli("trace", "matrix", "--target", COMMIT_A)[0] == 0 and (ws.root / out["path"]).read_bytes() == first

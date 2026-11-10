@@ -556,8 +556,10 @@ def cmd_trace_scan(args: argparse.Namespace, ctx: Context) -> int:
 
 def cmd_trace_matrix(args: argparse.Namespace, ctx: Context) -> int:
     st = state.load(ctx.ws)
-    result, path = trace.write_matrix(ctx.ws, st, trace.resolve_target(ctx.ws, st, args.target))
-    ctx.reply(path=path.relative_to(ctx.ws.root).as_posix(), target=result["target"], counts=result["counts"],
+    facts = trace.target_facts(ctx.ws, st, args.target)
+    result, path = trace.write_matrix(ctx.ws, st, facts["commit"], target_source=facts["source"], tree_dirty=facts["dirty"])
+    ctx.reply(path=path.relative_to(ctx.ws.root).as_posix(), target=result["target"], target_source=facts["source"],
+              **({"tree_dirty": facts["dirty"]} if facts["source"] == "head" else {}), counts=result["counts"],
               requirements=len(result["requirements"]), testcases=len(result["testcases"]))
     return 0
 

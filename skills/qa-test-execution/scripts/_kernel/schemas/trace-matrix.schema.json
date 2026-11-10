@@ -5,6 +5,8 @@
   "type": "object",
   "properties": {
     "target": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$", "description": "the full commit every result row was chosen for; results of other commits are never used"},
+    "target_source": {"enum": ["given", "head"], "description": "present when the command chose the target: given with --target, or head, the working tree's commit"},
+    "tree_dirty": {"type": "boolean", "description": "present with target_source head: whether the working tree differed from that commit when the matrix was made. Results are judged by the executions' own dirty flags, shown on each test row"},
     "requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
     "testcases": {"type": "array", "items": {"$ref": "#/$defs/testcase"}},
     "gaps": {"type": "array", "items": {"$ref": "#/$defs/gap"}},
@@ -62,12 +64,14 @@
             "properties": {
               "test_id": {"type": "string", "minLength": 1},
               "commit": {"type": ["string", "null"], "description": "the commit of the result row (the target), null when the test has no result on it"},
+              "dirty": {"type": ["boolean", "null"], "description": "the execution's own git fact: it ran on a tree that differed from the commit; null when the test has no result on the target"},
+              "diff_hash": {"type": "string", "description": "present only when dirty: the execution's diff hash"},
               "status": {"type": ["string", "null"]},
               "flaky": {"type": "boolean"},
               "result": {"type": ["string", "null"]},
               "execution": {"type": ["string", "null"]}
             },
-            "required": ["test_id", "commit", "status", "flaky", "result", "execution"],
+            "required": ["test_id", "commit", "dirty", "status", "flaky", "result", "execution"],
             "additionalProperties": false
           }
         }
