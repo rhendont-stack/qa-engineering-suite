@@ -7,8 +7,12 @@ import stat
 
 import pytest
 
+import test_compare
+import test_records
+import test_trace
+
 from helpers import REPO, WRITE_JUNIT, base, req
-from qa import execution, findings, gate, ledger, report, schema, state
+from qa import execution, findings, gate, ledger, records, report, schema, state, trace
 from qa.canonical import dumps, loads, sha256_bytes
 from qa.errors import QaError
 from qa.report import check_markdown, md_cell, render, render_json, render_markdown
@@ -177,7 +181,7 @@ def test_the_headline_stands_without_a_gate(ws):
 def test_sections_come_in_order(ws):
     md = render_markdown(state.load(ws))
     heads = [l for l in md.splitlines() if l.startswith("#")]
-    assert heads == ["# QA report: unnamed project", "## Gate", "## Executions", "## Findings", "## Integrity", "## Limitations"]
+    assert heads == ["# QA report: unnamed project", "## Gate", "## Executions", "## Findings", "## Traceability", "## Integrity", "## Limitations"]
 
 
 def test_gate_rows_keep_policy_order_and_conditions_follow(trusted, actor):
@@ -828,3 +832,51 @@ def test_a_plain_verdict_line_is_refused_while_the_gate_did_not_see_the_problem(
     assert "**Verdict:**" in forged and [p.kind for p in report.check(trusted, forged)] == ["ledger_integrity"]
     both = honest + "\n" + "\n".join(l for l in lines if l.startswith("**Verdict:**")) + "\n"
     assert [p.kind for p in report.check(trusted, both)] == ["ledger_integrity"]
+
+
+# --------------------------------------------------------------------------- the traceability section
+
+COMMIT = "a" * 40
+
+
+def _traced_state(ws, actor):
+    """REQ-001, AC-001.1, TC-001 automated and run on COMMIT without a red check, REQ-002 with no AC."""
+    test_trace.chain(ws, actor)
+    test_trace.record_run(ws, actor, "A", COMMIT, [(test_trace.TEST_ID, "passed", {})], 1)
+    records.add(ws, actor, "requirement", test_records.req(statement="A second rule."))
+    return state.load(ws)
+
+
+def test_the_report_has_a_traceability_section_with_counts_and_one_row_per_gap(ws, actor):
+    st = _traced_state(ws, actor)
+    lines = section(render_markdown(st), "Traceability")
+    matrix = trace.matrix(st, COMMIT)
+    assert "Target commit: %s" % COMMIT[:12] in "\n".join(lines)
+    for kind in trace.GAP_KINDS:
+        assert "| %s | %d |" % (md_cell(kind), matrix["counts"][kind]) in lines
+    rows = [l for l in lines if l.startswith("| ") and any(l.startswith("| %s | %s |" % (g["id"], md_cell(g["kind"]))) for g in matrix["gaps"])]
+    assert len(rows) == len(matrix["gaps"]) and len(matrix["gaps"]) >= 2
+    assert "| REQ-002 | %s |" % md_cell("req_without_ac") in lines and "| TC-001 | %s |" % md_cell("tc_unproven") in lines
+
+
+def test_the_traceability_section_is_byte_stable(ws, actor):
+    st = _traced_state(ws, actor)
+    assert render_markdown(st) == render_markdown(state.load(ws)) == render_markdown(st)
+    assert section(render_markdown(st), "Traceability") == section(render_markdown(state.load(ws)), "Traceability")
+
+
+def test_the_traceability_target_is_the_gates_when_there_is_one(ws, actor):
+    st = _traced_state(ws, actor)
+    st["gates"] = {"GATE-001": {"id": "GATE-001", "target": {"commit": "b" * 40}, "criteria": [], "conditions": [],
+                                  "verdict": "INSUFFICIENT_EVIDENCE", "profile": "change", "independence": "I1", "state_hash": SHA}}
+    assert "Target commit: %s" % ("b" * 12) in "\n".join(section(render_markdown(st), "Traceability"))
+
+
+def test_the_traceability_section_without_records_says_so(ws):
+    assert [l for l in section(render_markdown(state.load(ws)), "Traceability") if l] == ["No requirements or test cases recorded."]
+
+
+def test_the_traceability_section_without_a_commit_says_so(ws, actor):
+    test_trace.chain(ws, actor)
+    lines = [l for l in section(render_markdown(state.load(ws)), "Traceability") if l]
+    assert lines == ["No execution on a recorded commit; the matrix needs one."]

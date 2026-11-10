@@ -41,7 +41,8 @@
         "require_passed": {"type": "boolean"},
         "max_ratio": {"type": "number", "minimum": 0, "maximum": 1},
         "min": {"$ref": "defs.schema.json#/$defs/independence"},
-        "min_score": {"type": "number", "minimum": 0, "maximum": 100}
+        "min_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "min_priority": {"enum": ["must", "should", "could", "wont"]}
       },
       "additionalProperties": false
     }

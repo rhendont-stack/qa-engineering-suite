@@ -9,8 +9,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import test_compare
+import test_records
+import test_trace
 from helpers import WRITE_JUNIT, WRITE_SARIF, base, req, without_mac, write_event_at
-from qa import KERNEL_VERSION, config, execution, findings, gate, gitinfo, ids, integrity, ledger, resource_dir, schema, state, vocab
+from qa import KERNEL_VERSION, config, execution, findings, gate, gitinfo, ids, integrity, ledger, records, resource_dir, schema, state, trace, vocab
 from qa.errors import QaError
 from qa.ledger import Problem
 from qa.workspace import Workspace
@@ -74,8 +77,8 @@ def test_accepted_risk_conditions_then_expiry(repo_ws, actor, py, frozen_now):
     assert gate.evaluate(repo_ws, actor, profile="change")["data"]["verdict"] == "NOT_READY"
 def test_unevaluable_criteria_say_why(repo_ws, actor):
     g = gate.evaluate(repo_ws, actor, profile="release")["data"]
-    rv = next(x for x in g["criteria"] if x["type"] == "requirements_verified")
-    assert rv["outcome"] == "NO_EVIDENCE" and "milestone 3" in rv["detail"]
+    sc = next(x for x in g["criteria"] if x["type"] == "security_scans_executed")
+    assert sc["outcome"] == "NO_EVIDENCE" and "milestone 4" in sc["detail"]
 def test_opt_in_criterion_off_is_not_applicable(trusted, actor):
     g = gate.evaluate(trusted, actor, profile="release")["data"]
     m = next(x for x in g["criteria"] if x["type"] == "mutation_score_min")
@@ -371,8 +374,6 @@ def test_every_detail_is_a_string_and_only_not_applicable_is_justified(trusted, 
 
 
 @pytest.mark.parametrize("ctype,capability,milestone", [
-    ("requirements_verified", "traceability", 3),
-    ("no_blocked_critical", "traceability", 3),
     ("mutation_score_min", "mutation ingestion", 3),
     ("security_scans_executed", "scan and performance skills", 4),
     ("performance_objectives_met", "scan and performance skills", 4),
@@ -1283,3 +1284,209 @@ def test_the_gate_events_replay_to_the_same_state(trusted, actor):
     gate.evaluate(trusted, actor, profile="change")
     assert state.fold(ledger.iter_all_events(trusted))["config"] == state.load(trusted)["config"]
     assert integrity.problems(trusted, state.load(trusted)) == []
+
+
+# --------------------------------------------------------------------------- requirements_verified and no_blocked_critical (milestone 3)
+
+TEST_ID = test_trace.TEST_ID
+
+
+def _trace_run(ws, actor, letter, status, *, strength="structured", commit=COMMIT, minute=1, test_id=TEST_ID, execution_status="passed", **changes):
+    """An execution on ``commit`` of ``strength`` holding one result of ``test_id``."""
+    exe = test_trace.exe_id(letter)
+    data = dict(test_compare._execution(exe), strength=strength, status=execution_status, **changes)
+    data["started_at"] = data["ended_at"] = "2026-11-10T10:%02d:00.000Z" % minute
+    data["git"] = {"commit": commit, "branch": None, "dirty": False, "diff_hash": TREE}
+    ledger.append(ws, actor, "execution.recorded", data)
+    ledger.append(ws, actor, "result.recorded", test_compare._result(minute * 100, exe, test_id, status))
+    return exe
+
+
+@pytest.fixture
+def traced(trusted, actor):
+    """REQ-001 (must, documented), AC-001.1, TC-001 verifying it and automated_by TEST_ID; no execution yet."""
+    test_trace.chain(trusted, actor)
+    return trusted
+
+
+def _rv(ws, **overrides):
+    return gate.evaluate_criterion(_crit("release", "requirements_verified", **overrides), state.load(ws), _context())
+
+
+def _critical(ws, **overrides):
+    return gate.evaluate_criterion(_crit("release", "no_blocked_critical", **overrides), state.load(ws), _context())
+
+
+def _add_requirement(ws, actor, number, **changes):
+    """REQ-<number> with its AC and a TC automated_by its own test."""
+    records.add(ws, actor, "requirement", test_records.req(statement="Requirement %d holds." % number, **changes))
+    records.add(ws, actor, "criterion", test_records.ac("REQ-%03d" % number))
+    records.add(ws, actor, "testcase", test_records.tc(links=("AC-%03d.1" % number,)))
+    test_id = "tests.test_other::test_%d" % number
+    trace.link(ws, actor, "TC-%03d" % number, "automated_by", test_id)
+    return test_id
+
+
+def test_no_requirements_is_no_evidence(trusted):
+    r = _rv(trusted)
+    assert (r["outcome"], r["detail"], r["evidence"]) == ("NO_EVIDENCE", "no documented requirements", [])
+
+
+def test_every_must_ac_passed_structured_is_met(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    r = _rv(traced)
+    assert r["outcome"] == "MET" and "REQ-001" in r["detail"]
+
+
+def test_a_should_requirement_is_out_of_scope_by_default(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    _add_requirement(traced, actor, 2, priority="should")   # no result for it: outside min_priority
+    assert _rv(traced)["outcome"] == "MET"
+
+
+def test_characterization_oracle_never_verifies(trusted, actor):
+    test_trace.chain(trusted, actor, oracle="characterization")
+    _trace_run(trusted, actor, "A", "passed")
+    r = _rv(trusted)
+    assert r["outcome"] == "NO_EVIDENCE" and "AC-001.1" in r["detail"]
+
+
+def test_exit_code_strength_does_not_verify(traced, actor):
+    _trace_run(traced, actor, "A", "passed", strength="exit_code")
+    r = _rv(traced)
+    assert r["outcome"] == "NO_EVIDENCE" and "AC-001.1" in r["detail"]
+
+
+def test_a_result_on_another_commit_does_not_verify(traced, actor):
+    _trace_run(traced, actor, "A", "passed", commit=OTHER_COMMIT)
+    assert _rv(traced)["outcome"] == "NO_EVIDENCE"
+
+
+def test_failed_latest_result_is_not_met(traced, actor):
+    _trace_run(traced, actor, "A", "passed", minute=1)
+    _trace_run(traced, actor, "B", "failed", minute=2)
+    r = _rv(traced)
+    assert r["outcome"] == "NOT_MET" and "AC-001.1" in r["detail"]
+
+
+def test_the_latest_result_decides_not_the_first(traced, actor):
+    _trace_run(traced, actor, "A", "failed", minute=1)
+    _trace_run(traced, actor, "B", "passed", minute=2)
+    assert _rv(traced)["outcome"] == "MET"
+
+
+def test_unconfirmed_inferred_requirement_is_no_evidence(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    other = _add_requirement(traced, actor, 2, provenance="inferred")
+    _trace_run(traced, actor, "B", "passed", minute=2, test_id=other)
+    r = _rv(traced)
+    assert r["outcome"] == "NO_EVIDENCE" and "REQ-002" in r["detail"] and "unconfirmed" in r["detail"]
+    records.confirm_requirement(traced, actor, "REQ-002", "yes, that is the rule")
+    assert _rv(traced)["outcome"] == "MET"
+
+
+def test_an_unconfirmed_requirement_never_makes_the_criterion_not_met_alone(trusted, actor):
+    other = _add_requirement(trusted, actor, 1, provenance="assumed")
+    _trace_run(trusted, actor, "A", "failed", test_id=other)   # its own test fails, but nobody confirmed the requirement
+    assert _rv(trusted)["outcome"] == "NO_EVIDENCE"
+
+
+def test_an_unconfirmed_requirement_does_not_hide_a_documented_failure(traced, actor):
+    _trace_run(traced, actor, "A", "failed")
+    _add_requirement(traced, actor, 2, provenance="inferred")
+    assert _rv(traced)["outcome"] == "NOT_MET"
+
+
+def test_a_stale_confirmation_replayed_after_an_edit_leaves_the_requirement_unconfirmed(trusted, actor):
+    records.add(trusted, actor, "requirement", test_records.req(provenance="inferred"))
+    records.confirm_requirement(trusted, actor, "REQ-001", "yes")
+    old = next(e for e in ledger.iter_all_events(trusted) if e["type"] == "requirement.confirmed")["data"]
+    records.add(trusted, actor, "requirement", {"id": "REQ-001", "statement": "Changed: a discount may reach 90 percent."})
+    write_event_at(trusted, actor, T0, "requirement.confirmed", old, signed=False)   # the old signed line, verbatim
+    folded = state.load(trusted)
+    assert "confirmed" not in folded["requirements"]["REQ-001"]
+    assert {"event": folded["violations"][-1]["event"], "kind": "stale_confirmation"} in folded["violations"]
+    records.add(trusted, actor, "criterion", test_records.ac())
+    records.add(trusted, actor, "testcase", test_records.tc())
+    trace.link(trusted, actor, "TC-001", "automated_by", TEST_ID)
+    _trace_run(trusted, actor, "A", "passed")
+    assert _rv(trusted)["outcome"] == "NO_EVIDENCE"   # the changed statement is unconfirmed, whatever the tests say
+
+
+def test_a_stale_assumption_decision_replayed_after_an_edit_does_not_decide(trusted, actor):
+    records.add(trusted, actor, "assumption", {"statement": "Prices are in euros.", "impact": "totals"})
+    records.decide_assumption(trusted, actor, "ASM-001", "confirmed", "yes")
+    old = next(e for e in ledger.iter_all_events(trusted) if e["type"] == "assumption.decided")["data"]
+    records.add(trusted, actor, "assumption", {"id": "ASM-001", "statement": "Prices are in dollars."})
+    assert state.load(trusted)["assumptions"]["ASM-001"]["status"] == "open"
+    write_event_at(trusted, actor, T0, "assumption.decided", old, signed=False)
+    assert state.load(trusted)["assumptions"]["ASM-001"]["status"] == "open"
+
+
+def test_a_confirmation_of_the_current_statement_still_counts(trusted, actor):
+    records.add(trusted, actor, "requirement", test_records.req(provenance="inferred"))
+    records.add(trusted, actor, "requirement", {"id": "REQ-001", "statement": "Edited first."})
+    records.confirm_requirement(trusted, actor, "REQ-001", "yes")
+    assert state.load(trusted)["requirements"]["REQ-001"]["confirmed"]["approval"] == "yes"
+
+
+def test_a_legacy_confirmation_without_a_statement_hash_still_folds(trusted, actor):
+    records.add(trusted, actor, "requirement", test_records.req(provenance="inferred"))
+    write_event_at(trusted, actor, T0, "requirement.confirmed", {"id": "REQ-001", "approval": "yes"})
+    assert state.load(trusted)["requirements"]["REQ-001"]["confirmed"]["approval"] == "yes"
+
+
+def _critical_chain(ws, actor, **tc_changes):
+    test_trace.chain(ws, actor, criticality="critical", **tc_changes)
+
+
+@pytest.mark.parametrize("status,outcome", [("passed", "MET"), ("blocked", "NOT_MET"), ("inconclusive", "NOT_MET"),
+                                            ("failed", "NOT_MET"), ("not_run", "NO_EVIDENCE"), (None, "NO_EVIDENCE")])
+def test_no_blocked_critical_truth_table(trusted, actor, status, outcome):
+    _critical_chain(trusted, actor)
+    if status is not None:
+        _trace_run(trusted, actor, "A", status)
+    r = _critical(trusted)
+    assert r["outcome"] == outcome and (outcome == "MET" or "TC-001" in r["detail"])
+
+
+def test_no_critical_test_case_is_no_evidence(traced, actor):   # TC-001 here is criticality high
+    r = _critical(traced)
+    assert (r["outcome"], r["detail"]) == ("NO_EVIDENCE", "no test case is linked to a critical component")
+
+
+def test_a_critical_test_case_without_an_automated_test_is_no_evidence(trusted, actor):
+    _critical_chain(trusted, actor, automated=False)
+    r = _critical(trusted)
+    assert r["outcome"] == "NO_EVIDENCE" and "TC-001" in r["detail"]
+
+
+def test_a_critical_result_on_another_commit_is_no_evidence(trusted, actor):
+    _critical_chain(trusted, actor)
+    _trace_run(trusted, actor, "A", "passed", commit=OTHER_COMMIT)
+    assert _critical(trusted)["outcome"] == "NO_EVIDENCE"
+
+
+def test_a_blocked_critical_outranks_a_missing_one(trusted, actor):
+    _critical_chain(trusted, actor)
+    records.add(trusted, actor, "testcase", test_records.tc(criticality="critical"))   # TC-002, never executed
+    trace.link(trusted, actor, "TC-002", "automated_by", "tests.test_other::test_two")
+    _trace_run(trusted, actor, "A", "blocked")
+    r = _critical(trusted)
+    assert r["outcome"] == "NOT_MET" and "TC-001" in r["detail"]
+
+
+def test_require_passed_still_holds_with_requirements_met(traced, actor):
+    """A failed suite is NOT_READY even when every acceptance criterion is verified."""
+    suite = _trace_run(traced, actor, "A", "passed", execution_status="failed", scope="full")   # the execution failed; its one test passed
+    evaluator = dataclasses.replace(actor, role="evaluator", independence="I2")
+    g = gate.evaluate(traced, evaluator, profile="release", target_commit=COMMIT)["data"]
+    assert _criterion({"data": g}, "requirements_verified")["outcome"] == "MET"
+    assert _criterion({"data": g}, "suite_executed")["outcome"] == "NOT_MET" and suite in _criterion({"data": g}, "suite_executed")["detail"]
+    assert g["verdict"] == "NOT_READY"
+
+
+def test_the_gate_reads_the_target_commit_from_its_context(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    r = gate.evaluate_criterion(_crit("release", "requirements_verified"), state.load(traced), _context(target_commit=None, git_limitation="no git"))
+    assert r["outcome"] == "NO_EVIDENCE" and "no target commit" in r["detail"]

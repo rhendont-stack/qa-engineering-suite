@@ -210,9 +210,11 @@ def confirm_requirement(ws: Workspace, actor: ledger.Actor, req_id: str, approva
     """Record the user's confirmation of a requirement (a signed event). Returns ``{id, event}``."""
     _decision_approval(approval)
     with ws.lock():
-        if req_id not in state.load(ws)["requirements"]:
+        known = state.load(ws)["requirements"].get(req_id)
+        if known is None:
             raise QaError("unknown_record", "no such requirement", id=req_id)
-        event = ledger.append(ws, actor, "requirement.confirmed", {"id": req_id, "approval": approval})
+        event = ledger.append(ws, actor, "requirement.confirmed", {
+            "id": req_id, "approval": approval, "statement_hash": state.statement_hash(known["statement"])})
     return {"id": req_id, "event": event["id"]}
 
 
@@ -222,8 +224,10 @@ def decide_assumption(ws: Workspace, actor: ledger.Actor, asm_id: str, status: s
         raise _invalid("an assumption is decided as confirmed or rejected", status=status)
     _decision_approval(approval)
     with ws.lock():
-        if asm_id not in state.load(ws)["assumptions"]:
+        known = state.load(ws)["assumptions"].get(asm_id)
+        if known is None:
             raise QaError("unknown_record", "no such assumption", id=asm_id)
-        event = ledger.append(ws, actor, "assumption.decided",
-                              {"id": asm_id, "status": status, "confirmed_by": "user", "approval": approval})
+        event = ledger.append(ws, actor, "assumption.decided", {
+            "id": asm_id, "status": status, "confirmed_by": "user", "approval": approval,
+            "statement_hash": state.statement_hash(known["statement"])})
     return {"id": asm_id, "event": event["id"], "status": status}

@@ -13,7 +13,7 @@ from pathlib import Path
 from string import Template
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-from .. import config, doctor, ledger, resource_dir, state
+from .. import config, doctor, ledger, resource_dir, state, trace
 from ..canonical import dumps, sha256_bytes
 from ..errors import QaError
 from ..workspace import Workspace, _not_redirected, write_atomic
@@ -130,6 +130,30 @@ def _finding_section(st: dict) -> List[str]:
     return _table(("ID", "Title", "Severity", "Priority", "State", "Verification"), rows)
 
 
+def _traceability_target(st: dict, gate: Optional[dict]) -> Optional[str]:
+    """The commit the matrix is about: the latest gate's target, else the newest recorded execution's. None when there is none."""
+    commits = []
+    if gate is not None:
+        commits.append((gate.get("target") or {}).get("commit"))
+    runs = sorted(st["executions"].values(), key=lambda e: (e["started_at"], e["id"]), reverse=True)
+    commits += [(run["git"] or {}).get("commit") for run in runs]
+    return next((c for c in commits if isinstance(c, str) and re.fullmatch(r"[0-9a-f]{40}", c)), None)
+
+
+def _traceability_section(st: dict, gate: Optional[dict]) -> List[str]:
+    if not (st["requirements"] or st["testcases"]):
+        return ["No requirements or test cases recorded."]
+    target = _traceability_target(st, gate)
+    if target is None:
+        return ["No execution on a recorded commit; the matrix needs one."]
+    matrix = trace.matrix(st, target)
+    lines = ["Target commit: %s" % target[:12], ""]
+    lines += _table(("Gap kind", "Count"), [_row(kind, matrix["counts"][kind]) for kind in trace.GAP_KINDS])
+    if matrix["gaps"]:
+        lines += [""] + _table(("Record", "Gap"), [_row(g["id"], g["kind"]) for g in matrix["gaps"]])
+    return lines
+
+
 def _problem_rows(problems: Sequence[dict]) -> List[str]:
     rows = [_row(p["kind"], p["where"], p["detail"]) for p in problems[:INTEGRITY_ROWS_SHOWN]]
     lines = ["Ledger verification found %d problem%s." % (len(problems), "" if len(problems) == 1 else "s"), ""]
@@ -190,7 +214,8 @@ def render_markdown(st: dict, *, project: Optional[str] = None, problems: Sequen
     text = template.substitute(
         project=md_cell(_UNNAMED if project is None else project), headline=_headline(st, gate, problems), verdict=_verdict_line(gate, problems),
         gate="\n".join(_gate_section(gate)), executions="\n".join(_execution_section(st)),
-        findings="\n".join(_finding_section(st)), integrity="\n".join(_integrity_section(st, gate, problems)),
+        findings="\n".join(_finding_section(st)), traceability="\n".join(_traceability_section(st, gate)),
+        integrity="\n".join(_integrity_section(st, gate, problems)),
         limitations="\n".join(_limitation_section(st)))
     return text.rstrip("\n") + "\n"
 

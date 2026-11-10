@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from . import KERNEL_VERSION, config, gitinfo, ids, integrity, ledger, resource_dir, schema, state, vocab
+from . import KERNEL_VERSION, config, gitinfo, ids, integrity, ledger, resource_dir, schema, state, trace, vocab
 from .canonical import hash_obj, loads
 from .errors import QaError
 from .findings import SEVERITIES
@@ -41,13 +41,13 @@ _INDEPENDENCE = ("I0", "I1", "I2", "I3")
 _SUITE_ACTIVITY = "test-execution-local"
 _UNRESOLVED_STATES = ("open", "reopened", "fix_submitted")
 _NEEDS = {
-    "requirements_verified": ("traceability", 3), "no_blocked_critical": ("traceability", 3),
     "mutation_score_min": ("mutation ingestion", 3),
     "security_scans_executed": ("scan and performance skills", 4),
     "performance_objectives_met": ("scan and performance skills", 4),
     "migrations_validated": ("database skills", 4), "rollback_validated": ("database skills", 4),
 }
 
+_PRIORITIES = ("must", "should", "could", "wont")  # a requirement's priority, most binding first
 _Outcome = Tuple[str, str, List[str]]  # outcome, detail, evidence
 
 
@@ -296,9 +296,100 @@ def _independence_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     return _NOT_MET, "%s < %s" % (ctx.independence, minimum), []
 
 
+def _verifying_cases(matrix: dict, links: List[str]) -> List[dict]:
+    cases = {case["id"]: case for case in matrix["testcases"]}
+    return [cases[tc] for tc in links if tc in cases]
+
+
+def _structured(st: dict, case: dict) -> bool:
+    """Every execution behind the test case's latest results is of strength ``structured``: an exit code proves no assertion."""
+    return all(st["executions"].get(test["execution"], {}).get("strength") == "structured" for test in case["tests"])
+
+
+def _ac_state(st: dict, matrix: dict, links: List[str]) -> Tuple[str, List[str]]:
+    """``failed``, ``verified`` or ``unverified`` for one acceptance criterion, and the executions its test cases rest on."""
+    cases = _verifying_cases(matrix, links)
+    executions = sorted({test["execution"] for case in cases for test in case["tests"] if test["execution"]})
+    if any(case["status"] == "failed" for case in cases):
+        return "failed", executions
+    verified = any(case["status"] == "passed" and case["oracle"] != "characterization" and _structured(st, case) for case in cases)
+    return ("verified" if verified else "unverified"), executions
+
+
+def _requirements_verified(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.1, §6.4 B: every requirement at or above ``min_priority`` is verified by its acceptance criteria on the target commit.
+
+    A documented or confirmed requirement is judged by its criteria: each needs a verifying test case whose latest result on the
+    target is a pass from a ``structured`` execution and whose oracle is not ``characterization``. An inferred or assumed one
+    nobody confirmed is listed and caps the outcome at NO_EVIDENCE, never MET and never NOT_MET on its own account.
+    """
+    if not st["requirements"]:
+        return _NO_EVIDENCE, "no documented requirements", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    minimum = c["params"].get("min_priority", "must")
+    scope = [rid for rid in sorted(st["requirements"], key=trace._order)
+             if _PRIORITIES.index(st["requirements"][rid]["priority"]) <= _PRIORITIES.index(minimum)]
+    if not scope:
+        return _NO_EVIDENCE, "no requirement at priority %s or above" % minimum, []
+    matrix = trace.matrix(st, ctx.target_commit)
+    verified_by = trace._by_source(st, "verified_by")
+    criteria_of: Dict[str, List[str]] = {}
+    for ac in sorted(st["criteria"], key=trace._order):
+        criteria_of.setdefault(st["criteria"][ac]["requirement"], []).append(ac)
+    unconfirmed: List[str] = []
+    bare: List[str] = []
+    failed: List[str] = []
+    unverified: List[str] = []
+    evidence: Set[str] = set()
+    for rid in scope:
+        record = st["requirements"][rid]
+        if record["provenance"] != "documented" and not record.get("confirmed"):
+            unconfirmed.append(rid)
+            continue
+        if not criteria_of.get(rid):
+            bare.append(rid)
+        for ac in criteria_of.get(rid, []):
+            outcome, executions = _ac_state(st, matrix, verified_by.get(ac, []))
+            evidence.update(executions)
+            if outcome != "verified":
+                (failed if outcome == "failed" else unverified).append(ac)
+    parts = []
+    if failed:
+        parts.append("failed: " + ", ".join(failed))
+    if unverified:
+        parts.append("not verified by a passing structured test on commit %s: %s" % (ctx.target_commit, ", ".join(unverified)))
+    if bare:
+        parts.append("no acceptance criterion: " + ", ".join(bare))
+    if unconfirmed:
+        parts.append("unconfirmed %s: %s" % ("requirement" if len(unconfirmed) == 1 else "requirements", ", ".join(unconfirmed)))
+    result = _NOT_MET if failed else (_NO_EVIDENCE if parts else _MET)
+    detail = "; ".join(parts) or "%d requirements verified: %s" % (len(scope), ", ".join(scope))
+    return result, detail, sorted(evidence)
+
+
+def _no_blocked_critical(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.2: no critical test case is blocked, and none is unexecuted: an untested system is not a passing system."""
+    critical = [tc for tc in sorted(st["testcases"], key=trace._order) if st["testcases"][tc]["criticality"] == "critical"]
+    if not critical:
+        return _NO_EVIDENCE, "no test case is linked to a critical component", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    cases = {case["id"]: case for case in trace.matrix(st, ctx.target_commit)["testcases"]}
+    bad = [tc for tc in critical if cases[tc]["status"] in ("blocked", "inconclusive", "failed")]
+    missing = [tc for tc in critical if cases[tc]["status"] in (None, "not_run")]
+    evidence = sorted({test["execution"] for tc in critical for test in cases[tc]["tests"] if test["execution"]})
+    if bad:
+        return _NOT_MET, "; ".join("%s %s" % (tc, cases[tc]["status"]) for tc in bad), evidence
+    if missing:
+        return _NO_EVIDENCE, "no executed result on commit %s for: %s" % (ctx.target_commit, ", ".join(missing)), evidence
+    return _MET, "%d critical test cases passed on commit %s" % (len(critical), ctx.target_commit), evidence
+
+
 _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
     "no_unresolved_findings": _no_unresolved_findings, "suite_executed": _suite_executed, "flaky_rate_max": _flaky_rate_max,
     "test_integrity": _test_integrity, "independence_min": _independence_min,
+    "requirements_verified": _requirements_verified, "no_blocked_critical": _no_blocked_critical,
 }
 
 

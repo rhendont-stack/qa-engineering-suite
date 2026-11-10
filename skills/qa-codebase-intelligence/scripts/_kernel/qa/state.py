@@ -133,6 +133,11 @@ def _worktree_removed(state: dict, event: dict) -> None:
 # ``approval``. Those come from signed events, which fold only when their MAC verifies (authority.CONFERRING), and a changed
 # statement drops them, so an approval never outlives the words it approved.
 
+def statement_hash(statement: str) -> str:
+    """What a signed decision binds: the words approved. A replayed line cannot approve different words."""
+    return hash_obj(statement)
+
+
 def _requirement_upserted(state: dict, event: dict) -> None:
     data = event["data"]
     record = copy.deepcopy(data)
@@ -147,6 +152,8 @@ def _requirement_confirmed(state: dict, event: dict) -> None:
     record = state["requirements"].get(data["id"])
     if record is None:
         _violation(state, event, "unknown_requirement")
+    elif data.get("statement_hash", statement_hash(record["statement"])) != statement_hash(record["statement"]):
+        _violation(state, event, "stale_confirmation")  # signed for words the requirement no longer has
     else:
         record["confirmed"] = {"approval": data["approval"], "event": event["id"]}
 
@@ -173,6 +180,8 @@ def _assumption_decided(state: dict, event: dict) -> None:
     record = state["assumptions"].get(data["id"])
     if record is None:
         _violation(state, event, "unknown_assumption")
+    elif data.get("statement_hash", statement_hash(record["statement"])) != statement_hash(record["statement"]):
+        _violation(state, event, "stale_decision")
     else:
         record.update(status=data["status"], confirmed_by=data["confirmed_by"], approval=data["approval"])
 
