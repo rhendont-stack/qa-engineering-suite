@@ -15,6 +15,8 @@ from helpers import REPO
 
 HARNESS = REPO / "tools" / "run_skill_eval.py"
 SECRET = "sk-test-0123456789-not-a-real-key"
+# Names the platform adds to a child's environment on its own: Python sets LC_CTYPE, macOS sets __CF_USER_TEXT_ENCODING.
+OS_ADDED = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
 
 # The fake CLI. The agent's environment is minimal on purpose, so the fake reads its behaviour (MODE, COST, HELP_OMIT, MARKER)
 # from claude.cfg beside it; LOG is a file it appends one JSON line per call to.
@@ -342,7 +344,7 @@ def test_the_child_gets_a_minimal_environment_and_no_user_config(world):
     assert r.returncode == 0, r.stderr
     call = calls(world)[0]
     assert call["has_key"] is True
-    assert sorted(set(call["env"]) - {"LC_CTYPE"}) == ["CLAUDE_CONFIG_DIR", "HOME", "PATH"]   # LC_CTYPE: set by Python itself
+    assert sorted(set(call["env"]) - OS_ADDED) == ["CLAUDE_CONFIG_DIR", "HOME", "PATH"]
     assert call["env"]["HOME"] != str(world.root / "realhome") and call["env"]["CLAUDE_CONFIG_DIR"].startswith(call["env"]["HOME"])
     assert not os.path.exists(call["env"]["HOME"])                      # the temporary home is gone afterwards
     argv = call["argv"]
@@ -599,8 +601,8 @@ def test_setup_script_environment_has_no_api_key_and_runs_isolated(world):
     assert r.returncode == 0, r.stdout + r.stderr
     saved = (world.out / "runs" / records(world)[0]["run_id"] / "setup.txt").read_text()
     assert "nokey" in saved and "KEY\n" not in saved.replace("nokey", "") and SECRET not in saved
-    names = __import__("ast").literal_eval(saved.split("\n")[3])                        # the interpreter itself may add LC_CTYPE
-    assert {"HOME", "PATH", "PYTHONDONTWRITEBYTECODE"} <= set(names) <= {"HOME", "PATH", "PYTHONDONTWRITEBYTECODE", "LC_CTYPE"}
+    names = __import__("ast").literal_eval(saved.split("\n")[3])
+    assert {"HOME", "PATH", "PYTHONDONTWRITEBYTECODE"} <= set(names) <= {"HOME", "PATH", "PYTHONDONTWRITEBYTECODE"} | OS_ADDED
     assert "\n1\n" in saved
     assert "/qa-eval-setup-" in saved                                              # a per-run home, not the user's
 
