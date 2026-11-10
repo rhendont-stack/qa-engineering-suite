@@ -144,11 +144,9 @@ def _line_problems(ledgers: Sequence[Ledger], line: str, where: str) -> List[Pro
     resolved = [c for c in cited if c.resolved]
     if (statuses or verdicts or _PERCENT.search(judged)) and not resolved:
         problems.append(Problem("uncited_claim", where, line.strip()))
-    positions = {}  # the first place each citation is written
-    for found in _ID.finditer(line):
-        positions.setdefault((found.group(1) or None, found.group(2)), found.start())
-    records = [(positions[(c.alias, c.token)], c) for c in cited if c.token.startswith(("EXE-", "RES-"))]  # unknown ones count too
-    records.sort(key=lambda pair: pair[0])
+    by_citation = {(c.alias, c.token): c for c in cited if c.token.startswith(("EXE-", "RES-"))}  # unknown ones count too
+    records = [(found.start(), by_citation[(found.group(1) or None, found.group(2))]) for found in _ID.finditer(line)
+               if (found.group(1) or None, found.group(2)) in by_citation]  # every occurrence, in line order
     wrong = set()
     for at, status in status_hits:
         if not records:

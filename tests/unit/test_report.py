@@ -444,9 +444,11 @@ def test_not_run_matches_the_not_run_status(trusted, actor, py):
     assert check_markdown("%s was not run\n" % exe, st) == [] and kinds("%s failed\n" % exe, st) == ["status_mismatch"]
 
 
-def test_two_executions_on_a_line_are_not_compared(trusted, actor, py):
+def test_a_repeated_id_is_judged_at_each_of_its_occurrences(trusted, actor, py):
     a, b = run(trusted, actor, py, "fail"), run(trusted, actor, py, "pass")
-    assert check_markdown("%s failed and %s passed, also %s passed\n" % (a, b, a), state.load(trusted)) == []
+    st = state.load(trusted)  # a failed, b passed
+    assert check_markdown("%s failed and %s passed, also %s failed\n" % (a, b, a), st) == []
+    assert kinds("%s failed and %s passed, also %s passed\n" % (a, b, a), st) == ["status_mismatch"]
 
 
 def test_a_result_is_compared_too(trusted, actor, py):
