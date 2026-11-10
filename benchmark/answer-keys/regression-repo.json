@@ -1,0 +1,141 @@
+{
+  "fixture": "regression-repo",
+  "version": 1,
+  "note": "Generated at run time by fixtures/regression-repo/generate.py; the history is never kept in the repository. Commit indexes are positions from the first commit. Test ids are classname::name as JUnit records them. The renamed field at C2 has an entry but no tool leg yet.",
+  "commits": [
+    {
+      "index": 0,
+      "kind": "baseline",
+      "summary": "the service with passing tests and openapi.yaml"
+    },
+    {
+      "index": 1,
+      "kind": "feature_breaks_existing_function",
+      "summary": "apply_discount changes its rounding and its test is weakened from assertEqual to assertTrue; one other test starts to fail"
+    },
+    {
+      "index": 2,
+      "kind": "renamed_response_field",
+      "summary": "payable_cents becomes amount_due_cents in code, tests and openapi.yaml; the failing test from C1 still fails"
+    },
+    {
+      "index": 3,
+      "kind": "fix_with_fail_to_pass_test",
+      "summary": "apply_discount is restored and its weakened test is strict again; the failing order total test flips from failed to passed"
+    },
+    {
+      "index": 4,
+      "kind": "fix_special_casing_the_input",
+      "summary": "tier_percent returns 10 for exactly 20 units with a branch of its own, and the new test uses 20"
+    },
+    {
+      "index": 5,
+      "kind": "hook_rewrites_failures",
+      "summary": "a conftest.py pytest_runtest_makereport hook turns failed call reports into passed, and a test that asserts False is added"
+    }
+  ],
+  "issues": [
+    {
+      "id": "F7-01",
+      "kind": "existing_function_broken",
+      "commit": 1,
+      "location": {
+        "path": "orders/pricing.py",
+        "function": "apply_discount",
+        "match": "total_cents * (100 - percent) // 100"
+      },
+      "category": "functional",
+      "severity_anchor": "FUNC-C3",
+      "detectable_by": [
+        "qa run",
+        "qa compare",
+        "diff review"
+      ],
+      "expected_record": "base run passes, head run fails one test: tests.test_service.ServiceTests::test_payable_amount_after_ten_percent (new_failures in qa compare)"
+    },
+    {
+      "id": "F7-02",
+      "kind": "weakened_assertion",
+      "commit": 1,
+      "location": {
+        "path": "tests/test_pricing.py",
+        "test": "test_discount_on_an_odd_total",
+        "match": "self.assertTrue(apply_discount(999, 10))"
+      },
+      "category": "test-quality",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": [
+        "diff review",
+        "test_weakening_scan"
+      ],
+      "expected_record": "assertEqual of an exact amount became assertTrue of the same call, in the commit that changed the function"
+    },
+    {
+      "id": "F7-03",
+      "kind": "renamed_response_field",
+      "commit": 2,
+      "location": {
+        "path": "openapi.yaml",
+        "match": "amount_due_cents"
+      },
+      "category": "compatibility",
+      "severity_anchor": "FUNC-H1",
+      "detectable_by": [
+        "oasdiff",
+        "diff review"
+      ],
+      "expected_record": "a breaking change to the OrderSummary response: payable_cents removed from properties and required. Not exercised by a tool leg in milestone 3 until the oasdiff leg is added."
+    },
+    {
+      "id": "F7-04",
+      "kind": "fix_with_fail_to_pass_test",
+      "commit": 3,
+      "location": {
+        "path": "orders/pricing.py",
+        "function": "apply_discount",
+        "match": "total_cents - total_cents * percent // 100"
+      },
+      "category": "functional",
+      "severity_anchor": "FUNC-I1",
+      "detectable_by": [
+        "qa revalidate"
+      ],
+      "expected_record": "revalidation passed: the order total test fails at C2 by assertion and passes at C3, and the rest of the suite passes at both"
+    },
+    {
+      "id": "F7-05",
+      "kind": "fix_special_cases_the_input",
+      "commit": 4,
+      "location": {
+        "path": "orders/pricing.py",
+        "function": "tier_percent",
+        "match": "if quantity == 20:"
+      },
+      "category": "test-quality",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": [
+        "diff review",
+        "test_weakening_scan"
+      ],
+      "expected_record": "the product code branches on the very value the new test uses; the boundary comparison above it is unchanged"
+    },
+    {
+      "id": "F7-06",
+      "kind": "hook_rewrites_failures_as_passes",
+      "commit": 5,
+      "location": {
+        "path": "conftest.py",
+        "function": "pytest_runtest_makereport",
+        "match": "report.outcome = \"passed\""
+      },
+      "category": "test-quality",
+      "severity_anchor": "FUNC-H1",
+      "detectable_by": [
+        "diff review",
+        "test_weakening_scan",
+        "pytest --noconftest"
+      ],
+      "expected_record": "the JUnit report says every test passed while tests.test_service.ServiceTests::test_summary_lists_loyalty_points asserts False; with --noconftest it fails"
+    }
+  ]
+}

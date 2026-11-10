@@ -3,7 +3,7 @@
 Usage: python -I tools/run_skill_eval.py --case PATH --config with-skill|baseline --model MODEL --budget-usd N --out DIR
        [--timeout SECONDS] [--ledger PATH] [--keep-workdir]
 
-The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?}``. ``fixture`` and ``skill`` are paths,
+The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?, "exclude"?, "keep_history"?, "checkout"?}``. ``fixture`` and ``skill`` are paths,
 relative ones resolved against the repository root. The harness copies the fixture into a fresh temporary directory
 without answer keys or any SKILL.md, gives the copy a newly generated one-commit git history, places only the skill under
 test in ``.claude/skills/`` (``with-skill`` only), runs the agent there, and appends one record per run to
@@ -26,6 +26,16 @@ nothing else in its environment (so no API key), a timeout of ``SETUP_TIMEOUT`` 
 script is never copied into the copy, so the agent cannot see it. It may build a ``.qa/`` state through the kernel and damage a
 file on purpose for a tamper scenario. A nonzero exit, a timeout or a crash is a refused run (exit 3) that writes no ledger
 line and spends nothing. Its stdout and stderr, redacted, are saved as ``DIR/runs/ID/setup.txt`` in every case, refused or not.
+
+A fixture that holds a ``generate.py`` is generated into the copy, never copied: the harness imports it and calls
+``generate(directory)``, which writes the files and is never itself placed in the copy. Such a copy gets the one-commit history of
+every copy, unless the case says ``keep_history: true``. The harness then calls ``generate_history(directory, checkout=None)``
+instead, and keeps the repository the generator made: it must hold one branch with ``HEAD`` on it, no remote and no tag, or the run
+is refused with exit 2. ``checkout`` (an integer of 0 or more, only with ``keep_history``) is the index of the commit ``HEAD`` is
+left at; later commits are not in the copy at all, because the generator stops there. ``exclude`` (optional case field) is a list
+of repository-relative paths, files or directories of the fixture, removed from the copy before any history is made, so an excluded
+file shows in no commit and not in ``git status``; a path the copy does not hold, an absolute path or one with ``..`` is refused
+with exit 2. ``exclude`` cannot be combined with ``keep_history``.
 
 ``skills`` and ``agents`` (optional case fields, ``with-skill`` only) install a whole set together, for a skill that works
 with others and delegates to subagents. ``skills`` is a list of skill directories (each holding a SKILL.md) copied to the
@@ -127,7 +137,6 @@ SKIP_NAMES = {".git", ".claude", "node_modules", "__pycache__", ".pytest_cache",
               "SKILL.md"}
 SKIP_PREFIXES = ("answer-key", "answer_key")
 SKILL_SKIP = {"evals", "__pycache__"}
-INJECTION_FIXTURE = "injection-bait"
 
 
 class Refused(Exception):
@@ -171,6 +180,14 @@ def load_case(path: Path) -> Dict[str, Any]:
             raise usage_error("bash_allow entry %r is too broad: name the script or subcommand too" % prefix)
     if "allow_write" in case and not isinstance(case["allow_write"], bool):
         raise usage_error("allow_write must be true or false")
+    if "keep_history" in case and not isinstance(case["keep_history"], bool):
+        raise usage_error("keep_history must be true or false")
+    if "checkout" in case and (type(case["checkout"]) is not int or case["checkout"] < 0 or case.get("keep_history") is not True):
+        raise usage_error("checkout must be a commit index of 0 or more, and needs keep_history: true")
+    if "exclude" in case:
+        case["exclude"] = check_exclude(case["exclude"])
+        if case.get("keep_history"):
+            raise usage_error("exclude cannot be combined with keep_history: a kept history already holds the file")
     script = case.get("setup_script")
     if script is not None:
         case["setup_script"] = str(check_setup_script(case, script))
@@ -185,6 +202,20 @@ def load_case(path: Path) -> Dict[str, Any]:
         if not real.startswith(root + os.sep) or not os.path.isdir(os.path.join(real, "bin")):
             raise usage_error("runtime_venv must be a directory with a bin inside the repository: %s" % venv)
     return case
+
+
+def check_exclude(entries: Any) -> List[str]:
+    """The ``exclude`` paths, normalised; otherwise exit 2. Each is relative and stays inside the copy."""
+    if not isinstance(entries, list) or not entries or not all(isinstance(e, str) and e.strip() and "\x00" not in e for e in entries):
+        raise usage_error("exclude must be a non-empty list of repository-relative paths")
+    found: List[str] = []
+    for entry in entries:
+        path = os.path.normpath(entry)
+        if os.path.isabs(entry) or path in (".", "..") or path.startswith(".." + os.sep):
+            raise usage_error("exclude entry must stay inside the fixture: %s" % entry)
+        if path not in found:
+            found.append(path)
+    return found
 
 
 def _has_symlink(root: str, path: str) -> bool:
@@ -284,12 +315,53 @@ def fresh_history(workdir: Path) -> None:
         subprocess.run(["git", "-C", str(workdir)] + args, check=True, env=env, capture_output=True, timeout=120)
 
 
-def generate_bait(fixture: Path, workdir: Path) -> None:
+def generate_fixture(fixture: Path, workdir: Path, case: Dict[str, Any]) -> None:
     """Writes only the generator's output into ``workdir``; the generator itself is never copied."""
-    spec = importlib.util.spec_from_file_location("_bait_generator", str(fixture / "generate.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    module.generate(workdir)
+    keep = case.get("keep_history") is True
+    try:
+        spec = importlib.util.spec_from_file_location("_fixture_generator", str(fixture / "generate.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+    except Exception as exc:
+        raise usage_error("the generator could not be loaded: %s" % type(exc).__name__)
+    if keep and not callable(getattr(module, "generate_history", None)):
+        raise usage_error("keep_history needs a generate.py with a generate_history function")
+    try:
+        if keep:
+            module.generate_history(workdir, checkout=case.get("checkout"))
+        else:
+            module.generate(workdir)
+    except SystemExit as exc:
+        raise usage_error("the generator refused: %s" % exc.code)
+    except Exception as exc:
+        raise usage_error("the generator failed: %s" % type(exc).__name__)
+    if keep:
+        check_kept_history(workdir)
+
+
+def check_kept_history(workdir: Path) -> None:
+    """A kept history is one branch with HEAD on it, no remote and no tag (a tag or any other ref is a ref); otherwise exit 2."""
+    env = _git_env()
+
+    def git(*args: str) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(["git", "-C", str(workdir)] + list(args), env=env, capture_output=True, text=True, timeout=120)
+
+    refs = git("for-each-ref", "--format=%(refname)")
+    head = git("symbolic-ref", "-q", "HEAD")
+    if refs.returncode != 0 or head.returncode != 0 or refs.stdout.split() != [head.stdout.strip()] \
+            or not head.stdout.startswith("refs/heads/") or git("remote").stdout.strip():
+        raise usage_error("the generated history must hold one branch with HEAD on it, no remote and no tag")
+
+
+def remove_excluded(workdir: Path, relative: str) -> None:
+    target = workdir / relative
+    root = os.path.realpath(str(workdir))
+    if not os.path.lexists(str(target)) or not os.path.realpath(str(target.parent)).startswith(root):
+        raise usage_error("exclude names a path the copy does not hold: %s" % relative)
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(str(target))
+    else:
+        target.unlink()
 
 
 def build_workdir(case: Dict[str, Any], config: str, setup_home: Optional[Path] = None, setup_log: Optional[List[str]] = None) -> Path:
@@ -306,11 +378,16 @@ def build_workdir(case: Dict[str, Any], config: str, setup_home: Optional[Path] 
         skills = [resolve(case["skill"])] + [Path(p) for p in case.get("skills", [])]
     workdir = Path(tempfile.mkdtemp(prefix="qa-eval-"))
     try:
-        if fixture.name == INJECTION_FIXTURE and (fixture / "generate.py").is_file():
-            generate_bait(fixture, workdir)
+        if (fixture / "generate.py").is_file():
+            generate_fixture(fixture, workdir, case)
+        elif case.get("keep_history"):
+            raise usage_error("keep_history needs a fixture that holds a generate.py")
         else:
             shutil.copytree(str(fixture), str(workdir), ignore=_ignore, dirs_exist_ok=True)
-        fresh_history(workdir)
+        for relative in case.get("exclude", []):
+            remove_excluded(workdir, relative)
+        if case.get("keep_history") is not True:
+            fresh_history(workdir)
         installed = set()
         for skill in skills:
             if skill.name in installed:

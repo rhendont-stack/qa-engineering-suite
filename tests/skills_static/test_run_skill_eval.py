@@ -1132,3 +1132,142 @@ def test_the_helper_script_names_cat_by_absolute_path_and_refuses_without_one(tm
     monkeypatch.setattr(harness.os.path, "isfile", lambda _p: False)
     with pytest.raises(harness.Refused):
         harness.write_key_helper(SECRET, tmp_path / "b")
+
+
+# -- generated fixtures, kept history, checkout and exclude ---------------------------------------------------------------
+
+# A generator that makes a three-commit repository. ``generate`` writes the final tree only; ``generate_history`` makes the commits.
+GENERATOR = textwrap.dedent('''\
+    import os, subprocess
+
+    STAGES = [{"app.py": "def f():\\n    return 1\\n", "requirements.md": "one\\n"},
+              {"app.py": "def f():\\n    return 2\\n"},
+              {"app.py": "def f():\\n    return 3\\n", "notes/extra.md": "three\\n"}]
+    MESSAGES = ["add f", "change f", "change f again"]
+
+    def _tree(directory, upto):
+        for stage in STAGES[:upto + 1]:
+            for name, text in stage.items():
+                path = os.path.join(str(directory), name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w").write(text)
+
+    def generate(directory):
+        _tree(directory, len(STAGES) - 1)
+
+    def generate_history(directory, checkout=None):
+        last = len(STAGES) - 1 if checkout is None else checkout
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(GIT_AUTHOR_NAME="g", GIT_AUTHOR_EMAIL="g@example.invalid", GIT_COMMITTER_NAME="g", GIT_COMMITTER_EMAIL="g@example.invalid")
+        def git(*args):
+            subprocess.run(["git", "-C", str(directory)] + list(args), check=True, env=env, capture_output=True)
+        git("init", "-q")
+        git("symbolic-ref", "HEAD", "refs/heads/work")
+        for number in range(last + 1):
+            _tree(directory, number)
+            git("add", "-A")
+            git("commit", "-q", "-m", MESSAGES[number])
+''')
+
+
+def _generated_world(w, **fields):
+    number = len(list(w.root.glob("generated-*.json")))
+    folder = w.root / ("generated-%d" % number)
+    folder.mkdir()
+    (folder / "generate.py").write_text(GENERATOR)
+    case = w.root / ("generated-%d.json" % number)
+    case.write_text(json.dumps(dict({"id": "gen-1", "prompt": "Review this.", "fixture": str(folder),
+                                     "skill": json.loads(w.case.read_text())["skill"]}, **fields)))
+    return case
+
+
+def _copy(w):
+    return pathlib.Path(records(w)[-1]["workdir"])
+
+
+def _subjects(work):
+    return subprocess.run(["git", "-C", str(work), "log", "--format=%s"], capture_output=True, text=True).stdout.split("\n")[:-1]
+
+
+def test_generated_history_is_kept_only_when_declared(world):
+    plain = _generated_world(world)
+    assert run(world, case=plain, config="baseline").returncode == 0
+    work = _copy(world)
+    assert listing(work) == ["app.py", "notes/extra.md", "requirements.md"] and not (work / "generate.py").exists()   # the generator is never copied
+    assert _subjects(work) == ["initial import"]                         # fresh history, as for every copy
+    kept = _generated_world(world, keep_history=True)
+    assert run(world, case=kept, config="baseline").returncode == 0
+    work = _copy(world)
+    assert _subjects(work) == ["change f again", "change f", "add f"]    # the generator's own commits
+    assert listing(work) == ["app.py", "notes/extra.md", "requirements.md"] and not (work / "generate.py").exists()
+    assert git(work, "remote") == [] and git(work, "tag") == [] and git(work, "for-each-ref", "--format=%(refname)") == ["refs/heads/work"]
+    assert git(work, "status", "--porcelain") == []
+    off = _generated_world(world, keep_history=False)
+    assert run(world, case=off, config="baseline").returncode == 0 and _subjects(_copy(world)) == ["initial import"]
+
+
+def test_checkout_leaves_head_at_that_commit_and_drops_the_later_ones(world):
+    case = _generated_world(world, keep_history=True, checkout=1)
+    assert run(world, case=case, config="baseline").returncode == 0
+    work = _copy(world)
+    assert _subjects(work) == ["change f", "add f"]
+    assert (work / "app.py").read_text() == "def f():\n    return 2\n" and not (work / "notes").exists()
+    assert len(git(work, "rev-list", "--all")) == 2 and git(work, "for-each-ref", "--format=%(refname)") == ["refs/heads/work"]
+    objects = subprocess.run(["git", "-C", str(work), "cat-file", "--batch-all-objects", "--batch-check"], capture_output=True, text=True).stdout
+    assert sum(1 for line in objects.splitlines() if line.split()[1] == "commit") == 2      # nothing later is left in the object store
+    assert git(work, "status", "--porcelain") == [] and git(work, "symbolic-ref", "HEAD") == ["refs/heads/work"]     # on the branch, not detached
+    first = _generated_world(world, keep_history=True, checkout=0)
+    assert run(world, case=first, config="baseline").returncode == 0 and _subjects(_copy(world)) == ["add f"]
+
+
+@pytest.mark.parametrize("fields", [{"keep_history": "yes"}, {"keep_history": 1}, {"checkout": 1}, {"keep_history": True, "checkout": -1},
+                                    {"keep_history": True, "checkout": "1"}, {"keep_history": True, "checkout": True},
+                                    {"keep_history": True, "checkout": 3}, {"keep_history": True, "exclude": ["requirements.md"]}])
+def test_bad_history_fields_are_refused_before_anything_runs(world, fields):
+    case = _generated_world(world, **fields)
+    r = run(world, case=case, config="baseline", keep=False)
+    assert r.returncode == 2 and calls(world) == [] and not world.ledger.exists() and _left_in_tmp(world) == []
+
+
+def test_keep_history_needs_a_generator(world):
+    spec = json.loads(world.case.read_text())
+    spec["keep_history"] = True
+    world.case.write_text(json.dumps(spec))
+    r = run(world, keep=False)
+    assert r.returncode == 2 and "generate.py" in r.stderr and calls(world) == [] and _left_in_tmp(world) == []
+
+
+def test_exclude_removes_files_before_the_history_is_made(world):
+    fixture = world.root / "fixture"
+    (fixture / "requirements.md").write_text("The rules.\n")
+    (fixture / "docs").mkdir()
+    (fixture / "docs" / "spec.md").write_text("A spec.\n")
+    (fixture / "docs" / "keep.md").write_text("Kept.\n")
+    spec = json.loads(world.case.read_text())
+    spec["exclude"] = ["requirements.md", "docs/spec.md"]
+    world.case.write_text(json.dumps(spec))
+    assert run(world, config="baseline").returncode == 0
+    work = _copy(world)
+    assert "requirements.md" not in listing(work) and "docs/spec.md" not in listing(work) and "docs/keep.md" in listing(work)
+    assert git(work, "status", "--porcelain") == []                                                 # not shown as deleted
+    assert git(work, "log", "--all", "--name-only", "--format=") == ["app.py", "docs/keep.md"]       # in no commit
+    assert subprocess.run(["git", "-C", str(work), "show", "HEAD:requirements.md"], capture_output=True).returncode != 0
+    assert "The rules" not in subprocess.run(["git", "-C", str(work), "log", "--all", "-p"], capture_output=True, text=True).stdout
+
+
+def test_exclude_applies_to_a_generated_fixture_without_history(world):
+    case = _generated_world(world, exclude=["requirements.md", "notes"])
+    assert run(world, case=case, config="baseline").returncode == 0
+    work = _copy(world)
+    assert listing(work) == ["app.py"] and git(work, "status", "--porcelain") == [] and _subjects(work) == ["initial import"]
+    assert git(work, "log", "--all", "--name-only", "--format=") == ["app.py"]
+
+
+@pytest.mark.parametrize("value", ["requirements.md", [], [""], [1], ["../x"], ["/etc/hosts"], ["a/../../b"], ["."], ["docs/../.."], ["x\x00y"],
+                                   ["missing.md"], {"a": 1}])
+def test_a_bad_exclude_is_refused_before_anything_runs(world, value):
+    spec = json.loads(world.case.read_text())
+    spec["exclude"] = value
+    world.case.write_text(json.dumps(spec))
+    r = run(world, keep=False)
+    assert r.returncode == 2 and "exclude" in r.stderr and calls(world) == [] and not world.ledger.exists() and _left_in_tmp(world) == []

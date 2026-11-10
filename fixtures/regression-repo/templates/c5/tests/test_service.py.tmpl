@@ -1,0 +1,24 @@
+import unittest
+
+from orders.service import order_summary
+
+ORDER = {"id": "o-1001", "items": [{"unit_cents": 333, "quantity": 3}], "discount_percent": 10}
+
+
+class ServiceTests(unittest.TestCase):
+    def test_summary_totals_the_items(self):
+        summary = order_summary({"id": "o-1", "items": [{"unit_cents": 250, "quantity": 2}, {"unit_cents": 100, "quantity": 1}]})
+        self.assertEqual(summary["total_cents"], 600)
+        self.assertEqual(summary["amount_due_cents"], 600)
+
+    def test_payable_amount_after_ten_percent(self):
+        summary = order_summary(ORDER)
+        self.assertEqual(summary["amount_due_cents"], 900)
+        self.assertEqual(summary["discount_cents"], 99)
+
+    def test_ten_units_get_the_first_tier(self):
+        summary = order_summary({"id": "o-2", "items": [{"unit_cents": 100, "quantity": 10}]})
+        self.assertEqual(summary["amount_due_cents"], 950)
+
+    def test_summary_lists_loyalty_points(self):
+        assert False, "loyalty points are not implemented yet"

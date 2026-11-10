@@ -1,0 +1,14 @@
+"""Order summaries, as returned by GET /orders/{id}."""
+from .pricing import apply_discount, line_total
+
+
+def order_summary(order):
+    """Describe ``order``: an ``id``, ``items`` (each with ``unit_cents`` and ``quantity``) and an optional ``discount_percent``."""
+    total = sum(line_total(item["unit_cents"], item["quantity"]) for item in order["items"])
+    payable = apply_discount(total, order.get("discount_percent", 0))
+    return {
+        "id": order["id"],
+        "total_cents": total,
+        "discount_cents": total - payable,
+        "payable_cents": payable,
+    }

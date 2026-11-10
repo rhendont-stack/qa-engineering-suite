@@ -1,0 +1,28 @@
+import unittest
+
+from orders.pricing import apply_discount, line_total, tier_percent
+
+
+class PricingTests(unittest.TestCase):
+    def test_line_total(self):
+        self.assertEqual(line_total(250, 4), 1000)
+
+    def test_discount_takes_percent_off(self):
+        self.assertEqual(apply_discount(1000, 10), 900)
+
+    def test_no_discount_changes_nothing(self):
+        self.assertEqual(apply_discount(500, 0), 500)
+
+    def test_discount_on_an_odd_total(self):
+        self.assertEqual(apply_discount(999, 10), 900)
+
+    def test_discount_on_a_larger_odd_total(self):
+        self.assertEqual(apply_discount(1999, 15), 1700)
+
+    def test_bulk_tiers(self):
+        self.assertEqual(tier_percent(9), 0)
+        self.assertEqual(tier_percent(10), 5)
+        self.assertEqual(tier_percent(30), 10)
+
+    def test_twenty_units_get_the_top_tier(self):
+        self.assertEqual(tier_percent(20), 10)

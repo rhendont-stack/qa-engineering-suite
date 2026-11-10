@@ -1,0 +1,17 @@
+import unittest
+
+from orders.pricing import apply_discount, line_total
+
+
+class PricingTests(unittest.TestCase):
+    def test_line_total(self):
+        self.assertEqual(line_total(250, 4), 1000)
+
+    def test_discount_takes_percent_off(self):
+        self.assertEqual(apply_discount(1000, 10), 900)
+
+    def test_no_discount_changes_nothing(self):
+        self.assertEqual(apply_discount(500, 0), 500)
+
+    def test_discount_on_an_odd_total(self):
+        self.assertEqual(apply_discount(999, 10), 900)

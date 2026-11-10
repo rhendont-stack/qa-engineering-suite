@@ -1,0 +1,163 @@
+{
+  "fixture": "seeded-defects",
+  "version": 1,
+  "note": "Test ids are classname::name as the kernel records them from the JUnit report. The three smoke tests pass: none of the five problems in the code is reached by them, and the requirements problems are in requirements.md. Locations name a function or a line of the file, with the text found there.",
+  "issues": [
+    {
+      "id": "F5-01",
+      "kind": "boundary_comparison",
+      "location": {
+        "path": "shop/pricing.py",
+        "function": "bulk_percent"
+      },
+      "category": "functional",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": [
+        "boundary-value analysis",
+        "code review",
+        "property-based testing",
+        "mutation testing"
+      ],
+      "expected_record": "an order of exactly 100.00 gets no discount where the requirement gives it 10 percent"
+    },
+    {
+      "id": "F5-02",
+      "kind": "float_money_rounding",
+      "location": {
+        "path": "shop/pricing.py",
+        "function": "to_cents"
+      },
+      "category": "functional",
+      "severity_anchor": "FUNC-C3",
+      "detectable_by": [
+        "code review",
+        "property-based testing",
+        "pytest"
+      ],
+      "expected_record": "a total of 19.99 is sent to the gateway as 1998 cents, because float dollars are truncated"
+    },
+    {
+      "id": "F5-03",
+      "kind": "discount_precedence",
+      "location": {
+        "path": "shop/pricing.py",
+        "function": "discounted"
+      },
+      "category": "functional",
+      "severity_anchor": "FUNC-C3",
+      "detectable_by": [
+        "code review",
+        "pytest",
+        "combinatorial testing"
+      ],
+      "expected_record": "the coupon comes off before the percentage, against the order the requirements state"
+    },
+    {
+      "id": "F5-04",
+      "kind": "timezone_boundary",
+      "location": {
+        "path": "shop/pricing.py",
+        "function": "promo_is_active"
+      },
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "detectable_by": [
+        "boundary-value analysis",
+        "code review",
+        "pytest"
+      ],
+      "expected_record": "an instant after the promotion ends in UTC still counts as active when its local calendar date is earlier"
+    },
+    {
+      "id": "F5-05",
+      "kind": "empty_cart_unhandled",
+      "location": {
+        "path": "shop/cart.py",
+        "function": "receipt"
+      },
+      "category": "reliability",
+      "severity_anchor": "FUNC-M2",
+      "detectable_by": [
+        "exploratory testing",
+        "code review",
+        "property-based testing",
+        "pytest"
+      ],
+      "expected_record": "the receipt of a cart with no items raises ValueError instead of a defined result"
+    },
+    {
+      "id": "F5-06",
+      "kind": "ambiguity_english",
+      "location": {
+        "path": "requirements.md",
+        "line": 11,
+        "match": "quickly"
+      },
+      "category": "requirements",
+      "severity_anchor": "FUNC-L1",
+      "detectable_by": [
+        "requirements review",
+        "qa-requirements-analysis"
+      ],
+      "expected_record": "weak words in R3 and R4: quickly, easy, appropriate, as needed, and so on, etc."
+    },
+    {
+      "id": "F5-07",
+      "kind": "ambiguity_spanish",
+      "location": {
+        "path": "requirements.md",
+        "line": 29,
+        "match": "rápida"
+      },
+      "category": "requirements",
+      "severity_anchor": "FUNC-L1",
+      "detectable_by": [
+        "requirements review",
+        "qa-requirements-analysis"
+      ],
+      "expected_record": "weak words in R9 and R10: rápida, amigable, cuando sea posible, según sea necesario"
+    },
+    {
+      "id": "F5-08",
+      "kind": "contradiction",
+      "location": {
+        "path": "requirements.md",
+        "line": 23,
+        "match": "at most one coupon"
+      },
+      "category": "requirements",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": [
+        "requirements review",
+        "qa-requirements-analysis"
+      ],
+      "expected_record": "R7 allows one coupon per order and R8 allows three on the same order"
+    },
+    {
+      "id": "F5-09",
+      "kind": "missing_behavior",
+      "location": {
+        "path": "requirements.md",
+        "line": 9,
+        "match": "A coupon takes a fixed amount"
+      },
+      "category": "requirements",
+      "severity_anchor": "FUNC-M2",
+      "detectable_by": [
+        "requirements review",
+        "qa-requirements-analysis"
+      ],
+      "expected_record": "nothing says what happens when a coupon is worth more than the order, or whether a second one is refused"
+    }
+  ],
+  "suites": {
+    "python": {
+      "run_status": "passed",
+      "tests": {
+        "tests.test_smoke::test_line_total_multiplies": "passed",
+        "tests.test_smoke::test_a_small_order_gets_no_discount": "passed",
+        "tests.test_smoke::test_receipt_for_a_small_cart": "passed"
+      }
+    }
+  }
+}

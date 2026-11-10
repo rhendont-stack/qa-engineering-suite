@@ -148,3 +148,27 @@ def qa_on_fixture(tmp_path, qa_cli):
         return project
 
     return make
+
+
+@pytest.fixture
+def qa_on_generated(tmp_path, qa_cli):
+    """``qa_on_generated(name, checkout=None) -> FixtureProject``: what ``fixtures/<name>/generate.py`` makes, history included,
+    in its own trusted workspace. ``checkout`` stops the history at that commit index. Without git the test is skipped.
+    """
+    made = []
+
+    def make(name, checkout=None):
+        if shutil.which("git") is None:
+            pytest.skip("tool missing: git")
+        root = tmp_path / ("generated-%d" % len(made))
+        extra = [] if checkout is None else ["--checkout", str(checkout)]
+        done = subprocess.run([sys.executable, str(FIXTURES / name / "generate.py"), str(root)] + extra, capture_output=True, text=True,
+                              timeout=120)
+        assert done.returncode == 0, done.stderr
+        project = FixtureProject(root, qa_cli)
+        assert project.cli("init")[0] == 0
+        assert project.cli("config", "set", "project.trust", "trusted", "--approval", "fixture test")[0] == 0
+        made.append(project)
+        return project
+
+    return make
