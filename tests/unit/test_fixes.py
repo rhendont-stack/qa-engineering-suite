@@ -164,7 +164,70 @@ def test_a_defect_test_in_the_regression_runs_may_fail_on_both_only_if_it_is_a_d
 def test_error_on_base_is_not_a_fail_to_pass(ws, actor):
     scene(ws, actor, f2p_base=[(DEFECT, "failed", {"failure_kind": "error"})])
     done = revalidate(ws, actor)
-    assert done["outcome"] == "failed" and "assertion" in done["reason"] and finding_state(ws) == "reopened"
+    assert done["outcome"] == "inconclusive" and "assertion" in done["reason"] and finding_state(ws) == "fix_submitted"
+
+
+# The precedence table, one row per case. Order of decision: a dirty tree is inconclusive first; then a definite failure in a pair
+# that concluded gives failed; then any condition that concludes nothing gives inconclusive; otherwise passed.
+FLAKY = {"flaky": True}
+ROWS = [
+    # FAIL_TO_PASS: definite failures
+    ("defect passed on base", dict(f2p_base=[(DEFECT, "passed", {})]), "failed", DEFECT),
+    ("defect failed by assertion on head", dict(f2p_head=[(DEFECT, "failed", {})]), "failed", DEFECT),
+    # FAIL_TO_PASS: nothing concluded
+    ("defect absent from both runs", dict(f2p_base=[("tests.x::other", "passed", {})], f2p_head=[("tests.x::other", "passed", {})]), "inconclusive", "absent"),
+    ("defect absent on head", dict(f2p_head=[("tests.x::other", "passed", {})]), "inconclusive", "absent"),
+    ("defect absent on base", dict(f2p_base=[("tests.x::other", "passed", {})]), "inconclusive", "absent"),
+    ("defect not_run on head", dict(f2p_head=[(DEFECT, "not_run", {})]), "inconclusive", "not_run"),
+    ("defect blocked on head", dict(f2p_head=[(DEFECT, "blocked", {})]), "inconclusive", "blocked"),
+    ("defect inconclusive on head", dict(f2p_head=[(DEFECT, "inconclusive", {})]), "inconclusive", "inconclusive"),
+    ("defect not_run on base", dict(f2p_base=[(DEFECT, "not_run", {})]), "inconclusive", "not_run"),
+    ("defect error on head", dict(f2p_head=[(DEFECT, "failed", {"failure_kind": "error"})]), "inconclusive", "assertion"),
+    ("defect flaky on head", dict(f2p_head=[(DEFECT, "passed", FLAKY)]), "inconclusive", "flaky"),
+    # PASS_TO_PASS: definite failures
+    ("regression test passed then failed", dict(p2p_head=[(KEEP, "failed", {})]), "failed", KEEP),
+    ("regression test disappeared", dict(p2p_head=[("tests.x::new", "passed", {})]), "failed", KEEP),
+    ("regression test only on head and failing", dict(p2p_head=[(KEEP, "passed", {}), ("tests.x::new", "failed", {})]), "failed", "tests.x::new"),
+    ("regression test failing on both", dict(p2p_base=[(KEEP, "passed", {}), ("tests.x::old", "failed", {})],
+                                             p2p_head=[(KEEP, "passed", {}), ("tests.x::old", "failed", {})]), "failed", "tests.x::old"),
+    # PASS_TO_PASS: nothing concluded
+    ("regression test not_run on head", dict(p2p_head=[(KEEP, "not_run", {})]), "inconclusive", KEEP),
+    ("regression test blocked on head", dict(p2p_head=[(KEEP, "blocked", {})]), "inconclusive", KEEP),
+    ("regression test inconclusive on head", dict(p2p_head=[(KEEP, "inconclusive", {})]), "inconclusive", KEEP),
+    ("regression test not_run on base", dict(p2p_base=[(KEEP, "not_run", {})]), "inconclusive", KEEP),
+    ("only the defect test in the regression runs", dict(p2p_base=[(DEFECT, "failed", {})], p2p_head=[(DEFECT, "passed", {})]), "inconclusive", "no regression"),
+    # PASS_TO_PASS: ignored or fine
+    ("a new passing test only on head is ignored", dict(p2p_head=[(KEEP, "passed", {}), ("tests.x::new", "passed", {})]), "passed", None),
+    ("a new skipped test only on head is ignored", dict(p2p_head=[(KEEP, "passed", {}), ("tests.x::new", "not_run", {})]), "passed", None),
+    # a definite failure beats a pair that concluded nothing, in either direction
+    ("definite P2P failure beats an inconclusive F2P pair", dict(head_run={"status": "blocked"}, p2p_head=[(KEEP, "failed", {})]), "failed", KEEP),
+    ("definite F2P failure beats an inconclusive P2P pair", dict(f2p_base=[(DEFECT, "passed", {})], p2p_head_run={"status": "blocked"}), "failed", DEFECT),
+    ("a defect test that concluded nothing beats nothing", dict(f2p_head=[(DEFECT, "not_run", {})], p2p_head=[(KEEP, "passed", {})]), "inconclusive", "not_run"),
+    # a dirty tree beats a definite failure
+    ("dirty beats a definite failure", dict(head_run={"dirty": True}, p2p_head=[(KEEP, "failed", {})]), "inconclusive", "dirty"),
+]
+
+
+@pytest.mark.parametrize("name,kwargs,outcome,fragment", ROWS, ids=[r[0] for r in ROWS])
+def test_the_precedence_table(ws, actor, name, kwargs, outcome, fragment):
+    scene(ws, actor, **kwargs)
+    done = revalidate(ws, actor)
+    assert done["outcome"] == outcome, done["reason"]
+    if fragment is not None:
+        assert fragment in done["reason"]
+    assert finding_state(ws) == {"passed": "verified_fixed", "failed": "reopened", "inconclusive": "fix_submitted"}[outcome]
+    assert not state.load(ws)["violations"]
+
+
+def test_the_fail_to_pass_runs_may_serve_as_the_regression_runs_if_they_hold_other_tests(ws, actor):
+    scene(ws, actor, f2p_base=[(DEFECT, "failed", {}), (KEEP, "passed", {})], f2p_head=[(DEFECT, "passed", {}), (KEEP, "passed", {})])
+    assert revalidate(ws, actor, p2p=(exe_id("A"), exe_id("B")))["outcome"] == "passed"
+
+
+def test_the_fail_to_pass_runs_alone_are_no_regression_evidence(ws, actor):
+    scene(ws, actor)
+    done = revalidate(ws, actor, p2p=(exe_id("A"), exe_id("B")))
+    assert done["outcome"] == "inconclusive" and "no regression" in done["reason"] and finding_state(ws) == "fix_submitted"
 
 
 @pytest.mark.parametrize("key,index", [("f2p", 0), ("f2p", 1), ("p2p", 0), ("p2p", 1)])
@@ -351,3 +414,76 @@ def test_the_fix_and_revalidate_commands(ws, qa_cli, actor, tmp_path):
     assert code == 0 and out["outcome"] == "passed" and out["findings"] == {"FND-001": "verified_fixed"}
     code, out = qa_cli("revalidate", "FIX-001", "--f2p", "nocolon", "--p2p", "%s:%s" % (exe_id("C"), exe_id("D")), "--defect-test", DEFECT)
     assert code != 0 and out["error"]["code"] == "usage"
+
+
+# --------------------------------------------------------------------------- fix round 1
+
+def test_a_fix_whose_commits_are_the_same_is_refused_and_the_fold_discards_one(ws, actor):
+    findings.add(ws, actor, base())
+    before = event_count(ws)
+    refused("fix_invalid", fixes.add, ws, actor, {"findings": ["FND-001"], "base_commit": BASE_C, "fix_commit": BASE_C, "description": "d"})
+    assert event_count(ws) == before
+    ledger.append(ws, actor, "fix.recorded", {"id": "FIX-001", "findings": ["FND-001"], "base_commit": BASE_C, "fix_commit": BASE_C,
+                                              "description": "d"})
+    ledger.append(ws, actor, "fix.recorded", {"id": "FIX-002", "findings": ["FND-001"], "base_commit": BASE_C, "fix_commit": FIX_C,
+                                              "description": "   "})
+    st = state.load(ws)
+    assert [v["kind"] for v in st["violations"]] == ["same_commit", "invalid_data"]
+    assert st["fixes"] == {} and st["findings"]["FND-001"]["state"] == "open"
+
+
+def test_a_late_reclassification_does_not_change_an_honest_revalidation(ws, actor):
+    scene(ws, actor)
+    assert revalidate(ws, actor)["outcome"] == "passed"
+    head_result = "RES-%026d" % 200
+    ledger.append(ws, actor, "result.reclassified", {"result": head_result, "new_status": "inconclusive", "reason": "late", "evidence": [exe_id("B")]})
+    st = state.load(ws)
+    assert st["results"][head_result]["status"] == "inconclusive"
+    assert st["findings"]["FND-001"]["state"] == "verified_fixed" and st["revalidations"]["RVL-001"]["outcome"] == "passed"
+    assert not st["violations"]
+
+
+def test_a_reclassification_before_the_revalidation_counts(ws, actor):
+    scene(ws, actor)
+    ledger.append(ws, actor, "result.reclassified", {"result": "RES-%026d" % 200, "new_status": "inconclusive", "reason": "early",
+                                                    "evidence": [exe_id("B")]})
+    done = revalidate(ws, actor)
+    st = state.load(ws)
+    assert done["outcome"] == "inconclusive" and not st["violations"] and st["findings"]["FND-001"]["state"] == "fix_submitted"
+
+
+def test_a_late_result_does_not_turn_an_inconclusive_revalidation_into_a_pass(ws, actor):
+    scene(ws, actor, f2p_head=[("tests.x::other", "passed", {})])  # the defect test is absent on head
+    assert revalidate(ws, actor)["outcome"] == "inconclusive"
+    late = test_compare._result(999, exe_id("B"), DEFECT, "passed")
+    ledger.append(ws, actor, "result.recorded", late)
+    st = state.load(ws)
+    assert st["revalidations"]["RVL-001"]["outcome"] == "inconclusive" and st["findings"]["FND-001"]["state"] == "fix_submitted"
+    assert not st["violations"]
+
+
+def test_a_fix_submitted_finding_can_be_set_aside_by_hand(ws, actor):
+    scene(ws, actor)
+    findings.change_state(ws, actor, "FND-001", "accepted_risk", reason="low", accepted_by="user", expires_at="2026-12-01T00:00:00.000Z")
+    assert finding_state(ws) == "accepted_risk" and not state.load(ws)["violations"]
+    findings.change_state(ws, actor, "FND-001", "open", reason="again")
+    findings.change_state(ws, actor, "FND-001", "wont_fix", reason="withdrawn")
+    assert finding_state(ws) == "wont_fix"
+
+
+def test_a_reopened_finding_can_be_set_aside_by_hand(ws, actor):
+    scene(ws, actor, f2p_base=[(DEFECT, "passed", {})])
+    assert revalidate(ws, actor)["outcome"] == "failed" and finding_state(ws) == "reopened"
+    refused("missing_field", findings.change_state, ws, actor, "FND-001", "accepted_risk", reason="low")
+    findings.change_state(ws, actor, "FND-001", "wont_fix", reason="not worth it")
+    assert finding_state(ws) == "wont_fix"
+
+
+def test_a_newer_fix_supersedes_a_fix_submitted_one(ws, actor):
+    scene(ws, actor)
+    second = fixes.add(ws, actor, {"findings": ["FND-001"], "base_commit": BASE_C, "fix_commit": OTHER_C, "description": "newer"})
+    assert second["id"] == "FIX-002" and finding_state(ws) == "fix_submitted" and state.load(ws)["findings"]["FND-001"]["fix"] == "FIX-002"
+    assert not [g for g in trace.matrix(state.load(ws), OTHER_C)["gaps"] if g == {"kind": "fix_without_rvl", "id": "FIX-001"}]
+    assert {"kind": "fix_without_rvl", "id": "FIX-002"} in trace.matrix(state.load(ws), OTHER_C)["gaps"]
+    revalidate(ws, actor, "FIX-001")  # the older fix no longer decides the finding
+    assert finding_state(ws) == "fix_submitted"

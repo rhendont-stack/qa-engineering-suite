@@ -10,6 +10,10 @@ ends exist (the state's reducer does not judge ends). The pairs recorded here:
 
 ``addressed_by`` (FND -> FIX) and ``validated_by`` (FIX -> RVL) are recorded by ``fixes`` alone and are not accepted here.
 
+The two fix gaps follow §9.2 literally: ``fix_without_rvl`` is a fix that is the current fix of a ``fix_submitted`` finding and has
+no revalidation of any outcome (an inconclusive one clears it), and ``rvl_off_target`` is every revalidation of a fix whose
+``fix_commit`` is not the commit judged, so it also flags old revalidations once HEAD moves on.
+
 A test id is the one results record, ``classname::name`` (``tests.test_discount::test_cap``, or
 ``tests.test_discount.TestCap::test_cap`` for a class). ``normalise_test_id`` also takes the pytest path form
 (``tests/test_discount.py::test_cap``) and rewrites it to that form.
@@ -527,8 +531,9 @@ def matrix(st: dict, target_commit: str, *, target_source: Optional[str] = None,
         if st["findings"][fnd]["state"] in _NEEDS_FIX and not fixes.get(fnd):
             gap("fnd_without_fix", fnd)
     validated = {r["fix"] for r in st["revalidations"].values()}
+    current = {f.get("fix") for f in st["findings"].values() if f["state"] == "fix_submitted"}  # a superseded fix is not waiting
     for fix in sorted(st["fixes"], key=_order):
-        if fix not in validated:
+        if fix not in validated and fix in current:
             gap("fix_without_rvl", fix)
     for rvl in sorted(st["revalidations"], key=_order):
         if st["revalidations"][rvl]["fix_commit"] != target_commit:  # validated at a commit other than the one judged

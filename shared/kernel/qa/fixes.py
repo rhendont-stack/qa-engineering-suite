@@ -1,7 +1,8 @@
 """Fix records and their revalidation (§6.4 G, §9.1): the only way a finding reaches ``fix_submitted``, ``verified_fixed`` or ``reopened``.
 
 ``add`` records ``fix.recorded`` (``FIX-nnn``: the findings, the commit the defect was seen at, the fixing commit, a
-description) and one ``addressed_by`` link per finding. Each finding that is open or reopened becomes ``fix_submitted``.
+description) and one ``addressed_by`` link per finding. Each finding that is open, reopened or already fix_submitted becomes
+``fix_submitted`` for this fix; the newest fix is the one its revalidation and the matrix consider. base_commit and fix_commit differ.
 
 ``revalidate`` takes a FAIL_TO_PASS pair and a PASS_TO_PASS pair of executions (base, then head) and the defect tests, and
 records ``revalidation.recorded`` (``RVL-nnn``) with the outcome ``regression.derive`` computes, plus a ``validated_by``
@@ -44,6 +45,8 @@ def add(ws: Workspace, actor: ledger.Actor, data: dict) -> dict:
     description = data.get("description")
     if not problems and not description.strip():
         problems = ["description: must not be blank"]
+    if not problems and data["base_commit"] == data["fix_commit"]:
+        problems = ["base_commit and fix_commit are the same commit: a fix changes the code"]
     if problems:
         raise QaError("fix_invalid", "the fix does not fit its schema", errors=problems)
     with ws.lock():
@@ -53,7 +56,7 @@ def add(ws: Workspace, actor: ledger.Actor, data: dict) -> dict:
             if found is None:
                 raise QaError("unknown_finding", "no such finding", id=fid)
             if "fix_submitted" not in FIX_TRANSITIONS.get(found["state"], ()):
-                raise QaError("invalid_transition", "only an open or reopened finding can take a fix", id=fid, state=found["state"])
+                raise QaError("invalid_transition", "only an open, reopened or fix_submitted finding can take a fix", id=fid, state=found["state"])
         record = dict(data, id=ledger.next_human_id(ws, "FIX"))
         event = ledger.append(ws, actor, "fix.recorded", record)
         for fid in record["findings"]:
@@ -87,7 +90,7 @@ def revalidate(ws: Workspace, actor: ledger.Actor, fix_id: str, *, f2p: Sequence
             regression.check_inputs(st, fix, pair_f2p, pair_p2p)
         except regression.Refused as refused:
             if refused.code == "unknown_execution":
-                raise QaError("unknown_execution", str(refused), id=fix_id)
+                raise QaError("unknown_execution", str(refused), fix=fix_id)
             raise QaError("revalidation_refused", str(refused), why=refused.why, fix=fix_id)
         derived = regression.derive(st, fix, pair_f2p, pair_p2p, tests)
         record = {"id": ledger.next_human_id(ws, "RVL"), "fix": fix_id, "f2p": {"base": pair_f2p[0], "head": pair_f2p[1]},

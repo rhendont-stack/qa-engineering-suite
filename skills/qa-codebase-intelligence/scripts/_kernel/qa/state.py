@@ -207,6 +207,12 @@ def _fix_recorded(state: dict, event: dict) -> None:
     if data["id"] in state["fixes"]:  # the first record stays
         _violation(state, event, "duplicate_id")
         return
+    if data["base_commit"] == data["fix_commit"]:  # no change was made, so nothing can be shown to have fixed anything
+        _violation(state, event, "same_commit")
+        return
+    if not data["description"].strip():
+        _violation(state, event, "invalid_data")
+        return
     state["fixes"][data["id"]] = copy.deepcopy(data)
     _queue(state, event)
 
@@ -224,33 +230,57 @@ def _settle_fix_recorded(state: dict, event: dict) -> None:
             finding.update(state="fix_submitted", state_reason="fix " + data["id"] + " submitted", fix=data["id"])
 
 
-def _settle_revalidation_recorded(state: dict, event: dict) -> None:
-    """Trust: the outcome is derived here from the executions and results in the state. The recorded outcome is only a claim; one
-    that differs is a violation and the derived one is used, so writing ``passed`` into the ledger verifies nothing."""
+# Fold-internal: {revalidation event id: what the state held at that event's position says}, decided when the event reduces and
+# applied when it settles. fold drops the key before it returns.
+_REVALIDATIONS = "_revalidations"
+
+
+def _revalidation_recorded(state: dict, event: dict) -> None:
+    """Trust: the outcome is derived from the executions and results the state holds at this event's position in the fold,
+    never from the final state, so a later reclassification or result cannot rewrite a past revalidation. The recorded outcome
+    is only a claim: one that differs is a violation and the derived one is used, so writing ``passed`` verifies nothing."""
     data = event["data"]
     fix = state["fixes"].get(data["fix"])
+    if fix is None:
+        verdict: tuple = ("violation", "unknown_fix")
+    else:
+        f2p, p2p = (data["f2p"]["base"], data["f2p"]["head"]), (data["p2p"]["base"], data["p2p"]["head"])
+        used = set(f2p) | set(p2p)
+        view = {"executions": dict(state["executions"]),
+                "results": {rid: dict(r) for rid, r in state["results"].items() if r["execution"] in used}}
+        for pending in state.get(_SETTLE, []):  # reclassifications recorded before this event, not yet settled
+            if pending["type"] == "result.reclassified":
+                result = view["results"].get(pending["data"]["result"])
+                if result is not None and can_reclassify(result["status"], pending["data"]["new_status"]):
+                    result["status"] = pending["data"]["new_status"]
+        try:
+            regression.check_inputs(view, fix, f2p, p2p)
+            verdict = ("derived", regression.derive(view, fix, f2p, p2p, data["defect_tests"]))
+        except regression.Refused as refused:
+            verdict = ("violation", refused.code)
+    state.setdefault(_REVALIDATIONS, {})[event["id"]] = verdict
+    _queue(state, event)
+
+
+def _settle_revalidation_recorded(state: dict, event: dict) -> None:
+    data = event["data"]
+    kind, payload = state[_REVALIDATIONS].pop(event["id"])
     if data["id"] in state["revalidations"]:
         _violation(state, event, "duplicate_id")
         return
-    if fix is None:
-        _violation(state, event, "unknown_fix")
+    if kind == "violation":
+        _violation(state, event, payload)
         return
-    f2p, p2p = (data["f2p"]["base"], data["f2p"]["head"]), (data["p2p"]["base"], data["p2p"]["head"])
-    try:
-        regression.check_inputs(state, fix, f2p, p2p)
-    except regression.Refused as refused:
-        _violation(state, event, refused.code)
-        return
-    derived = regression.derive(state, fix, f2p, p2p, data["defect_tests"])
-    if derived["outcome"] != data["outcome"]:
+    fix = state["fixes"][data["fix"]]
+    if payload["outcome"] != data["outcome"]:
         _violation(state, event, "outcome_mismatch")
-    state["revalidations"][data["id"]] = dict(copy.deepcopy(data), outcome=derived["outcome"], reason=derived["reason"],
+    state["revalidations"][data["id"]] = dict(copy.deepcopy(data), outcome=payload["outcome"], reason=payload["reason"],
                                               fix_commit=fix["fix_commit"], base_commit=fix["base_commit"], event=event["id"])
-    new = {"passed": "verified_fixed", "failed": "reopened"}.get(derived["outcome"])
+    new = {"passed": "verified_fixed", "failed": "reopened"}.get(payload["outcome"])
     for fid in fix["findings"]:
         finding = state["findings"].get(fid)
         if new is not None and finding is not None and finding["state"] == "fix_submitted" and finding.get("fix") == fix["id"]:
-            finding.update(state=new, state_reason="revalidation %s %s" % (data["id"], derived["outcome"]))
+            finding.update(state=new, state_reason="revalidation %s %s" % (data["id"], payload["outcome"]))
 
 
 def _result_recorded(state: dict, event: dict) -> None:
@@ -427,7 +457,6 @@ def _settle_gate_policy_accepted(state: dict, event: dict) -> None:
     config["accepted_hash"] = next((entry["hash"] for entry in reversed(config["history"]) if "hash" in entry), None)
 
 
-_LIFECYCLE = ("fix.recorded", "revalidation.recorded", "finding.state_changed", "finding.deduplicated")
 _SETTLERS = {"result.recorded": _settle_result, "result.reclassified": _settle_reclassification,
              "report.ingested": _settle_ingest, "finding.updated": _settle_finding_updated,
              "finding.state_changed": _settle_finding_state_changed,
@@ -500,10 +529,7 @@ def _build_tests(state: dict) -> None:
 
 
 def _settle(state: dict) -> None:
-    queued = state.pop(_SETTLE, [])
-    # A revalidation judges the runs as they stand after every reclassification, so the events that move a finding along its
-    # lifecycle settle after the rest, in the order they were recorded among themselves.
-    for event in sorted(queued, key=lambda e: e["type"] in _LIFECYCLE):
+    for event in state.pop(_SETTLE, []):
         _SETTLERS[event["type"]](state, event)
     _build_tests(state)
 
@@ -544,7 +570,7 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "testcase.upserted": _stored("testcases"),
     "trace.linked": _trace_linked,
     "fix.recorded": _fix_recorded,
-    "revalidation.recorded": _queue,
+    "revalidation.recorded": _revalidation_recorded,
 }
 
 
@@ -583,6 +609,7 @@ def fold(events: Iterable[dict], backed: Optional[Callable[[dict], bool]] = None
     _forget_revocations(state, withheld_grants)
     state.pop(_EARLY_REVOCATIONS, None)  # its violations stay: no grant in the ledger holds those ids
     _settle(state)
+    state.pop(_REVALIDATIONS, None)
     return state
 
 

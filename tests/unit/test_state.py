@@ -92,6 +92,20 @@ def test_state_hash_of_a_milestone_2_ledger_is_unchanged():
     assert state.state_hash(folded) == MILESTONE_2_HASH
 
 
+# A second frozen ledger: two findings, a dedupe of one into the other, then a later `finding update` of the kept finding. The
+# hash is what the milestone 2 kernel (a8460cc) computed for it. Events settle in the order they were recorded, so the dedupe
+# links are replaced by the later update, not added to it twice.
+MILESTONE_2_DEDUPE_HASH = "sha256:c797354b801a0f494cd6e4a0a0fe5349979152a08527a836cc9280ef887e3d99"
+
+
+def test_state_hash_of_a_milestone_2_ledger_with_a_dedupe_then_an_update_is_unchanged():
+    events = json.loads((Path(__file__).parent / "milestone2-dedupe-events.json").read_text(encoding="utf-8"))
+    assert [e["type"] for e in events] == ["finding.opened", "finding.opened", "finding.deduplicated", "finding.updated"]
+    folded = state.fold(events)
+    assert folded["violations"] == [] and folded["findings"]["FND-001"]["links"]["duplicates"] == ["FND-002"]
+    assert state.state_hash(folded) == MILESTONE_2_DEDUPE_HASH
+
+
 def test_a_new_key_counts_once_it_holds_something():
     base = state.fold([])
     held = dict(base, worktrees={".qa/work/wt-0": {"commit": "0" * 40, "event": "EVT-1", "removed": None}})

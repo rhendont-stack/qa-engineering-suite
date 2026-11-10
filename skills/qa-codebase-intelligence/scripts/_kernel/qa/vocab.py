@@ -26,14 +26,17 @@ PROTECTED_PATHS = (
 
 # Finding lifecycle (§10.6): {current state: {next state: the fields the transition needs}}. Every transition needs a
 # reason. TRANSITIONS holds only what a person may do by hand. fix_submitted, verified_fixed and reopened are set by fixes and
-# revalidation alone (KERNEL_STATES; FIX_TRANSITIONS says from where), so none is here.
+# revalidation alone (KERNEL_STATES; FIX_TRANSITIONS says from where), so none is a target here.
 TRANSITIONS = {
     "open": {"accepted_risk": ("reason", "accepted_by", "expires_at"), "wont_fix": ("reason",),
              "duplicate": ("reason", "duplicate_of")},
     "accepted_risk": {"open": ("reason",)},
     "wont_fix": {"open": ("reason",)},
     "duplicate": {"open": ("reason",)},
+    # A finding whose fix cannot be revalidated, or that stays broken, can still be set aside by a person.
+    "fix_submitted": {"accepted_risk": ("reason", "accepted_by", "expires_at"), "wont_fix": ("reason",)},
+    "reopened": {"accepted_risk": ("reason", "accepted_by", "expires_at"), "wont_fix": ("reason",)},
 }
 KERNEL_STATES = ("fix_submitted", "verified_fixed", "reopened")
-# {state: the states a fix or a revalidation moves a finding to}; the fold applies these and nothing else reaches them.
-FIX_TRANSITIONS = {"open": ("fix_submitted",), "reopened": ("fix_submitted",), "fix_submitted": ("verified_fixed", "reopened")}
+# {state: the states a fix or a revalidation moves a finding to}; a newer fix supersedes a fix_submitted one.
+FIX_TRANSITIONS = {"open": ("fix_submitted",), "reopened": ("fix_submitted",), "fix_submitted": ("fix_submitted", "verified_fixed", "reopened")}

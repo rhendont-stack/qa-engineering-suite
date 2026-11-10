@@ -370,12 +370,18 @@ def test_a_passed_revalidation_at_the_target_completes_the_step(repo, actor):
     assert step["status"] == "done" and step["outputs"][0]["met"] is True
 
 
-def test_a_failed_revalidation_does_not_meet_outcome_in_passed_but_meets_an_open_filter(repo, actor):
+def test_a_revalidation_output_without_outcome_in_means_passed(repo, actor):
+    plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation"}]))
+    assert _revalidated(repo, actor, _head(repo.root), fixed=False) == "failed"
+    assert _step(repo)["status"] == "pending"
+    plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation", "outcome_in": ["passed", "failed"]}]))
+    assert _step(repo)["status"] == "done"  # an explicit filter is honoured
+
+
+def test_a_failed_revalidation_does_not_meet_outcome_in_passed(repo, actor):
     plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation", "outcome_in": ["passed"]}]))
     assert _revalidated(repo, actor, _head(repo.root), fixed=False) == "failed"
     assert _step(repo)["status"] == "pending"
-    plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation"}]))
-    assert _step(repo)["status"] == "done"
 
 
 @pytest.mark.parametrize("output", [{"kind": "revalidation", "outcome_in": []}, {"kind": "revalidation", "outcome_in": ["fine"]},

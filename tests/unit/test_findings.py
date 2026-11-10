@@ -601,7 +601,8 @@ def test_transitions_table_lives_in_vocab():
     assert findings.TRANSITIONS is vocab.TRANSITIONS
     assert set(vocab.TRANSITIONS["open"]) == {"accepted_risk", "wont_fix", "duplicate"}
     assert all(vocab.TRANSITIONS[s] == {"open": ("reason",)} for s in ("accepted_risk", "wont_fix", "duplicate"))
-    assert set(vocab.KERNEL_STATES).isdisjoint(vocab.TRANSITIONS)
+    assert not any(set(vocab.KERNEL_STATES) & set(steps) for steps in vocab.TRANSITIONS.values())  # no hand path into a kernel state
+    assert set(vocab.TRANSITIONS["fix_submitted"]) == set(vocab.TRANSITIONS["reopened"]) == {"accepted_risk", "wont_fix"}
 
 
 # --------------------------------------------------------------------------- T15-R11, R12: events and the fold

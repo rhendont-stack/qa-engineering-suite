@@ -20,8 +20,8 @@ An output kind counts only at the plan's commit. What each kind needs:
   names the plan's commit in its ``commit`` field.
 * ``gate``: ``min_count`` gate evaluations of the commit, optionally of one ``profile`` and one of ``verdict_in``.
 * ``report``: ``min_count`` rendered reports whose gate evaluated the commit, optionally holding ``format``.
-* ``revalidation``: ``min_count`` revalidations (``RVL-``) of a fix whose ``fix_commit`` is the commit, optionally with an
-  outcome in ``outcome_in``. Only a recorded revalidation meets it, so "verify the fix" is never done by a claim.
+* ``revalidation``: ``min_count`` revalidations (``RVL-``) of a fix whose ``fix_commit`` is the commit, with an
+  outcome in ``outcome_in`` (default: passed). Only a recorded revalidation meets it, so "verify the fix" is never done by a claim.
 """
 from __future__ import annotations
 
@@ -191,9 +191,8 @@ def _evaluate(ws: Workspace, st: dict, output: dict) -> Tuple[bool, str]:
     if kind == "gate":
         return _count(len(_gates(st, output)), wanted, "gate evaluations")
     if kind == "revalidation":
-        wanted_outcomes = output.get("outcome_in")
-        found = sum(1 for r in st["revalidations"].values()
-                    if r["fix_commit"] == commit and (wanted_outcomes is None or r["outcome"] in wanted_outcomes))
+        wanted_outcomes = output.get("outcome_in", ["passed"])
+        found = sum(1 for r in st["revalidations"].values() if r["fix_commit"] == commit and r["outcome"] in wanted_outcomes)
         return _count(found, wanted, "revalidations")
     gates = set(_gates(st, {"commit": commit}))
     fmt = output.get("format")
