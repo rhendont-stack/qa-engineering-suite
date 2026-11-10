@@ -31,11 +31,12 @@ import stat
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from . import ledger, records, schema, state
+from . import gitinfo, ledger, records, schema, state
 from .errors import QaError
 from .workspace import Workspace, write_atomic
 
-# QaError codes raised here: invalid_link, unknown_record, red_check_refused, trace_map_invalid, scan_root_invalid;
+# QaError codes raised here: invalid_link, unknown_record, red_check_refused, trace_map_invalid, scan_root_invalid, target_required,
+# target_invalid, target_unknown, target_ambiguous, target_unavailable;
 # plus ledger.append's.
 
 VIA = ("manual", "tag", "map")
@@ -56,7 +57,8 @@ GAP_KINDS = ("req_without_ac", "ac_without_tc", "tc_not_automated", "tc_never_ex
 _OPEN_FINDINGS = ("open", "reopened", "fix_submitted")
 _NEEDS_FIX = ("open", "reopened")
 
-_TAG = re.compile(r"TC[-_]?([0-9]{3,})(?![0-9])")
+_TAG = re.compile(r"(?<![A-Za-z0-9])TC[-_]?([0-9]{3,})(?![0-9])")
+_FULL_COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _MAX_FILE = 1024 * 1024
 _MAX_FILES = 20000
 _PYTHON_TEST_FILE = re.compile(r"^(test_.*|.*_test)\.py$")
@@ -206,8 +208,8 @@ def _read_regular(path: str) -> Optional[bytes]:
         os.close(fd)
 
 
-def _walk(root: Path) -> Tuple[List[str], int]:
-    """Relative POSIX paths of the files worth reading under ``root``, and how many symlinks were passed over."""
+def _walk(root: Path) -> Tuple[List[str], int, bool]:
+    """Relative POSIX paths of the files worth reading under ``root``, how many symlinks were passed over, and whether the file cap cut the walk short."""
     files: List[str] = []
     symlinks = 0
     base = str(root)
@@ -230,8 +232,8 @@ def _walk(root: Path) -> Tuple[List[str], int]:
                 continue
             files.append(Path(os.path.relpath(full, base)).as_posix())
             if len(files) >= _MAX_FILES:
-                return files, symlinks
-    return files, symlinks
+                return files, symlinks, True
+    return files, symlinks, False
 
 
 def _marker_tags(decorators: List[ast.expr]) -> List[str]:
@@ -270,11 +272,11 @@ def _python_tests(module: str, tree: ast.Module) -> List[Tuple[str, List[str], i
     return found
 
 
-def _scan_source(root: Path) -> Tuple[Dict[str, Set[str]], List[dict], int, int]:
-    """``(tags, unmapped, files_read, symlinks)``: test ids by the test case their source tags, and what could not be placed."""
+def _scan_source(root: Path) -> Tuple[Dict[str, Set[str]], List[dict], int, int, bool]:
+    """``(tags, unmapped, files_read, symlinks, truncated)``: test ids by the test case their source tags, and what could not be placed."""
     tags: Dict[str, Set[str]] = {}
     unmapped: List[dict] = []
-    files, symlinks = _walk(root)
+    files, symlinks, truncated = _walk(root)
     read = 0
     for rel in files:
         raw = _read_regular(os.path.join(str(root), rel))
@@ -303,7 +305,7 @@ def _scan_source(root: Path) -> Tuple[Dict[str, Set[str]], List[dict], int, int]
                 for tag in tags_in(line):
                     unmapped.append({"file": rel, "line": number, "tag": tag,
                                      "reason": "the test id of this language is not derived; map it in .qa/trace/test-map.json"})
-    return tags, unmapped, read, symlinks
+    return tags, unmapped, read, symlinks, truncated
 
 
 def _read_map(ws: Workspace) -> Tuple[Dict[str, Set[str]], List[dict]]:
@@ -348,7 +350,8 @@ def _result_tags(st: dict) -> Dict[str, Set[str]]:
 def scan(ws: Workspace, actor: ledger.Actor, root: Path) -> dict:
     """Link test cases to the tests that implement them, from tags and the test map. Nothing under ``root`` is written.
 
-    Returns ``{linked, already_linked, conflicts, unmapped, unknown_testcases, files_read, symlinks_skipped}``. A test case
+    Returns ``{linked, already_linked, conflicts, unmapped, unknown_testcases, files_read, symlinks_skipped, truncated}``
+    (``truncated``: the file cap was hit and some test files were not read). A test case
     whose tags and map both name tests, and not the same tests, is under ``conflicts`` and linked by neither.
     """
     root = Path(root)
@@ -358,7 +361,7 @@ def scan(ws: Workspace, actor: ledger.Actor, root: Path) -> dict:
     with ws.lock():
         st = state.load(ws)
         tagged = _result_tags(st)
-        source_tags, unmapped, files_read, symlinks = _scan_source(root)
+        source_tags, unmapped, files_read, symlinks, truncated = _scan_source(root)
         for tc, tests in source_tags.items():
             tagged.setdefault(tc, set()).update(tests)
         mapped, map_unmapped = _read_map(ws)
@@ -383,31 +386,45 @@ def scan(ws: Workspace, actor: ledger.Actor, root: Path) -> dict:
                 event = ledger.append(ws, actor, "trace.linked", {"source": tc, "relation": "automated_by", "target": test_id, "via": via})
                 linked.append({"source": tc, "target": test_id, "via": via, "event": event["id"]})
     return {"linked": linked, "already_linked": already, "conflicts": conflicts, "unmapped": unmapped,
-            "unknown_testcases": unknown, "files_read": files_read, "symlinks_skipped": symlinks}
+            "unknown_testcases": unknown, "files_read": files_read, "symlinks_skipped": symlinks, "truncated": truncated}
 
 
 # --------------------------------------------------------------------------- matrix
 
-def _same_commit(commit: Optional[str], target: str) -> bool:
-    if not commit:
-        return False
-    if commit == target:
-        return True
-    return min(len(commit), len(target)) >= 7 and (commit.startswith(target) or target.startswith(commit))
+def resolve_target(ws: Workspace, st: dict, target: Optional[str]) -> str:
+    """The full commit the matrix is about. An abbreviation (7 or more hex digits) is resolved once against the commits the
+    state records: exactly one must match. No target means the workspace's current HEAD; commits are never combined."""
+    if target is None:
+        facts, limitation = gitinfo.git_info(ws.root)
+        commit = facts.get("commit") if facts else None
+        if not isinstance(commit, str) or not _FULL_COMMIT.match(commit):
+            raise QaError("target_unavailable", "the current commit cannot be read; name one with --target", reason=limitation)
+        return commit
+    target = target.strip().lower()
+    if _FULL_COMMIT.match(target):
+        return target
+    if not re.match(r"^[0-9a-f]{7,63}$", target):
+        raise QaError("target_invalid", "the target is a full commit id, or an abbreviation of at least 7 hex digits", target=target)
+    recorded = sorted({(e.get("git") or {}).get("commit") for e in st["executions"].values()} - {None})
+    found = [c for c in recorded if _FULL_COMMIT.match(c) and c.startswith(target)]
+    if len(found) == 1:
+        return found[0]
+    raise QaError("target_unknown" if not found else "target_ambiguous",
+                  "the abbreviation names no recorded commit" if not found else "the abbreviation names several recorded commits",
+                  target=target, candidates=found)
 
 
-def _latest(st: dict, test_id: str, target: Optional[str]) -> Optional[dict]:
-    """The state's entry for the test's latest result on ``target`` (on any commit when ``target`` is None)."""
+def _latest(st: dict, test_id: str, target: str) -> Optional[Tuple[dict, str]]:
+    """The state's entry for the test's latest result on ``target`` (the full commit, matched exactly)."""
     best: Optional[Tuple[Tuple[str, str], dict]] = None
     for entry in st["tests"].get(test_id, {}).values():
         execution = st["executions"].get(entry["execution"], {})
-        commit = (execution.get("git") or {}).get("commit")
-        if target is not None and not _same_commit(commit, target):
+        if (execution.get("git") or {}).get("commit") != target:
             continue
         key = (execution.get("started_at", ""), entry["execution"])
         if best is None or key > best[0]:
             best = (key, entry)
-    return best[1] if best else None
+    return (best[1], target) if best else None
 
 
 def _test_case_status(tests: List[dict]) -> Optional[str]:
@@ -430,8 +447,10 @@ def _by_source(st: dict, relation: str) -> Dict[str, List[str]]:
     return out
 
 
-def matrix(st: dict, target_commit: Optional[str] = None) -> dict:
-    """The traceability matrix over ``st``: no clock, no file, no write; the same state gives the same matrix."""
+def matrix(st: dict, target_commit: str) -> dict:
+    """The traceability matrix over ``st`` for one full commit: no clock, no file, no write; the same state gives the same matrix."""
+    if not isinstance(target_commit, str) or not _FULL_COMMIT.match(target_commit):
+        raise QaError("target_required", "the matrix is about one full commit id; resolve_target gives it", target=target_commit)
     verified = _by_source(st, "verified_by")
     automated = _by_source(st, "automated_by")
     red = _by_source(st, "red_check")
@@ -449,14 +468,16 @@ def matrix(st: dict, target_commit: Optional[str] = None) -> dict:
     for tc in sorted(tcs, key=_order):
         tests = []
         for test_id in sorted(set(automated.get(tc, []))):
-            entry = _latest(st, test_id, target_commit)
-            tests.append({"test_id": test_id, "status": entry["status"] if entry else None, "flaky": bool(entry and entry["flaky"]),
+            found = _latest(st, test_id, target_commit)
+            entry = found[0] if found else None
+            tests.append({"test_id": test_id, "commit": target_commit if entry else None,
+                          "status": entry["status"] if entry else None, "flaky": bool(entry and entry["flaky"]),
                           "result": entry["result"] if entry else None, "execution": entry["execution"] if entry else None})
         cases[tc] = {"id": tc, "oracle": tcs[tc]["oracle"], "status": _test_case_status(tests),
                      "red_check": bool(red.get(tc)), "tests": tests}
         if not tests:
             gap("tc_not_automated", tc)
-        elif cases[tc]["status"] is None:
+        elif cases[tc]["status"] in (None, "not_run"):  # a skipped or missing test did not execute on the target
             gap("tc_never_executed", tc)
         elif cases[tc]["status"] in ("blocked", "inconclusive"):
             gap("tc_last_blocked_or_inconclusive", tc)
@@ -503,7 +524,7 @@ def matrix(st: dict, target_commit: Optional[str] = None) -> dict:
     return {"target": target_commit, "requirements": rows, "testcases": [cases[t] for t in cases], "gaps": gaps, "counts": counts}
 
 
-def write_matrix(ws: Workspace, st: dict, target_commit: Optional[str]) -> Tuple[dict, Path]:
+def write_matrix(ws: Workspace, st: dict, target_commit: str) -> Tuple[dict, Path]:
     """Compute the matrix, check it against its schema, and write ``.qa/trace/matrix.json`` (the same state, the same bytes)."""
     result = matrix(st, target_commit)
     problems = schema.errors(result, schema.load_schema("trace-matrix.schema.json"), base="trace-matrix.schema.json")

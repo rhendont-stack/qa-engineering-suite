@@ -4,7 +4,7 @@
   "description": "What qa trace matrix writes: for every requirement its criteria and test cases, whether it is proven on the target commit, its open findings and its gaps; every test case with the latest result of each automated test on the target commit; and the gaps over the whole chain. Derived from the state alone, so the same state gives the same bytes.",
   "type": "object",
   "properties": {
-    "target": {"type": ["string", "null"], "description": "the commit the results were chosen for; null means the latest result on any commit"},
+    "target": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$", "description": "the full commit every result row was chosen for; results of other commits are never used"},
     "requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
     "testcases": {"type": "array", "items": {"$ref": "#/$defs/testcase"}},
     "gaps": {"type": "array", "items": {"$ref": "#/$defs/gap"}},
@@ -61,12 +61,13 @@
             "type": "object",
             "properties": {
               "test_id": {"type": "string", "minLength": 1},
+              "commit": {"type": ["string", "null"], "description": "the commit of the result row (the target), null when the test has no result on it"},
               "status": {"type": ["string", "null"]},
               "flaky": {"type": "boolean"},
               "result": {"type": ["string", "null"]},
               "execution": {"type": ["string", "null"]}
             },
-            "required": ["test_id", "status", "flaky", "result", "execution"],
+            "required": ["test_id", "commit", "status", "flaky", "result", "execution"],
             "additionalProperties": false
           }
         }

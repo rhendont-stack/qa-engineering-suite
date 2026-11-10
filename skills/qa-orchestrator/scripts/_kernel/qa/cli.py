@@ -323,7 +323,7 @@ def _add_record_commands(groups: Dict[str, Any]) -> None:
     scan = _command(groups, "trace scan", "link test cases to tests from TC-nnn tags and .qa/trace/test-map.json; reads the project, writes nothing in it")
     scan.add_argument("--root", metavar="PATH", help="the directory to scan (default: the workspace root)")
     matrix = _command(groups, "trace matrix", "write .qa/trace/matrix.json and print the gap counts")
-    matrix.add_argument("--target", metavar="COMMIT", help="choose the latest result on this commit (default: on any commit)")
+    matrix.add_argument("--target", metavar="COMMIT", help="the commit to judge: a full id, or an abbreviation of 7+ digits that names one recorded commit (default: the current HEAD)")
 
 
 def build_parser() -> _Parser:
@@ -555,7 +555,8 @@ def cmd_trace_scan(args: argparse.Namespace, ctx: Context) -> int:
 
 
 def cmd_trace_matrix(args: argparse.Namespace, ctx: Context) -> int:
-    result, path = trace.write_matrix(ctx.ws, state.load(ctx.ws), args.target)
+    st = state.load(ctx.ws)
+    result, path = trace.write_matrix(ctx.ws, st, trace.resolve_target(ctx.ws, st, args.target))
     ctx.reply(path=path.relative_to(ctx.ws.root).as_posix(), target=result["target"], counts=result["counts"],
               requirements=len(result["requirements"]), testcases=len(result["testcases"]))
     return 0

@@ -49,7 +49,7 @@ def chain(ws, actor, *, automated=True, **tc_changes):
         trace.link(ws, actor, "TC-001", "automated_by", TEST_ID)
 
 
-def gaps(ws, target=None):
+def gaps(ws, target=COMMIT_A):
     return trace.matrix(state.load(ws), target)["gaps"]
 
 
@@ -235,6 +235,23 @@ def test_scan_reads_tags_and_the_map_and_reports_disagreement(ws, actor, tmp_pat
     assert again["linked"] == [] and again["already_linked"] == 4
 
 
+def test_a_tag_needs_a_boundary_before_it(ws, actor, tmp_path):
+    several_cases(ws, actor, 1)
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "test_a.py").write_text("def test_ETC_001_not_a_tag():\n    pass\n\n\ndef test_x_TC_001_is():\n    pass\n")
+    assert [l["target"] for l in trace.scan(ws, actor, root)["linked"]] == ["test_a::test_x_TC_001_is"]
+
+
+def test_scan_says_when_the_file_cap_cut_it_short(ws, actor, tmp_path, monkeypatch):
+    several_cases(ws, actor, 1)
+    for name in ("test_a.py", "test_b.py"):
+        (tmp_path / name).write_text("def test_TC001_x():\n    pass\n")
+    assert trace.scan(ws, actor, tmp_path)["truncated"] is False
+    monkeypatch.setattr(trace, "_MAX_FILES", 1)
+    assert trace.scan(ws, actor, tmp_path)["truncated"] is True
+
+
 def test_a_map_alone_links_with_via_map(ws, actor, tmp_path):
     several_cases(ws, actor, 1)
     write_map(ws, {"TC-001": ["tests/test_a.py::TestB::test_c"]})
@@ -380,7 +397,7 @@ def test_an_open_finding_that_violates_a_criterion_is_listed_under_its_requireme
     chain(ws, actor)
     findings.add(ws, actor, base())
     trace.link(ws, actor, "FND-001", "violates", "AC-001.1")
-    row = trace.matrix(state.load(ws), None)["requirements"][0]
+    row = trace.matrix(state.load(ws), COMMIT_A)["requirements"][0]
     assert row["findings"] == ["FND-001"]
 
 
@@ -400,8 +417,9 @@ def test_result_on_another_commit_is_not_the_latest(ws, actor):
     assert trace.matrix(st, COMMIT_B)["testcases"][0]["status"] == "failed"
     assert trace.matrix(st, "c" * 40)["testcases"][0]["status"] is None
     assert {"kind": "tc_never_executed", "id": "TC-001"} in trace.matrix(st, "c" * 40)["gaps"]
-    assert trace.matrix(st, COMMIT_A[:8])["testcases"][0]["status"] == "passed"  # an abbreviated commit names the same one
-    assert trace.matrix(st, None)["testcases"][0]["status"] == "failed"  # no target: the latest on any commit
+    assert [t["commit"] for t in trace.matrix(st, COMMIT_A)["testcases"][0]["tests"]] == [COMMIT_A]
+    refused("target_required", trace.matrix, st, None)  # commits are never combined
+    refused("target_required", trace.matrix, st, COMMIT_A[:8])
 
 
 def test_the_latest_result_on_a_commit_decides(ws, actor):
@@ -416,6 +434,49 @@ def test_a_test_case_with_one_unexecuted_test_is_not_passed(ws, actor):
     trace.link(ws, actor, "TC-001", "automated_by", "tests.test_discount::test_second")
     record_run(ws, actor, "A", COMMIT_A, [(TEST_ID, "passed", {})], 1)
     assert trace.matrix(state.load(ws), COMMIT_A)["testcases"][0]["status"] == "not_run"
+
+
+def test_a_skipped_latest_result_is_a_gap(ws, actor):
+    chain(ws, actor)
+    record_run(ws, actor, "A", COMMIT_A, [(TEST_ID, "not_run", {})], 1)
+    assert {"kind": "tc_never_executed", "id": "TC-001"} in gaps(ws)
+
+
+def test_an_abbreviated_target_is_resolved_once_against_the_recorded_commits(ws, actor):
+    chain(ws, actor)
+    record_run(ws, actor, "A", COMMIT_A, [(TEST_ID, "passed", {})], 1)
+    record_run(ws, actor, "B", "ab" + "c" * 38, [(TEST_ID, "failed", {})], 2)
+    record_run(ws, actor, "C", COMMIT_B, [(TEST_ID, "passed", {})], 3)
+    st = state.load(ws)
+    assert trace.resolve_target(ws, st, "b" * 7) == COMMIT_B and trace.resolve_target(ws, st, COMMIT_A.upper()) == COMMIT_A
+    assert trace.resolve_target(ws, st, "d" * 40) == "d" * 40  # a full id is taken as given
+    assert refused("target_unknown", trace.resolve_target, ws, st, "1234567").details["candidates"] == []
+    refused("target_invalid", trace.resolve_target, ws, st, "aaaaaa")  # under 7 digits
+    refused("target_invalid", trace.resolve_target, ws, st, "not-hex")
+
+
+def test_an_ambiguous_abbreviation_names_its_candidates(ws, actor):
+    chain(ws, actor)
+    record_run(ws, actor, "A", "abcdef0" + "1" * 33, [(TEST_ID, "passed", {})], 1)
+    record_run(ws, actor, "B", "abcdef0" + "2" * 33, [(TEST_ID, "passed", {})], 2)
+    error = refused("target_ambiguous", trace.resolve_target, ws, state.load(ws), "abcdef0")
+    assert error.details["candidates"] == ["abcdef0" + "1" * 33, "abcdef0" + "2" * 33]
+
+
+def test_a_recorded_short_commit_never_matches_by_prefix(ws, actor):
+    chain(ws, actor)
+    record_run(ws, actor, "A", "abcdef0", [(TEST_ID, "passed", {})], 1)
+    st = state.load(ws)
+    refused("target_unknown", trace.resolve_target, ws, st, "abcdef0")
+    assert trace.matrix(st, "abcdef0" + "9" * 33)["testcases"][0]["status"] is None
+
+
+def test_no_target_means_the_current_commit_and_refuses_when_it_is_unknown(ws, actor, monkeypatch):
+    st = state.load(ws)
+    monkeypatch.setattr(trace.gitinfo, "git_info", lambda root: ({"commit": COMMIT_B}, None))
+    assert trace.resolve_target(ws, st, None) == COMMIT_B
+    monkeypatch.setattr(trace.gitinfo, "git_info", lambda root: (None, "not a git repository"))
+    refused("target_unavailable", trace.resolve_target, ws, st, None)
 
 
 def test_matrix_does_not_change_the_state_it_reads(ws, actor):
