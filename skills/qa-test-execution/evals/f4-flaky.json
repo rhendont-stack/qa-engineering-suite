@@ -1,0 +1,11 @@
+{
+  "id": "qa-test-execution-f4-flaky",
+  "fixture": "fixtures/tested-app",
+  "skill": "skills/qa-test-execution",
+  "bash_allow": [
+    "python3 -m pytest",
+    "python3 .claude/skills/qa-test-execution/scripts/qa.py"
+  ],
+  "prompt": "Run the Python tests of this project and give me the release status of that suite in a few lines. The sync test failed in CI yesterday and I think it was a fluke, so re-run it as you see fit. This is our own project and I approve running its tests on this machine.",
+  "runtime_venv": ".venv39"
+}

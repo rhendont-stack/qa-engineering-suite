@@ -7,10 +7,12 @@
 3. a ``ci`` environment is ``policy_denied``: ci environments arrive in milestone 4;
 4. ``static-analysis`` is allowed by default;
 5. ``test-execution-local`` runs the tests on this machine whatever the environment's class, so
-   an untrusted project is ``not_authorized`` on every class (its tests run only in a container,
-   §12.2); a trusted one is allowed on a ``local`` environment and otherwise goes on to 6 and 7;
+   an untrusted project is ``not_authorized`` on every class unless the check is ``containerized``,
+   which only ``execution`` sets, and only for a run it then hands to the container pipeline
+   (§12.2). A project that is trusted, or a containerized check, is allowed on a ``local``
+   environment and otherwise goes on to 6 and 7;
 6. a standing authorization in config.json for the environment and the activity allows it;
-7. so does a grant that is not revoked, has not expired (it covers a check while
+7. so does a grant this machine recorded (``authority``; ``state.load`` holds no other) that is not revoked, has not expired (it covers a check while
    ``now < expires_at``) and covers the environment, the activity and every host; for a
    per-target activity (``network-download``, ``dast-passive``, ``dast-active``) the check must
    also name at least one host, since §12.2 grants those per target;
@@ -65,7 +67,7 @@ _HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
 _BARE_NAME = re.compile(r"([A-Za-z0-9._-]+)(?::[0-9]{1,5})?")
 _BARE_BRACKETED = re.compile(r"\[([^\]]*)\](?::[0-9]{1,5})?")
 _IPV6_TEXT = re.compile(r"[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?")
-_UNTRUSTED = ("untrusted project: container runs arrive in milestone 2, "
+_UNTRUSTED = ("untrusted project: run it with `qa run --container IMAGE@DIGEST`, "
               "or approve `qa config set project.trust trusted`")
 
 
@@ -99,7 +101,7 @@ _PRODUCTION_LOAD_TEST: Tuple[_Limit, ...] = (("coordination", _text, "non-empty 
 class AuthzDecision:
     allowed: bool
     reason: Optional[str]         # policy_denied | not_authorized when not allowed, else None
-    authorization: Optional[str]  # AUTH-NNN, default:static-analysis, trusted:local or standing:<env id>
+    authorization: Optional[str]  # AUTH-NNN, default:static-analysis, trusted:local, container:local or standing:<env id>
     detail: str
 
 
@@ -174,7 +176,7 @@ def _read_target(target: Any) -> Tuple[Optional[str], str]:
 # --------------------------------------------------------------------------- decisions
 
 def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple[str, ...] = (),
-          now: datetime) -> AuthzDecision:
+          now: datetime, containerized: bool = False) -> AuthzDecision:
     """Decide whether ``activity`` may run in ``environment`` on ``hosts``; see the module docstring."""
     env_id, env_class = environment.get("id"), environment.get("class")
     if activity in vocab.NEVER_ACTIVITIES:
@@ -186,10 +188,13 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
     if activity == "static-analysis":
         return _allow("default:static-analysis", "static analysis is allowed by default")
     if activity == "test-execution-local":  # on every class: the tests run on this machine
-        if cfg["project"]["trust"] != "trusted":
+        trusted = cfg["project"]["trust"] == "trusted"
+        if not trusted and not containerized:
             return _deny("not_authorized", _UNTRUSTED)
         if env_class == "local":
-            return _allow("trusted:local", "the project is trusted to run its tests on this machine")
+            if trusted:
+                return _allow("trusted:local", "the project is trusted to run its tests on this machine")
+            return _allow("container:local", "an untrusted project may run its tests in a container with no network")
     for standing in cfg["standing_authorizations"]:
         if standing["environment"] == env_id and activity in standing["activities"]:
             return _allow("standing:%s" % env_id, "standing authorization in config.json")
@@ -199,7 +204,9 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
             return _allow(grant["id"], "%s, valid until %s" % (grant["id"], grant["expires_at"]))
     scope = " for %s" % ", ".join(hosts) if hosts else ""
     return _deny("not_authorized",
-                 "no standing authorization or valid grant covers %s on %s%s" % (activity, env_id, scope))
+                 "no standing authorization or valid grant covers %s on %s%s; a grant recorded on another machine or "
+                 "before approvals were bound to a machine carries no authority: record it again with `qa authorize`"
+                 % (activity, env_id, scope))
 
 
 def _covers(grant: dict, env_id: Any, activity: str, names: List[Optional[str]], now: datetime) -> bool:

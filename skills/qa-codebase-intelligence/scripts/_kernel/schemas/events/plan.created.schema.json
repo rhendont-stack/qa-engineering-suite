@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan.created event data",
+  "description": "A plan as created: its target commit is frozen here, and each expected output carries that commit. Whether a step is done is never recorded; plan status computes it from the ledger.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "plan.schema.json#/$defs/plan_id"},
+    "mode": {"type": "string", "minLength": 1},
+    "target": {"$ref": "plan.schema.json#/$defs/target"},
+    "steps": {"type": "array", "items": {"$ref": "plan.schema.json#/$defs/step"}, "minItems": 1}
+  },
+  "required": ["id", "mode", "target", "steps"],
+  "additionalProperties": false
+}

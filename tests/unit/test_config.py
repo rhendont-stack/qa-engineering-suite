@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import qa
+from helpers import without_mac
 from qa import canonical, config, ledger, schema, state, vocab, workspace
 from qa.errors import QaError
 
@@ -320,7 +321,7 @@ def test_accept_refusals_and_envelope(fresh, actor):
     fresh.path("config.json").write_bytes(workspace.config_bytes(workspace.default_config("y")))
     e = config.accept(fresh, actor, "looks right")
     assert e["type"] == "config.accepted"
-    assert e["data"] == {"hash": config.current_hash(fresh), "approval": "looks right"}
+    assert without_mac(e["data"]) == {"hash": config.current_hash(fresh), "approval": "looks right"}
 
 
 def test_event_schemas():
@@ -354,8 +355,8 @@ def test_reducers_set_hash_and_history(fresh, actor):
 def test_record_initialized(ws, actor):
     e = config.record_initialized(ws, actor)
     assert e["type"] == "workspace.initialized"
-    assert e["data"] == {"kernel_version": qa.KERNEL_VERSION, "schema_version": qa.SCHEMA_VERSION,
-                         "config_hash": config.current_hash(ws)}
+    assert without_mac(e["data"]) == {"kernel_version": qa.KERNEL_VERSION, "schema_version": qa.SCHEMA_VERSION,
+                                      "config_hash": config.current_hash(ws)}
 
 
 def test_resolve_host_variants():

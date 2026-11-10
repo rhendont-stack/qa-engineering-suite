@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import qa
-from helpers import WHOLE_READ_SAFE, WRITE_JUNIT, finishes, replace_file, req
+from helpers import WHOLE_READ_SAFE, WRITE_JUNIT, finishes, replace_file, req, write_event_at
 from qa import authz, canonical, config, envinfo, execution, ids, ingest, integrity, ledger, schema, state, workspace
 from qa.errors import QaError
 
@@ -1047,7 +1047,7 @@ def test_alert_report_shape(trusted, actor, py):
 def test_execution_record_has_exactly_the_ruled_keys(trusted, actor, py):
     r = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))
     doc = schema.load_schema("events/execution.recorded.schema.json")
-    assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"])
+    assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"]) - {"container"}  # only a container run has it
     assert set(_data(trusted, "execution.recorded")[0]) == set(doc["required"])
     assert set(_record(trusted, r)) == set(doc["required"]) | {"ingested"}
 
@@ -1134,7 +1134,8 @@ def test_results_follow_the_execution_event(trusted, actor, py):
 @pytest.mark.parametrize("name", ["execution.recorded", "result.recorded", "result.reclassified", "command.blocked", "report.ingested"])
 def test_event_schemas_are_closed(name):
     doc = schema.load_schema("events/%s.schema.json" % name)
-    assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"])
+    optional = {"container"} if name == "execution.recorded" else set()
+    assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"]) - optional
 
 
 # --------------------------------------------------------------------------- T14-R13: state
@@ -1149,8 +1150,7 @@ def test_reclassification_folded_before_its_result_still_applies(ws, actor, froz
     frozen_now.set(T0 + timedelta(seconds=10))
     ledger.append(ws, actor, "execution.recorded", _execution_data(EXE_A))
     ledger.append(ws, actor, "result.recorded", _result_data(RES_A, EXE_A))
-    frozen_now.set(T0)
-    ledger.append(ws, actor, "result.reclassified", _reclassified(RES_A, "blocked"))
+    write_event_at(ws, actor, T0, "result.reclassified", _reclassified(RES_A, "blocked"))
     assert ledger.iter_all_events(ws)[0]["type"] == "result.reclassified"
     st = state.load(ws)
     assert st["violations"] == [] and st["results"][RES_A]["status"] == "blocked"
@@ -1159,8 +1159,7 @@ def test_reclassification_folded_before_its_result_still_applies(ws, actor, froz
 def test_ingest_folded_before_its_execution_still_applies(ws, actor, frozen_now):
     frozen_now.set(T0 + timedelta(seconds=10))
     ledger.append(ws, actor, "execution.recorded", _execution_data(EXE_A))
-    frozen_now.set(T0)
-    event = ledger.append(ws, actor, "report.ingested", _ingested(EXE_A))
+    event = write_event_at(ws, actor, T0, "report.ingested", _ingested(EXE_A))
     assert ledger.iter_all_events(ws)[0]["type"] == "report.ingested"
     st = state.load(ws)
     assert st["violations"] == [] and st["executions"][EXE_A]["ingested"] == [dict(_ingested(EXE_A), event=event["id"])]
@@ -1169,8 +1168,8 @@ def test_ingest_folded_before_its_execution_still_applies(ws, actor, frozen_now)
 def test_result_folded_before_its_execution_is_kept_and_counted(ws, actor, frozen_now):
     frozen_now.set(T0 + timedelta(seconds=10))
     ledger.append(ws, actor, "execution.recorded", _execution_data(EXE_A))
-    frozen_now.set(T0)
-    ledger.append(ws, actor, "result.recorded", _result_data(RES_A, EXE_A))
+    write_event_at(ws, actor, T0, "result.recorded", _result_data(RES_A, EXE_A))
+    assert ledger.iter_all_events(ws)[0]["type"] == "result.recorded"
     st = state.load(ws)
     assert st["violations"] == [] and st["tests"]["c::t"][EXE_A]["attempts"] == 1
 
@@ -1575,7 +1574,7 @@ def test_an_undeclared_file_under_reports_goes_and_the_stored_copy_stays(trusted
 
 def test_a_timed_out_run_is_cleared_too(trusted, actor, tmp_path):
     tool = _stub(tmp_path, "slow-tool", ': > "$1/stray.txt"\nexec sleep 30')
-    r = execution.execute(trusted, actor, execution.RunRequest(command=[tool, "{evidence}"], timeout_s=2), grace_s=0.5)
+    r = execution.execute(trusted, actor, execution.RunRequest(command=[tool, "{evidence}"], timeout_s=10), grace_s=0.5)
     assert r["reason"] == "timeout" and _left(trusted, r) == STORED and _undeclared(r)[0].startswith("1 ")
 
 

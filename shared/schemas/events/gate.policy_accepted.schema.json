@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "gate.policy_accepted event data",
-  "description": "The user accepted a proposed gate override, which was written into config.json with this hash. proposal is the event ID of the gate.policy_proposed event. The approval quote carries no pattern because it may hold redaction markers.",
+  "description": "The user accepted a proposed gate override, which was written into config.json with this hash. proposal is the event ID of the gate.policy_proposed event. The approval quote carries no pattern because it may hold redaction markers. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority.",
   "type": "object",
   "properties": {
     "proposal": {"$ref": "defs.schema.json#/$defs/evt_id"},
     "approval": {"type": "string", "minLength": 1},
-    "config_hash": {"$ref": "defs.schema.json#/$defs/sha256"}
+    "config_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
   },
   "required": ["proposal", "approval", "config_hash"],
   "additionalProperties": false

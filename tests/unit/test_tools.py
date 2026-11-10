@@ -288,8 +288,58 @@ def test_git_runs_read_only(tmp_path):
     root = tmp_path / "root"; put(root, "a.md", "text")
     check_repo(root, env={"PATH": str(bin_dir)})
     lines = log.read_text().splitlines()
-    assert len(lines) == 2 and all(l.startswith("0 -C %s -c core.fsmonitor=false -c core.untrackedCache=false " % root) for l in lines)
-    assert "ls-files -z --cached --others --exclude-standard" in lines[1]
+    assert len(lines) == 3 and all(l.startswith("0 -C %s -c core.fsmonitor=false -c core.untrackedCache=false " % root) for l in lines)
+    assert lines[0].endswith("config --list --null --show-scope") and "core.hooksPath=%s" % os.devnull in lines[0]
+    assert "ls-files -z --cached --others --exclude-standard" in lines[2]
+
+
+# --------------------------------------------------------------------------- hygiene (I1): samples are built at test time, so this file stays clean
+
+PRIVATE_IP = ".".join(["10", "20", "30", "40"])
+PERSONAL_EMAIL = "someone" + "@" + "mail-provider.com"
+
+
+@pytest.mark.parametrize("name, line, kind", [
+    ("tests/unit/test_x.py", "HOST = '%s'\n" % PRIVATE_IP, "ip_address"),
+    ("tools/x.py", "CONTACT = '%s'\n" % PERSONAL_EMAIL, "email_address"),
+])
+def test_check_repo_flags_addresses_in_tests_and_tools(tmp_path, name, line, kind):
+    put(tmp_path, name, "x = 1\n" + line)
+    assert problems(check_repo(tmp_path)) == ["%s: %s: line 2 holds %s" % (name, kind, "an IP address; use a documentation address"
+                                              if kind == "ip_address" else "an email address; use a reserved domain")]
+
+
+@pytest.mark.parametrize("line", ["127.0.0.1", "0.0.0.0", ".".join(["192", "0", "2", "7"]), "1.1.1.1", "t@example.invalid",
+                                  "a@example.com", "pw@db.internal", "version 1.2.3", "999.1.1.1", "x.1.2.3.4.y"])
+def test_check_repo_allows_reserved_addresses_and_non_addresses(tmp_path, line):
+    put(tmp_path, "tests/a.py", "v = '%s'\n" % line)
+    assert check_repo(tmp_path).returncode == 0
+
+
+def test_addresses_outside_tests_and_tools_are_not_scanned(tmp_path):
+    put(tmp_path, "docs/a.md", "Reach %s at %s.\n" % (PERSONAL_EMAIL, PRIVATE_IP))
+    assert check_repo(tmp_path).returncode == 0
+
+
+def test_private_terms_are_found_anywhere_but_never_repeated(tmp_path):
+    term = "build" + "-box-" + "private"
+    put(tmp_path, ".private-terms", "# local only\n%s\n" % term.upper())
+    put(tmp_path, "docs/a.md", "one\nssh %s docker\n" % term)
+    put(tmp_path, "tests/b.py", "ENGINE = 'ssh %s wsl -e docker'\n" % term)
+    put(tmp_path, ".qa/config.json", '{"engine": "ssh %s docker"}\n' % term)
+    r = check_repo(tmp_path)
+    assert problems(r) == ["docs/a.md: private_term: line 2 holds a term listed in .private-terms",
+                           "tests/b.py: private_term: line 1 holds a term listed in .private-terms"]
+    assert term not in r.stdout.lower()
+
+
+def test_without_a_private_terms_file_nothing_is_flagged_for_terms(tmp_path):
+    put(tmp_path, "tests/b.py", "ENGINE = 'ssh engine-host docker'\n")
+    assert check_repo(tmp_path).returncode == 0
+
+
+def test_the_private_terms_file_is_git_ignored():
+    assert ".private-terms" in (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
 
 
 # --------------------------------------------------------------------------- the workflow (T19-R11, T19-R12); actionlint is the only other check it gets here

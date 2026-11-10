@@ -1,0 +1,34 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+// Every configuration is locked, so the resolved versions are the ones in gradle.lockfile.
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Downloads every jar the tests need, so that they can then run with no network.
+tasks.register('fetchDependencies') {
+    doLast {
+        configurations.testCompileClasspath.files
+        configurations.testRuntimeClasspath.files
+    }
+}
+
+test {
+    useJUnitPlatform()
+    // -PjunitDir=<directory> puts the XML reports there instead of under build/.
+    if (project.hasProperty('junitDir')) {
+        reports.junitXml.outputLocation.set(file(project.property('junitDir')))
+    }
+}

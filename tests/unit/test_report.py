@@ -420,10 +420,13 @@ def test_verdict_token_against_the_cited_gate(trusted, actor):
     assert kinds("%s says %s and %s\n" % (g["id"], g["verdict"], other), st) == ["status_mismatch"]
 
 
-def test_two_gates_on_a_line_are_not_compared(trusted, actor):
+def test_two_gates_on_a_line_are_each_compared(trusted, actor):  # I3: every cited gate must agree with the verdict word
     gate.evaluate(trusted, actor, profile="change"); gate.evaluate(trusted, actor, profile="change")
     st = state.load(trusted)
-    assert check_markdown("GATE-001 and GATE-002 say READY\n", st) == []
+    recorded = st["gates"]["GATE-001"]["verdict"]
+    other = "READY" if recorded != "READY" else "NOT_READY"
+    assert check_markdown("GATE-001 and GATE-002 say %s\n" % recorded, st) == []
+    assert kinds("GATE-001 and GATE-002 say %s\n" % other, st) == ["status_mismatch", "status_mismatch"]
 
 
 def test_a_cited_execution_decides_the_status_word(trusted, actor, py):
@@ -479,7 +482,8 @@ def test_an_unknown_execution_or_gate_beside_a_known_one_stops_the_comparison(tr
     unknown_exe, unknown_gate = "EXE-" + "0" * 26, "GATE-099"
     other = "READY" if g["verdict"] != "READY" else "NOT_READY"
     assert kinds("%s and %s passed\n" % (exe, unknown_exe), st) == ["unknown_id"]
-    assert kinds("%s and %s say %s\n" % (g["id"], unknown_gate, other), st) == ["unknown_id"]
+    # a verdict is judged against every gate that resolves, even beside an unknown one (I3)
+    assert kinds("%s and %s say %s\n" % (g["id"], unknown_gate, other), st) == ["status_mismatch", "unknown_id"]
     assert kinds("%s passed\n" % exe, st) == ["status_mismatch"]  # alone it is still compared
 
 
@@ -646,3 +650,177 @@ def test_the_line_breaks_are_written_as_escapes():  # M9: an editor shows nothin
     source = (REPO / "shared" / "kernel" / "qa" / "report" / "__init__.py").read_text(encoding="utf-8")
     assert "\u2028" not in source and "\u2029" not in source
     assert {"\u2028", "\u2029"} <= set(report._LINE_BREAKS)
+
+
+# --------------------------------------------------------------------------- executive summary (task 14)
+
+def _exec_state(trusted, actor):
+    findings.add(trusted, actor, base(component={"path": "a/low.py", "criticality": "low"},
+                                     severity_rationale={"anchor": "SEC-M1", "modifiers": []}, title="Low one",
+                                     refs={"rule": "manual", "location": "a/low.py"}, recommendation="Fix the low one"))
+    findings.add(trusted, actor, base(title="Critical one", recommendation="Fix the critical one"))
+    findings.add(trusted, actor, base(component={"path": "a/mid.py", "criticality": "normal"}, title="Middle one",
+                                     refs={"rule": "manual", "location": "a/mid.py"}, recommendation=None))
+    gate.evaluate(trusted, actor, profile="change")
+    return state.load(trusted)
+
+
+def test_executive_section_is_byte_stable(trusted, actor):
+    st = _exec_state(trusted, actor)
+    a, b = report.render_executive(st, project="Shop"), report.render_executive(st, project="Shop")
+    assert a == b and a.endswith("\n") and not a.endswith("\n\n")
+    assert a.splitlines()[0] == "# QA report: Shop" and "## Executive summary" in a
+    first, second = report.render(trusted, actor, formats=("executive",)), report.render(trusted, actor, formats=("executive",))
+    assert first["data"]["files"].keys() == {"executive.md"}
+    assert first["data"]["files"] == second["data"]["files"]
+    assert not re.search(r"RPT-\d|T\d\d:\d\d:\d\d", a)
+
+
+def test_executive_recommendations_ordered_by_priority(trusted, actor):
+    text = report.render_executive(_exec_state(trusted, actor), project="Shop")
+    lines = section(text, "Recommendations")
+    recs = [l for l in lines if re.match(r"\d+\. ", l)]
+    assert [re.search(r"FND-\d+", l).group(0) for l in recs] == ["FND-002", "FND-003", "FND-001"]
+    assert [re.search(r"P\d", l).group(0) for l in recs] == ["P0", "P1", "P3"]
+    assert "Fix the critical one" in recs[0] and "Middle one" in recs[1]  # no recommendation: the title stands in
+
+
+def test_executive_passes_the_claim_check_and_carries_the_integrity_headline(trusted, actor):
+    st = _exec_state(trusted, actor)
+    assert check_markdown(report.render_executive(st, project="Shop"), st) == []
+    assert "**Verdict:** " in report.render_executive(st, project="Shop")
+    broken = state.load(trusted)
+    broken["violations"].append({"event": "EV-x", "kind": "hash_mismatch"})
+    assert report.render_executive(broken, project="Shop").splitlines()[2].startswith("**Integrity failure:**")
+
+
+def test_executive_without_findings_or_gate_says_so(ws):
+    text = report.render_executive(state.load(ws), project="Shop")
+    assert "No gate evaluation recorded; no verdict." in text and "No unresolved findings." in text
+
+
+# --------------------------------------------------------------------------- fix round 1: tamper after the gate, row cap
+
+def _gated_run(trusted, actor, py):
+    exe = run(trusted, actor, py, "pass")
+    gate.evaluate(trusted, actor, profile="change")
+    return exe
+
+
+def _tamper(ws, exe):
+    log = ws.path("evidence", exe, "stdout.log")
+    log.write_bytes(log.read_bytes() + b"added after the gate\n")
+
+
+@pytest.mark.parametrize("fmt,name", [("md", "report.md"), ("executive", "executive.md"), ("json", "report.json")])
+def test_a_log_edited_after_the_gate_is_the_headline_in_every_format(trusted, actor, py, fmt, name):
+    exe = _gated_run(trusted, actor, py)
+    _tamper(trusted, exe)
+    event = render(trusted, actor, formats=(fmt,))
+    text = trusted.path("reports", event["data"]["id"], name).read_text(encoding="utf-8")
+    if fmt in ("md", "executive"):
+        lines = text.splitlines()
+        assert lines[2].startswith("**Integrity failure:**") and "ledger verification" in lines[2]
+        verdict = state.load(trusted)["gates"]["GATE-001"]["verdict"]
+        assert "**Verdict:**" not in text and ("%s (GATE-001" % verdict) in lines[3]
+        assert lines[3].startswith("**Recorded verdict, not current:**") and "cannot be relied on" in lines[3]
+        assert "before the change" in lines[3]
+    elif fmt == "json":
+        data = json.loads(text)
+        recorded = state.load(trusted)["gates"]["GATE-001"]["verdict"]
+        assert data["verdict"] is None and data["recorded_verdict"] == recorded and data["verdict_current"] is False
+        assert data["integrity"]["ledger_problems"][0]["kind"] == "modified"
+
+
+def test_report_check_flags_a_file_when_the_ledger_fails_now(trusted, actor, py):
+    exe = _gated_run(trusted, actor, py)
+    event = render(trusted, actor, formats=("executive",))
+    path = trusted.path("reports", event["data"]["id"], "executive.md")
+    assert report.check(trusted, path.read_text(encoding="utf-8")) == []
+    _tamper(trusted, exe)
+    assert [p.kind for p in report.check(trusted, path.read_text(encoding="utf-8"))] == ["ledger_integrity"]
+
+
+def test_a_log_edited_before_the_gate_keeps_the_gates_own_verdict_line_and_passes_the_check(trusted, actor, py):
+    exe = run(trusted, actor, py, "pass")
+    _tamper(trusted, exe)
+    gate.evaluate(trusted, actor, profile="change")
+    event = render(trusted, actor, formats=("md",))
+    text = trusted.path("reports", event["data"]["id"], "report.md").read_text(encoding="utf-8")
+    assert text.splitlines()[2].startswith("**Integrity failure:**") and "**Verdict:** NOT_READY (GATE-001" in text
+    assert report.check(trusted, text) == []
+
+
+def test_a_clean_ledger_keeps_the_report_unchanged(trusted, actor, py):
+    from qa import config
+    _gated_run(trusted, actor, py)
+    st, project = state.load(trusted), config.load_config(trusted)["project"]["name"]
+    event = render(trusted, actor, formats=("md", "json", "executive"))
+    folder = trusted.path("reports", event["data"]["id"])
+    assert (folder / "report.md").read_bytes() == render_markdown(st, project=project).encode("utf-8")
+    assert (folder / "executive.md").read_bytes() == report.render_executive(st, project=project).encode("utf-8")
+    assert "Recorded verdict" not in (folder / "executive.md").read_text(encoding="utf-8")
+    assert "verdict_current" not in json.loads((folder / "report.json").read_text(encoding="utf-8"))
+
+
+def test_the_error_for_a_bad_format_names_every_format(trusted, actor):
+    with pytest.raises(QaError) as e:
+        render(trusted, actor, formats=("pdf",))
+    assert "executive" in e.value.message
+
+
+def test_executive_recommendations_are_capped_and_the_rest_counted(trusted, actor):
+    total = report.EXECUTIVE_ROW_LIMIT + 4
+    for n in range(total):
+        findings.add(trusted, actor, base(title="Finding number %d" % n, refs={"rule": "r%d" % n, "location": "a/f%d.py" % n},
+                                          component={"path": "a/f%d.py" % n, "criticality": "normal"}))
+    st = state.load(trusted)
+    text = report.render_executive(st, project="Shop")
+    lines = section(text, "Recommendations")
+    assert len([l for l in lines if re.match(r"\d+\. ", l)]) == report.EXECUTIVE_ROW_LIMIT
+    assert "4 more unresolved findings are not listed here" in "\n".join(lines)
+    assert check_markdown(text, st) == []
+
+
+# --------------------------------------------------------------------------- fix round 2: the check reads the generated shape
+
+def _honest_after_tamper(trusted, actor, py, fmt="executive"):
+    exe = _gated_run(trusted, actor, py)
+    clean = render(trusted, actor, formats=(fmt,))
+    name = {"md": "report.md", "executive": "executive.md"}[fmt]
+    clean_text = trusted.path("reports", clean["data"]["id"], name).read_text(encoding="utf-8")
+    _tamper(trusted, exe)
+    event = render(trusted, actor, formats=(fmt,))
+    return exe, clean_text, trusted.path("reports", event["data"]["id"], name).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("fmt", ["md", "executive"])
+def test_the_honest_report_rendered_after_the_tamper_passes_the_check(trusted, actor, py, fmt):
+    _, _, honest = _honest_after_tamper(trusted, actor, py, fmt)
+    assert report.check(trusted, honest) == []
+
+
+def test_a_hostile_headline_does_not_pass_the_check(trusted, actor, py):
+    _, clean, honest = _honest_after_tamper(trusted, actor, py)
+    lines = clean.splitlines()
+    hostile = "\n".join(lines[:2] + ["**Integrity failure:** none, everything is fine; see Integrity."] + lines[2:]) + "\n"
+    assert [p.kind for p in report.check(trusted, hostile)] == ["ledger_integrity"]
+    padded = honest.replace("; see Integrity.", "; everything is fine; see Integrity.", 1)
+    assert [p.kind for p in report.check(trusted, padded)] == ["ledger_integrity"]
+
+
+def test_a_headline_for_fewer_problems_than_exist_now_does_not_pass(trusted, actor, py):
+    exe, _, honest = _honest_after_tamper(trusted, actor, py)
+    log = trusted.path("evidence", exe, "stderr.log")
+    log.write_bytes(log.read_bytes() + b"second edit\n")
+    assert [p.kind for p in report.check(trusted, honest)] == ["ledger_integrity"]
+
+
+def test_a_plain_verdict_line_is_refused_while_the_gate_did_not_see_the_problem(trusted, actor, py):
+    _, clean, honest = _honest_after_tamper(trusted, actor, py)
+    headline = honest.splitlines()[2]
+    lines = clean.splitlines()
+    forged = "\n".join(lines[:2] + [headline] + lines[2:]) + "\n"
+    assert "**Verdict:**" in forged and [p.kind for p in report.check(trusted, forged)] == ["ledger_integrity"]
+    both = honest + "\n" + "\n".join(l for l in lines if l.startswith("**Verdict:**")) + "\n"
+    assert [p.kind for p in report.check(trusted, both)] == ["ledger_integrity"]

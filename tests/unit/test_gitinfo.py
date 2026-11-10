@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -7,6 +8,7 @@ import subprocess
 
 import pytest
 
+from helpers import HOSTILE_GIT, hostile_git_repo
 from qa import gitinfo
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -161,3 +163,155 @@ def test_untracked_files_count_whatever_the_users_git_config_says(tmp_path):  # 
     assert gitinfo.git_info(tmp_path)[0]["dirty"] is False
     (tmp_path / "new.txt").write_text("2")
     assert gitinfo.git_info(tmp_path)[0]["dirty"] is True
+
+
+# --------------------------------------------------------------------------- a hostile repository's own git config (C1)
+
+@pytest.mark.parametrize("how", HOSTILE_GIT)
+def test_a_program_the_repository_configures_never_runs(tmp_path, how):
+    root = hostile_git_repo(tmp_path / "repo", tmp_path / "PWNED", how)
+    info, lim = gitinfo.git_info(root)
+    assert not (tmp_path / "PWNED").exists()
+    assert lim is None and info["commit"]
+
+
+@pytest.mark.parametrize("how", HOSTILE_GIT)
+def test_the_file_listings_run_no_repository_program_either(tmp_path, how):
+    root = hostile_git_repo(tmp_path / "repo", tmp_path / "PWNED", how)
+    gitinfo.project_files(root)
+    gitinfo.tracked_under_qa(root)
+    assert not (tmp_path / "PWNED").exists()
+
+
+def test_a_neutralised_filter_leaves_the_modified_file_dirty(tmp_path):
+    root = hostile_git_repo(tmp_path / "repo", tmp_path / "PWNED")
+    assert gitinfo.git_info(root)[0]["dirty"] is True
+
+
+def _global_upcase_filter(tmp_path, monkeypatch):
+    """A user-level filter (as git-lfs installs one) whose clean step upper-cases ``*.txt``; the repository commits through it."""
+    cfg = tmp_path / "global.gitconfig"
+    cfg.write_text('[filter "up"]\n\tclean = tr a-z A-Z\n\trequired = true\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / ".gitattributes").write_text("*.txt filter=up\n")
+    (root / "a.txt").write_text("hello\n")
+    git(root, "add", ".gitattributes", "a.txt")
+    git(root, "commit", "-q", "-m", "c1")
+    later = os.stat(root / "a.txt").st_mtime + 10
+    os.utime(root / "a.txt", (later, later))  # a changed stat makes git re-read the file through the filter
+    return root
+
+
+def test_a_user_level_filter_still_applies_so_the_tree_stays_clean(tmp_path, monkeypatch):
+    root = _global_upcase_filter(tmp_path, monkeypatch)
+    info, lim = gitinfo.git_info(root)
+    assert lim is None and info["dirty"] is False
+
+
+def test_a_repository_cannot_replace_a_user_level_filter(tmp_path, monkeypatch):
+    import shlex
+
+    root = _global_upcase_filter(tmp_path, monkeypatch)
+    marker = tmp_path / "PWNED"
+    git(root, "config", "filter.up.clean", "sh -c %s" % shlex.quote("touch %s; tr a-z A-Z" % shlex.quote(str(marker))))
+    info, lim = gitinfo.git_info(root)
+    assert not marker.exists()
+    assert lim is None and info["dirty"] is False  # the user's own driver ran in its place
+
+
+def test_a_repository_filter_marked_required_does_not_break_the_read(tmp_path):
+    root = hostile_git_repo(tmp_path / "repo", tmp_path / "PWNED")
+    git(root, "config", "filter.x.required", "true")
+    info, lim = gitinfo.git_info(root)
+    assert not (tmp_path / "PWNED").exists() and lim is None and info["dirty"] is True
+
+
+def test_a_key_that_cannot_be_overridden_refuses_git(tmp_path):
+    root = hostile_git_repo(tmp_path / "repo", tmp_path / "PWNED")
+    git(root, "config", "filter.a=b.clean", "sh -c 'touch %s'" % (tmp_path / "PWNED"))
+    assert gitinfo.git_info(root) == (None, "git_unavailable")
+    assert gitinfo.project_files(root) is None
+    assert not (tmp_path / "PWNED").exists()
+
+
+def test_git_is_not_run_when_the_configuration_cannot_be_listed(repo, monkeypatch):
+    real = gitinfo.subprocess.run
+    seen = []
+
+    def listing_fails(argv, *a, **k):
+        seen.append(argv)
+        if "config" in argv and "--show-scope" in argv:
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(gitinfo.subprocess, "run", listing_fails)
+    assert gitinfo.git_info(repo) == (None, "git_unavailable")
+    assert all("config" in argv for argv in seen)  # nothing but the listing ran
+
+
+def test_every_git_call_carries_the_hardening_options(repo, monkeypatch):
+    real = gitinfo.subprocess.run
+    seen = []
+
+    def spy(argv, *a, **k):
+        seen.append(argv)
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(gitinfo.subprocess, "run", spy)
+    gitinfo.git_info(repo)
+    for option in ("core.fsmonitor=false", "core.hooksPath=" + os.devnull, "protocol.ext.allow=never",
+                   "log.showSignature=false", "gpg.program=" + os.devnull):
+        assert all(option in argv for argv in seen), option
+    for argv in seen:
+        if "status" in argv or "diff" in argv:
+            assert "--ignore-submodules=all" in argv
+
+
+def test_the_diff_is_hashed_as_a_stream_with_the_same_value(repo, monkeypatch):
+    import hashlib
+
+    payload = bytes(range(256)) * (1 << 15)  # 8 MiB
+    (repo / "big.bin").write_bytes(payload)
+    git(repo, "add", "big.bin")
+    git(repo, "commit", "-q", "-m", "big")
+    (repo / "big.bin").write_bytes(payload[::-1])
+    captured = []
+    real = gitinfo.subprocess.run
+
+    def spy(argv, *a, **k):
+        if "diff" in argv:
+            captured.append(k.get("stdout"))
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(gitinfo.subprocess, "run", spy)
+    info = gitinfo.git_info(repo)[0]
+    assert captured and all(hasattr(out, "fileno") for out in captured)  # a file, not a pipe read into memory
+    monkeypatch.setattr(gitinfo.subprocess, "run", real)
+    diff = subprocess.run(["git", "-C", str(repo), "diff", "HEAD", "--no-ext-diff", "--no-textconv", "--binary", "--no-color",
+                           "--ignore-submodules=all", "--", ".", ":(exclude).qa"], capture_output=True, check=True).stdout
+    assert info["diff_hash"] == "sha256:" + hashlib.sha256(diff).hexdigest()
+
+
+@pytest.mark.parametrize("how", HOSTILE_GIT[:3])
+def test_qa_gate_evaluate_runs_no_repository_program(trusted, qa_cli, tmp_path, how):
+    marker = tmp_path / "PWNED"
+    hostile_git_repo(trusted.root, marker, how)
+    code, _out = qa_cli("gate", "evaluate")
+    assert code in (0, 1) and not marker.exists()
+
+
+@pytest.mark.parametrize("how", HOSTILE_GIT[:3])
+def test_qa_plan_create_runs_no_repository_program(trusted, qa_cli, tmp_path, how):
+    marker = tmp_path / "PWNED"
+    hostile_git_repo(trusted.root, marker, how)
+    template = tmp_path / "template.json"
+    template.write_text(json.dumps({"mode": "audit", "steps": [
+        {"id": "S01", "skill": "qa-test-execution", "depends_on": [], "requires_authorization": ["test-execution-local"],
+         "expected_outputs": [{"kind": "execution", "skill": "qa-test-execution"},
+                              {"kind": "result_set", "skill": "qa-test-execution"}], "exclusive": False}]}))
+    code, out = qa_cli("plan", "create", "--template", str(template))
+    assert not marker.exists()
+    assert code == 0, out

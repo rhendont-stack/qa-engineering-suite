@@ -78,6 +78,7 @@
         "level": {"type": "string"},
         "security_severity": {"type": ["number", "null"]},
         "start_line": {"type": ["integer", "null"]},
+        "end_line": {"type": ["integer", "null"]},
         "uri": {"type": "string"}
       },
       "required": ["skill", "method"],

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from helpers import without_mac, write_event_at
 from qa import authz, config, ids, ledger, redact, state, workspace
 from qa.errors import QaError
 
@@ -19,7 +20,7 @@ PROD = {"id": "prod", "class": "production", "base_urls": ["https://shop.example
 EPH = {"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": []}
 CI = {"id": "ci", "class": "ci"}
 LOAD = {"max_vus": 50, "max_rps": 100, "max_duration_s": 600}
-UNTRUSTED = "untrusted project: container runs arrive in milestone 2, or approve `qa config set project.trust trusted`"
+UNTRUSTED = "untrusted project: run it with `qa run --container IMAGE@DIGEST`, or approve `qa config set project.trust trusted`"
 
 
 def chk(st, cfg, activity, env=LOCAL, hosts=()):
@@ -171,12 +172,12 @@ def test_grant_records_the_a4_shape(ws, actor, frozen_now):
     e = authz.grant(ws, actor, environment_id="local", targets=["http://localhost:8080"], activities=["dast-passive"],
                     limits={}, approval="Yes, run the ZAP baseline on localhost today.", expires_at=None)
     assert e["type"] == "authorization.granted" and e["id"].startswith("EVT-")
-    assert e["data"] == {
+    assert without_mac(e["data"]) == {
         "id": "AUTH-001", "environment": "local", "targets": ["http://localhost:8080"], "activities": ["dast-passive"],
         "limits": {}, "granted_by": "user", "approval_quote": "Yes, run the ZAP baseline on localhost today.",
         "granted_at": "2026-11-07T12:00:00.000Z", "expires_at": ids.format_ts(authz.default_expiry(NOON)),
     }
-    assert state.load(ws)["authorizations"] == {"AUTH-001": {**e["data"], "revoked_at": None, "revoke_reason": None}}
+    assert state.load(ws)["authorizations"] == {"AUTH-001": {**without_mac(e["data"]), "revoked_at": None, "revoke_reason": None}}
     assert _grant(ws, actor)["data"]["id"] == "AUTH-002"
 
 
@@ -400,7 +401,7 @@ def test_revoke_refusals_and_revoked_at_is_the_event_ts(ws, actor, frozen_now):
     assert e.value.code == "unknown_authorization"
     frozen_now.advance(60)
     r = authz.revoke(ws, actor, "AUTH-001", "done for today")
-    assert (r["type"], r["data"], r["ts"]) == ("authorization.revoked", {"id": "AUTH-001", "reason": "done for today"},
+    assert (r["type"], without_mac(r["data"]), r["ts"]) == ("authorization.revoked", {"id": "AUTH-001", "reason": "done for today"},
                                                "2026-11-07T12:01:00.000Z")
     held = state.load(ws)["authorizations"]["AUTH-001"]
     assert (held["revoked_at"], held["revoke_reason"]) == (r["ts"], "done for today")
@@ -502,36 +503,33 @@ def _folds_first_then_stays_revoked(ws, revocation):
 def test_a_revocation_in_the_same_millisecond_from_a_session_that_sorts_first_still_revokes(ws, actor, frozen_now):
     frozen_now.set(NOON)
     _grant(ws, dataclasses.replace(actor, session="S-" + "1" * 26))
-    _folds_first_then_stays_revoked(ws, authz.revoke(ws, actor, "AUTH-001", "done"))   # actor's S-000… sorts first
+    revocation = write_event_at(ws, actor, NOON, "authorization.revoked", {"id": "AUTH-001", "reason": "done"})
+    _folds_first_then_stays_revoked(ws, revocation)   # actor's S-000… sorts first
 
 
 def test_a_revocation_recorded_after_the_clock_stepped_back_still_revokes(ws, actor, frozen_now):
     frozen_now.set(NOON + timedelta(seconds=1))
     _grant(ws, actor)
-    frozen_now.set(NOON)   # the clock steps back 1 s within one session
-    _folds_first_then_stays_revoked(ws, authz.revoke(ws, actor, "AUTH-001", "done"))
+    frozen_now.set(NOON)   # the clock stepped back 1 s within one session, in a ledger written before append clamped
+    revocation = write_event_at(ws, actor, NOON, "authorization.revoked", {"id": "AUTH-001", "reason": "done"})
+    _folds_first_then_stays_revoked(ws, revocation)
 
 
-def test_the_first_revocation_in_fold_order_wins_even_before_the_grant(ws, actor, frozen_now):
-    frozen_now.set(NOON)
-    ledger.append(ws, actor, "authorization.granted", _granted("AUTH-001"))
-    frozen_now.set(NOON - timedelta(seconds=2))
-    first = ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "first"})
-    frozen_now.set(NOON - timedelta(seconds=1))
-    ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "second"})
-    frozen_now.set(NOON + timedelta(seconds=1))
-    ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "third"})
+def test_the_first_revocation_in_fold_order_wins_even_before_the_grant(ws, actor):
+    write_event_at(ws, actor, NOON, "authorization.granted", _granted("AUTH-001"))
+    first = write_event_at(ws, actor, NOON - timedelta(seconds=2), "authorization.revoked", {"id": "AUTH-001", "reason": "first"})
+    write_event_at(ws, actor, NOON - timedelta(seconds=1), "authorization.revoked", {"id": "AUTH-001", "reason": "second"})
+    write_event_at(ws, actor, NOON + timedelta(seconds=1), "authorization.revoked", {"id": "AUTH-001", "reason": "third"})
     st = state.load(ws)
     held = st["authorizations"]["AUTH-001"]
     assert (held["revoked_at"], held["revoke_reason"], st["violations"]) == (first["ts"], "first", [])
 
 
-def test_only_a_revocation_whose_id_no_grant_holds_is_unknown(ws, actor, frozen_now):
-    frozen_now.set(NOON)
-    ledger.append(ws, actor, "authorization.granted", _granted("AUTH-001"))
-    frozen_now.set(NOON - timedelta(seconds=1))
-    ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-001", "reason": "early"})
-    unknown = ledger.append(ws, actor, "authorization.revoked", {"id": "AUTH-009", "reason": "typo"})
+def test_only_a_revocation_whose_id_no_grant_holds_is_unknown(ws, actor):
+    write_event_at(ws, actor, NOON, "authorization.granted", _granted("AUTH-001"))
+    early = NOON - timedelta(seconds=1)
+    write_event_at(ws, actor, early, "authorization.revoked", {"id": "AUTH-001", "reason": "early"})
+    unknown = write_event_at(ws, actor, early, "authorization.revoked", {"id": "AUTH-009", "reason": "typo"})
     st = state.load(ws)
     assert st["violations"] == [{"event": unknown["id"], "kind": "unknown_authorization"}]
     assert list(st["authorizations"]) == ["AUTH-001"] and st["authorizations"]["AUTH-001"]["revoke_reason"] == "early"

@@ -987,3 +987,161 @@ def test_a_long_run_with_no_citation_is_searched_in_linear_time():  # M1: this r
 @pytest.mark.parametrize("cause", ["see app/views.py:42 for it", "(views.py:7)", "1:a.py:3"])
 def test_the_citation_is_still_found_with_the_lookbehind(cause):  # M1
     assert findings._CAUSE_CITATION.search(cause) is not None
+
+
+# --------------------------------------------------------------------------- deduplication (task 14)
+
+def _twin(tool, line, end=None, rule="R", evidence=(), cwe=("CWE-639",), path="app/orders/views.py"):
+    source = {"skill": "qa-test-execution", "method": "static", "tool": tool, "start_line": line}
+    if end is not None:
+        source["end_line"] = end
+    return base(component={"path": path, "criticality": "normal"}, source=source, evidence=list(evidence),
+                refs={"cwe": list(cwe), "rule": rule, "location": path})
+
+
+def _two_runs(trusted, actor, py):
+    return [execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))["execution"] for _ in range(2)]
+
+
+def test_dedupe_proposes_but_records_nothing_until_confirmed(trusted, actor):
+    findings.add(trusted, actor, _twin("alpha", 10, 12, rule="A1"))
+    findings.add(trusted, actor, _twin("beta", 11, rule="B1"))
+    before = len(list(ledger.iter_all_events(trusted)))
+    result = findings.dedupe(trusted, actor)
+    assert [(p["keep"], p["duplicate"]) for p in result["proposals"]] == [("FND-001", "FND-002")]
+    assert result["proposals"][0]["basis"] == {"path": "app/orders/views.py", "cwe": ["CWE-639"], "lines": [10, 12]}
+    assert result["linked"] == [] and len(list(ledger.iter_all_events(trusted))) == before
+
+
+def test_dedupe_links_duplicates_and_keeps_both_evidence(trusted, actor, py):
+    a, b = _two_runs(trusted, actor, py)
+    findings.add(trusted, actor, _twin("alpha", 10, 14, rule="A1", evidence=[a]))
+    findings.add(trusted, actor, _twin("beta", 12, rule="B1", evidence=[b]))
+    result = findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002")])
+    assert [(l["keep"], l["duplicate"]) for l in result["linked"]] == [("FND-001", "FND-002")]
+    st = state.load(trusted)
+    keep, dup = st["findings"]["FND-001"], st["findings"]["FND-002"]
+    assert (dup["state"], dup["duplicate_of"]) == ("duplicate", "FND-001")
+    assert keep["state"] == "open" and keep["evidence"] == [a, b]
+    assert keep["links"]["duplicates"] == ["FND-002"] and keep["links"]["duplicate_sources"] == ["beta"]
+    assert dup["evidence"] == [b] and st["violations"] == []  # the duplicate keeps its own record too
+
+
+def test_dedupe_is_idempotent(trusted, actor, py):
+    a, b = _two_runs(trusted, actor, py)
+    findings.add(trusted, actor, _twin("alpha", 10, rule="A1", evidence=[a]))
+    findings.add(trusted, actor, _twin("beta", 10, rule="B1", evidence=[b]))
+    findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002")])
+    once = state.state_hash(state.load(trusted))
+    events = len(list(ledger.iter_all_events(trusted)))
+    again = findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002")])
+    assert again["linked"] == [] and again["already_linked"] == [{"keep": "FND-001", "duplicate": "FND-002"}]
+    assert again["proposals"] == [] and findings.dedupe(trusted, actor)["proposals"] == []
+    assert len(list(ledger.iter_all_events(trusted))) == events and state.state_hash(state.load(trusted)) == once
+
+
+@pytest.mark.parametrize("second", [
+    dict(path="app/other.py"),                 # another file
+    dict(cwe=("CWE-79",)),                     # another CWE
+    dict(line=40),                             # lines that do not overlap
+])
+def test_dedupe_proposes_only_same_file_same_cwe_overlapping_lines(trusted, actor, second):
+    findings.add(trusted, actor, _twin("alpha", 10, 12, rule="A1"))
+    findings.add(trusted, actor, _twin("beta", second.pop("line", 11), rule="B1", **second))
+    assert findings.dedupe(trusted, actor)["proposals"] == []
+
+
+def test_dedupe_refuses_a_pair_it_did_not_propose_and_changes_nothing(trusted, actor):
+    findings.add(trusted, actor, _twin("alpha", 10, rule="A1"))
+    findings.add(trusted, actor, _twin("beta", 90, rule="B1"))
+    before = len(list(ledger.iter_all_events(trusted)))
+    with pytest.raises(QaError) as e:
+        findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002")])
+    assert e.value.code == "not_a_duplicate" and len(list(ledger.iter_all_events(trusted))) == before
+
+
+def test_dedupe_proposals_are_bounded_on_a_crowded_file(trusted, actor):
+    st = state.empty_state()
+    for n in range(1, 400):
+        st["findings"]["FND-%03d" % n] = {"state": "open", "component": {"path": "a.py"}, "refs": {"cwe": ["CWE-1"]},
+                                          "source": {"start_line": 1, "end_line": 9, "method": "static", "skill": None}, "evidence": []}
+    assert len(findings.propose_duplicates(st)) == findings.MAX_PROPOSALS
+
+
+def test_a_deduplicated_event_for_a_missing_finding_is_a_violation():
+    event = {"id": "EV1", "type": "finding.deduplicated", "ts": "2026-01-01T00:00:00.000Z",
+             "data": {"id": "FND-002", "duplicate_of": "FND-001", "basis": {"path": "a", "cwe": ["CWE-1"], "lines": [1, 1]},
+                      "evidence_added": [], "source_label": "x"}}
+    st = state.fold([event])
+    assert st["violations"] == [{"event": "EV1", "kind": "unknown_finding"}]
+
+
+# --------------------------------------------------------------------------- deduplication, fix round 1
+
+def _three_twins(trusted, actor, py):
+    runs = [execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))["execution"] for _ in range(3)]
+    for n, tool in enumerate(("alpha", "beta", "gamma")):
+        findings.add(trusted, actor, _twin(tool, 10, rule="R%d" % n, evidence=[runs[n]]))
+    return runs
+
+
+@pytest.mark.parametrize("closed", ["wont_fix", "accepted_risk"])
+def test_dedupe_never_proposes_or_links_a_closed_finding_as_the_duplicate(trusted, actor, py, closed):
+    _three_twins(trusted, actor, py)
+    extra = dict(accepted_by="user", expires_at="2099-01-01T00:00:00.000Z") if closed == "accepted_risk" else {}
+    findings.change_state(trusted, actor, "FND-002", closed, reason="decided", **extra)
+    proposals = findings.dedupe(trusted, actor)["proposals"]
+    assert all(p["duplicate"] != "FND-002" for p in proposals)
+    assert ("FND-001", "FND-003") in [(p["keep"], p["duplicate"]) for p in proposals]
+    before = len(list(ledger.iter_all_events(trusted)))
+    result = findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002")])
+    assert result["linked"] == [] and [(r["keep"], r["duplicate"]) for r in result["refused"]] == [("FND-001", "FND-002")]
+    assert result["refused"][0]["reason"] and len(list(ledger.iter_all_events(trusted))) == before
+    assert state.load(trusted)["violations"] == []
+
+
+def test_a_closed_finding_can_still_be_the_keep_side(trusted, actor, py):
+    a, b, _ = _three_twins(trusted, actor, py)
+    findings.change_state(trusted, actor, "FND-001", "wont_fix", reason="decided")
+    result = findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002")])
+    assert [(l["keep"], l["duplicate"]) for l in result["linked"]] == [("FND-001", "FND-002")]
+    st = state.load(trusted)
+    assert st["violations"] == [] and st["findings"]["FND-001"]["evidence"] == [a, b]
+
+
+def test_dedupe_refuses_a_chain_inside_one_batch_and_loses_no_evidence(trusted, actor, py):
+    a, b, c = _three_twins(trusted, actor, py)
+    before = len(list(ledger.iter_all_events(trusted)))
+    result = findings.dedupe(trusted, actor, confirm=[("FND-002", "FND-003"), ("FND-001", "FND-002")])
+    assert [(l["keep"], l["duplicate"]) for l in result["linked"]] == [("FND-002", "FND-003")]
+    assert [(r["keep"], r["duplicate"]) for r in result["refused"]] == [("FND-001", "FND-002")]
+    assert "chain" in result["refused"][0]["reason"] and len(list(ledger.iter_all_events(trusted))) == before + 1
+    st = state.load(trusted)
+    assert st["violations"] == [] and st["findings"]["FND-002"]["evidence"] == [b, c]
+    assert st["findings"]["FND-001"]["evidence"] == [a] and not st["findings"]["FND-001"].get("links", {}).get("duplicates")
+
+
+def test_dedupe_refuses_the_other_chain_order_and_the_reverse(trusted, actor, py):
+    _three_twins(trusted, actor, py)
+    result = findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002"), ("FND-002", "FND-003"), ("FND-003", "FND-001")])
+    assert [(l["keep"], l["duplicate"]) for l in result["linked"]] == [("FND-001", "FND-002")]
+    assert [(r["keep"], r["duplicate"]) for r in result["refused"]] == [("FND-002", "FND-003"), ("FND-003", "FND-001")]
+
+
+def test_dedupe_refuses_a_chain_against_an_existing_link(trusted, actor, py):
+    a, b, c = _three_twins(trusted, actor, py)
+    findings.dedupe(trusted, actor, confirm=[("FND-002", "FND-003")])
+    result = findings.dedupe(trusted, actor, confirm=[("FND-001", "FND-002"), ("FND-003", "FND-001")])
+    assert result["linked"] == [] and len(result["refused"]) == 2
+    assert state.load(trusted)["violations"] == []
+
+
+def test_every_pair_of_a_batch_has_one_outcome(trusted, actor, py):
+    _three_twins(trusted, actor, py)
+    pairs = [("FND-001", "FND-002"), ("FND-001", "FND-002"), ("FND-002", "FND-003"), ("FND-001", "FND-003")]
+    result = findings.dedupe(trusted, actor, confirm=pairs)
+    seen = ([(l["keep"], l["duplicate"]) for l in result["linked"]] + [(l["keep"], l["duplicate"]) for l in result["already_linked"]]
+            + [(l["keep"], l["duplicate"]) for l in result["refused"]])
+    assert sorted(seen) == [("FND-001", "FND-002"), ("FND-001", "FND-002"), ("FND-001", "FND-003"), ("FND-002", "FND-003")]
+    assert len(seen) == len(pairs)
+    assert [(l["keep"], l["duplicate"]) for l in result["linked"]] == [("FND-001", "FND-002"), ("FND-001", "FND-003")]

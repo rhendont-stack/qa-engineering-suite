@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "anchors": {
+    "FUNC-C1": {
+      "severity": "CRITICAL",
+      "column": "FUNC",
+      "text": "Core flow unusable for all users with no workaround"
+    },
+    "FUNC-C2": {
+      "severity": "CRITICAL",
+      "column": "FUNC",
+      "text": "silent corruption or loss of persisted data"
+    },
+    "FUNC-C3": {
+      "severity": "CRITICAL",
+      "column": "FUNC",
+      "text": "wrong financial/legal/medical results reaching users"
+    },
+    "SEC-C1": {
+      "severity": "CRITICAL",
+      "column": "SEC",
+      "text": "Remotely exploitable without authentication: code execution, authentication bypass, bulk data exposure"
+    },
+    "SEC-C2": {
+      "severity": "CRITICAL",
+      "column": "SEC",
+      "text": "a valid production secret exposed"
+    },
+    "PERF-C1": {
+      "severity": "CRITICAL",
+      "column": "PERF",
+      "text": "Outage or crash at expected load"
+    },
+    "PERF-C2": {
+      "severity": "CRITICAL",
+      "column": "PERF",
+      "text": "unbounded resource exhaustion any user can trigger"
+    },
+    "FUNC-H1": {
+      "severity": "HIGH",
+      "column": "FUNC",
+      "text": "Important feature broken or wrong with only a difficult workaround"
+    },
+    "FUNC-H2": {
+      "severity": "HIGH",
+      "column": "FUNC",
+      "text": "integrity at risk under realistic conditions (race, missing constraint on a critical entity)"
+    },
+    "SEC-H1": {
+      "severity": "HIGH",
+      "column": "SEC",
+      "text": "Exploitable with low-privilege access: BOLA/IDOR on sensitive data, privilege escalation, stored XSS, authenticated injection"
+    },
+    "PERF-H1": {
+      "severity": "HIGH",
+      "column": "PERF",
+      "text": "Critical-path p95 > 150% of objective at expected load"
+    },
+    "PERF-H2": {
+      "severity": "HIGH",
+      "column": "PERF",
+      "text": "leak forcing restarts within a day"
+    },
+    "A11Y-H1": {
+      "severity": "HIGH",
+      "column": "A11Y",
+      "text": "A core journey impossible with keyboard or screen reader (WCAG A failure on a critical flow)"
+    },
+    "FUNC-M1": {
+      "severity": "MEDIUM",
+      "column": "FUNC",
+      "text": "Secondary feature defect"
+    },
+    "FUNC-M2": {
+      "severity": "MEDIUM",
+      "column": "FUNC",
+      "text": "wrong validation or error handling with a workaround"
+    },
+    "SEC-M1": {
+      "severity": "MEDIUM",
+      "column": "SEC",
+      "text": "Needs user interaction or specific conditions: reflected XSS, CSRF on a non-critical action, missing rate limit on authentication, stack traces exposing internals"
+    },
+    "PERF-M1": {
+      "severity": "MEDIUM",
+      "column": "PERF",
+      "text": "Objective missed by ≤ 50%, or only under stress"
+    },
+    "PERF-M2": {
+      "severity": "MEDIUM",
+      "column": "PERF",
+      "text": "degraded but functional"
+    },
+    "A11Y-M1": {
+      "severity": "MEDIUM",
+      "column": "A11Y",
+      "text": "WCAG A/AA failures on non-critical flows"
+    },
+    "FUNC-L1": {
+      "severity": "LOW",
+      "column": "FUNC",
+      "text": "Cosmetic, minor inconsistency, typo"
+    },
+    "SEC-L1": {
+      "severity": "LOW",
+      "column": "SEC",
+      "text": "Hardening gap without a demonstrated path: missing header, vulnerable dependency proven unreachable"
+    },
+    "PERF-L1": {
+      "severity": "LOW",
+      "column": "PERF",
+      "text": "Inefficiency without user-visible impact"
+    },
+    "A11Y-L1": {
+      "severity": "LOW",
+      "column": "A11Y",
+      "text": "Minor AA/AAA issues"
+    },
+    "FUNC-I1": {
+      "severity": "INFORMATIONAL",
+      "column": "FUNC",
+      "text": "Observation or recommendation with no confirmed defect"
+    },
+    "SEC-I1": {
+      "severity": "INFORMATIONAL",
+      "column": "SEC",
+      "text": "Best-practice note"
+    },
+    "PERF-I1": {
+      "severity": "INFORMATIONAL",
+      "column": "PERF",
+      "text": "Note"
+    },
+    "A11Y-I1": {
+      "severity": "INFORMATIONAL",
+      "column": "A11Y",
+      "text": "Note"
+    },
+    "TOOL-PROVISIONAL": {
+      "severity": null,
+      "column": null,
+      "text": "Severity taken from the detecting tool's own mapping; provisional until a person or an agent triages the finding"
+    }
+  },
+  "modifiers": {
+    "unreachable": -1,
+    "dev_only": -1,
+    "sensitive_data": 1
+  },
+  "columns": {
+    "functional": "FUNC",
+    "data-integrity": "FUNC",
+    "security": "SEC",
+    "performance": "PERF",
+    "reliability": "PERF",
+    "accessibility": "A11Y",
+    "usability": "FUNC",
+    "compatibility": "FUNC",
+    "maintainability": "FUNC",
+    "test-quality": "FUNC",
+    "requirements": "FUNC",
+    "pipeline": "FUNC"
+  }
+}

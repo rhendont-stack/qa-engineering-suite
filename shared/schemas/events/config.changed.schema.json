@@ -1,14 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "config.changed event data",
-  "description": "A configuration value changed through the CLI. old and new may be any JSON value. Free-text strings carry no pattern because they may hold redaction markers.",
+  "description": "A configuration value changed through the CLI. old and new may be any JSON value. Free-text strings carry no pattern because they may hold redaction markers. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority.",
   "type": "object",
   "properties": {
     "key": {"type": "string", "minLength": 1},
     "old": {},
     "new": {},
     "hash": {"$ref": "defs.schema.json#/$defs/sha256"},
-    "approval": {"type": "string", "minLength": 1}
+    "approval": {"type": "string", "minLength": 1},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
   },
   "required": ["key", "old", "new", "hash", "approval"],
   "additionalProperties": false

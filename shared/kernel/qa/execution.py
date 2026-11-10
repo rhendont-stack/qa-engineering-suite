@@ -5,9 +5,12 @@
 1-4. ``_gate``: guard, config drift, authorization and attempt rules. All of them run, so
      ``status.decide`` applies rule 1's order whatever the combination. A run stopped here has
      no evidence directory and is recorded by ``_record_blocked``.
-5-9. ``_run_command``: create the evidence directory, snapshot the declared reports, run, repair
-     what the tool did to the directory, redact and store the reports, remove anything undeclared,
-     store the logs, decide the status, record the execution and its results.
+5-9. ``_run_command``: create the evidence directory, snapshot the declared reports, run on the
+     host or in a container (``_on_host``, ``_in_container``), redact and store the reports, remove
+     anything undeclared, store the logs, decide the status, record the execution and its results.
+
+A request with ``container`` never reaches the host: a failure of the engine or of a pipeline step
+is a ``blocked`` run with a remedy. Only such a request is authorized as ``containerized``.
 
 Everything stored or recorded goes through one redactor built from the run's own environment,
 and is hashed after redaction.
@@ -18,21 +21,25 @@ import dataclasses
 import glob
 import math
 import os
+import posixpath
 import re
 import shlex
 import stat
+import tempfile
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
 
-from . import (KERNEL_VERSION, authz, config, envinfo, findings, gitinfo, guard, ids, ingest, integrity, ledger, redact,
-               runner, schema, state, status, vocab)
+from . import (KERNEL_VERSION, authz, config, container, envinfo, findings, gitinfo, guard, ids, ingest, integrity, ledger,
+               redact, runner, schema, state, status, vocab)
 from .canonical import dumps, loads, sha256_bytes, sha256_file
 from .errors import QaError
 from .workspace import FileTooLarge, Workspace, read_limited, write_atomic
 
 EVIDENCE_TOKEN = "{evidence}"
+_CONTAINER_EVIDENCE_BYTES = 256 * 2 ** 20  # one cap covers a stream and the copied-out tar; a normal evidence directory fits
+_INSTALL_ACTIVITY = "install-dependencies"
 _SCOPES = ("targeted", "full")
 _ATTEMPT_ACTIVITY = "test-execution-local"
 _DEFAULT_ACTIVITY = "static-analysis"  # allowed without authority (§12.2)
@@ -44,6 +51,19 @@ _UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production":
 _MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
+_BEFORE_INSTALL = ("volume_create", "copy_in", None)  # where a failed pipeline stopped when no install had started; None: no step
+_CONTAINER_REMEDIES = {
+    "container_engine_unavailable": "start the container engine, or check the host set in container.engine",
+    "container_image_missing": "pull the image once, by digest, on the engine; a run never pulls",
+    "container_step_failed": "check the engine's disk and that the image can run tar and sh as root",
+    "container_spec_invalid": "run from a project directory whose path holds only letters, digits, '.', '_' and '-'",
+    "container_stdin_unreadable": "check that the temporary directory is writable",
+    "container_cleanup_failed": "remove the objects named here from the engine by hand",
+    "project_too_large": "keep large files out of the project with .gitignore",
+    "project_unlistable": "repair the repository so that git can list its files",
+    "project_unreadable": "make every project file readable",
+}
+_NO_REMEDY = "check that the temporary directory is writable and that the project can be read"
 
 
 def _recordable(text: str) -> str:
@@ -68,6 +88,8 @@ class RunRequest:
     scope: str = "targeted"
     allow_empty: bool = False
     category: str = "functional"
+    container: Optional[str] = None  # name@sha256:<digest>; set, the command runs only in a container from this image
+    install: Optional[str] = None    # shell text run first in that container, with a network
 
 
 @dataclass
@@ -108,6 +130,7 @@ class _Gate:
     not_authorized: bool = False
     authorization: Optional[str] = None
     authorizations: List[dict] = field(default_factory=list)
+    engine: Optional[container.Engine] = None
 
     @property
     def blocked(self) -> bool:
@@ -119,6 +142,15 @@ class _Recorded(NamedTuple):
     evidence: Optional[str]
     summary: Optional[ingest.ReportSummary]
     limitations: List[str]
+
+
+class _Ran(NamedTuple):
+    """What one way of running the command hands to the shared stages."""
+    outcome: runner.RunOutcome
+    environment: dict  # the record's "environment", without "class"
+    container: Optional[dict] = None  # the record's "container" block
+    dependency_unavailable: bool = False
+    anomalies: Tuple[str, ...] = ()
 
 
 class _Reports(NamedTuple):
@@ -152,6 +184,21 @@ def _check_request(req: RunRequest) -> None:
     argv = [command] if isinstance(command, str) else command
     if not all(map(_encodable, argv + [pattern for _fmt, pattern in req.reports] + [req.attempt_of or ""])):
         raise QaError("invalid_command", "a command that cannot be recorded must not run: it holds text UTF-8 cannot encode")
+    _check_container_request(req)
+
+
+def _check_container_request(req: RunRequest) -> None:
+    if req.container is None:
+        if req.install is not None:
+            raise QaError("install_needs_container", "--install runs only in a container: give --container too")
+        return
+    if not container.is_pinned(req.container):
+        raise QaError("container_image_unpinned", "the image must be pinned as name@sha256:<digest>", image=_recordable(str(req.container)))
+    if req.install is not None and (not isinstance(req.install, str) or not req.install.strip() or not _encodable(req.install)):
+        raise QaError("invalid_command", "the install script must be text that can be recorded")
+    for _fmt, pattern in req.reports:  # only the evidence volume comes back, and nothing is read outside what came back
+        if not pattern.startswith(EVIDENCE_TOKEN + "/") or ".." in pattern.split("/"):
+            raise QaError("report_outside_evidence", "in a container a report must be under {evidence}/", pattern=pattern)
 
 
 def _resolve_cwd(ws: Workspace, cwd: Optional[Path]) -> Tuple[str, str]:
@@ -229,6 +276,8 @@ def _gate(run: _Run) -> _Gate:
     req = run.req
     decision = guard.classify(req.command, shell=req.shell, ws_root=run.ws.root, qa_dir=run.ws.qa_dir, config=run.cfg,
                               declared_activity=req.activity, cwd=req.cwd)
+    if req.install is not None:
+        decision = _with_install(run, decision)
     git, git_limitation = gitinfo.git_info(run.ws.root)
     if git_limitation is not None:
         run.note(git_limitation)
@@ -248,7 +297,31 @@ def _gate(run: _Run) -> _Gate:
     if refusal is not None:
         gate.policy_denied = True
         run.note("attempt_of refused: %s" % refusal)
+    if req.container is not None:
+        _choose_engine(run, gate)
     return gate
+
+
+def _with_install(run: _Run, decision: guard.GuardDecision) -> guard.GuardDecision:
+    """``decision`` widened by the install script, which the guard reads as one more command, under its own activity."""
+    install = guard.classify(run.req.install, shell=True, ws_root=run.ws.root, qa_dir=run.ws.qa_dir, config=run.cfg,
+                             declared_activity=_INSTALL_ACTIVITY, cwd=run.req.cwd)
+    if "deny" in (decision.decision, install.decision):
+        return decision if decision.decision == "deny" else install
+    return dataclasses.replace(
+        decision, decision="require_grant" if "require_grant" in (decision.decision, install.decision) else decision.decision,
+        required_activities=tuple(dict.fromkeys(decision.required_activities + install.required_activities)),
+        hosts=tuple(dict.fromkeys(decision.hosts + install.hosts)),
+        environments=tuple(dict.fromkeys(decision.environments + install.environments)))
+
+
+def _choose_engine(run: _Run, gate: _Gate) -> None:
+    """Which engine may receive the project is an authorization: ``config.container_engine`` alone decides it."""
+    try:
+        gate.engine = container.Engine(config.container_engine(run.ws))
+    except QaError as exc:
+        gate.not_authorized = True
+        run.note("%s: nothing ran; remedy: choose the engine with `qa config set container.engine` and an approval" % exc.code)
 
 
 def _check_drift(run: _Run, gate: _Gate) -> None:
@@ -256,7 +329,8 @@ def _check_drift(run: _Run, gate: _Gate) -> None:
                if config.check_drift(run.ws, run.st, run.actor, a) is not None]
     if drifted:
         gate.config_drift = True
-        run.note("config_drift: config.json differs from the accepted configuration, needed for %s" % ", ".join(drifted))
+        run.note("config_drift: config.json differs from the configuration this machine accepted, needed for %s; "
+                 'run `qa config accept --approval "<quote>"`' % ", ".join(drifted))
 
 
 def _authorization_groups(cfg: dict, run_environment: dict, hosts: Tuple[str, ...],
@@ -286,7 +360,8 @@ def _authorize(run: _Run, gate: _Gate) -> None:
               for environment, hosts in groups
               if hosts or activity not in vocab.PER_TARGET_ACTIVITIES or len(groups) == 1]
     for position, (activity, environment, hosts) in enumerate(checks):
-        verdict = authz.check(run.st, run.cfg, activity=activity, environment=environment, hosts=tuple(hosts), now=now)
+        verdict = authz.check(run.st, run.cfg, activity=activity, environment=environment, hosts=tuple(hosts), now=now,
+                              containerized=run.req.container is not None)
         if position == 0:
             gate.authorization = verdict.authorization
         if verdict.allowed:
@@ -317,6 +392,8 @@ def _attempt_refusal(run: _Run, gate: _Gate) -> Optional[str]:
         return "that execution ran on environment %s" % parent["environment_id"]
     if _git_identity(gate.git) != _git_identity(parent["git"]):
         return "the commit or diff differs from that execution's"
+    if (parent["isolation"], parent.get("container", {}).get("image")) != (_isolation(req), req.container):
+        return "that execution ran under another isolation or image"
     root = state.chain_root(st, req.attempt_of)
     length = sum(1 for e in st["executions"].values() if e["status"] != "blocked" and state.chain_root(st, e["id"]) == root)
     if length >= 1 + run.cfg["defaults"]["flaky_reruns"]:
@@ -331,15 +408,20 @@ def _append(run: _Run, event_type: str, data: dict) -> dict:
     return clean
 
 
+def _isolation(req: RunRequest) -> str:
+    return "host" if req.container is None else "container"
+
+
 def _execution_data(run: _Run, gate: _Gate, verdict: status.StatusDecision, facts: dict) -> dict:
     """The event's data: ``facts`` holds what differs between a run that started and one that did not."""
     req, actor = run.req, run.actor
+    environ = {} if req.container is not None else run.environ  # none of the launcher's environment goes into a container
     return dict(
         facts,
         id=run.execution_id, command=run.command, git=gate.git, environment_id=req.environment,
-        env_names=sorted(_recordable(name) for name in run.environ),
-        env_values={name: _recordable(run.environ[name]) for name in _ENV_VALUE_NAMES if name in run.environ},
-        isolation="host", status=verdict.status, reason=verdict.reason, strength=verdict.strength,
+        env_names=sorted(_recordable(name) for name in environ),
+        env_values={name: _recordable(environ[name]) for name in _ENV_VALUE_NAMES if name in environ},
+        isolation=_isolation(req), status=verdict.status, reason=verdict.reason, strength=verdict.strength,
         anomalies=list(verdict.anomalies), classification=verdict.classification,
         authorization=gate.authorization, authorizations=gate.authorizations, activity=req.activity, scope=req.scope,
         category=req.category, attempt_of=req.attempt_of, config_hash=run.config_hash, kernel=run.kernel,
@@ -677,7 +759,8 @@ def _write_evidence(run: _Run, directory: Path, streams: Dict[str, Tuple[bytes, 
     document, redactions = run.redactor.obj(dict(
         run.command, reports=[{"format": fmt, "pattern": pattern} for fmt, pattern in req.reports], timeout_s=timeout_s,
         activity=req.activity, environment=req.environment, scope=req.scope, category=req.category,
-        allow_empty=req.allow_empty, attempt_of=req.attempt_of))
+        allow_empty=req.allow_empty, attempt_of=req.attempt_of,
+        **({} if req.container is None else {"container": req.container, "install": req.install})))
     manifest = dict(report_entries)
     _store_evidence(run, directory, manifest, "command.json", dumps(document) + b"\n", "application/json", redactions)
     for name, (data, count) in streams.items():
@@ -695,24 +778,121 @@ def _result_data(case: ingest.CaseResult, execution_id: str) -> dict:
             "duration_ms": case.duration_ms}
 
 
+def _on_host(run: _Run, directory: Path, timeout_s: float, grace_s: float) -> _Ran:
+    req = run.req
+    fingerprint = envinfo.environment_fingerprint()
+    outcome = runner.run_process(_concrete_command(req, str(directory)), shell=req.shell, cwd=Path(run.cwd), env=run.environ,
+                                 timeout_s=timeout_s, max_bytes=run.max_bytes, grace_s=grace_s)
+    _repair_evidence(run, directory)
+    return _Ran(outcome, fingerprint)
+
+
+def _container_script(req: RunRequest) -> str:
+    command = _concrete_command(req, container.EVIDENCE_MOUNT)
+    return command if isinstance(command, str) else shlex.join(command)
+
+
+def _capped(data: bytes, dropped: int, limit: int) -> Tuple[bytes, int]:
+    return data[:limit], dropped + max(len(data) - limit, 0)
+
+
+def _stream_for_the_record(run: _Run, engine: container.Engine, outcome: runner.RunOutcome) -> runner.RunOutcome:
+    """The log cap the configuration sets, and no word of the host: ssh writes on the same stream as the container."""
+    stdout, stdout_dropped = _capped(outcome.stdout, outcome.stdout_dropped, run.max_bytes)
+    stderr, stderr_dropped = _capped(outcome.stderr, outcome.stderr_dropped, run.max_bytes)
+    if engine.host is not None:
+        word = re.compile(br"(?<![A-Za-z0-9._-])%s(?![A-Za-z0-9._-])" % re.escape(engine.host.encode("ascii")))
+        stdout, stderr = word.sub(b"<engine-host>", stdout), word.sub(b"<engine-host>", stderr)
+    return dataclasses.replace(outcome, stdout=stdout, stderr=stderr, stdout_dropped=stdout_dropped, stderr_dropped=stderr_dropped)
+
+
+def _unpack_evidence(run: _Run, directory: Path, files: Dict[str, bytes]) -> None:
+    """What the container left in its evidence volume, where a host run's tool would have left it. Names passed ``safetar``."""
+    for name, data in files.items():
+        try:
+            (directory / name).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            write_atomic(directory / name, data)
+        except OSError as exc:
+            run.note("%s could not be unpacked (%s)" % (_recordable(name), type(exc).__name__))
+
+
+def _container_block(run: _Run, engine: container.Engine, outcome: Optional[container.ContainerOutcome], install_ran: bool) -> dict:
+    return {"image": run.req.container, "image_id": (outcome.image_id or None) if outcome else None, "engine_kind": engine.kind,
+            "daemon_version": outcome.facts.version if outcome else None,
+            "network_mode": (outcome.network_mode or None) if outcome else None, "install_ran": install_ran}
+
+
+def _note_cleanup(run: _Run, names: Iterable[str]) -> None:
+    if names:
+        run.note("container_cleanup_failed: left on the engine: %s; remedy: %s" % (", ".join(names), _CONTAINER_REMEDIES["container_cleanup_failed"]))
+
+
+def _not_contained(run: _Run, engine: container.Engine, started_at: str, exc: Exception) -> _Ran:
+    """The pipeline stopped short: a blocked run that says what to do. Nothing ran on the host and nothing will."""
+    details = exc.details if isinstance(exc, QaError) else {}
+    code = exc.code if isinstance(exc, QaError) else "container_io_error"
+    step = details.get("step")
+    what = ", ".join(str(part) for part in (details.get("reason"), step) if part is not None)
+    run.note("%s%s: nothing ran on the host; remedy: %s" % (code, " (%s)" % what if what else "", _CONTAINER_REMEDIES.get(code, _NO_REMEDY)))
+    _note_cleanup(run, details.get("cleanup_failed", ()))
+    now = ids.format_ts(ids.now_utc())
+    nothing = runner.RunOutcome(exit_code=None, signal=None, timed_out=False, spawn_error=None, started_at=started_at, ended_at=now,
+                                duration_ms=0, stdout=b"", stderr=b"", stdout_dropped=0, stderr_dropped=0, orphaned_output=False)
+    install_ran = run.req.install is not None and step not in _BEFORE_INSTALL
+    return _Ran(nothing, dict(envinfo.host_facts(), tools={}), _container_block(run, engine, None, install_ran), dependency_unavailable=True)
+
+
+def _in_container(run: _Run, gate: _Gate, directory: Path, timeout_s: float) -> _Ran:
+    req, engine = run.req, gate.engine
+    started_at = ids.format_ts(ids.now_utc())
+    if gate.git is not None and gate.git["dirty"]:
+        run.note("dirty_worktree: the archive holds the working tree as it is, not the commit; a tracked file that is gone is not in it")
+    try:
+        with tempfile.TemporaryDirectory(prefix="qa-archive-") as scratch:
+            archive = Path(scratch) / "project.tar"
+            container.project_archive(run.ws.root, archive, container.DEFAULT_ARCHIVE_MAX_BYTES)
+            finished = container.run(engine, container.ContainerSpec(
+                execution_id=run.execution_id, image=req.container, script=_container_script(req), install_script=req.install,
+                archive=archive, workdir=posixpath.normpath(posixpath.join(container.WORK_MOUNT, run.command["cwd"])), timeout_s=timeout_s,
+                max_bytes=max(run.max_bytes, _CONTAINER_EVIDENCE_BYTES)))
+    except (QaError, OSError) as exc:
+        return _not_contained(run, engine, started_at, exc)
+    _note_cleanup(run, finished.cleanup_failed)
+    outcome = _stream_for_the_record(run, engine, finished.run)
+    environment = envinfo.container_facts(finished.facts.os, finished.facts.arch)
+    block = _container_block(run, engine, finished, finished.install_ran)
+    if finished.install_failed:
+        how = "timed out" if outcome.timed_out else "exited %s" % outcome.exit_code
+        run.note("the install step %s; the tests did not run and the logs are the install's; remedy: fix the install script or its grant" % how)
+        return _Ran(dataclasses.replace(outcome, exit_code=None, signal=None, timed_out=False), environment, block, dependency_unavailable=True)
+    if finished.evidence_error is not None:
+        run.note("evidence_not_copied: %s" % finished.evidence_error)
+    _unpack_evidence(run, directory, finished.evidence)
+    _repair_evidence(run, directory)
+    return _Ran(outcome, environment, block, anomalies=finished.anomalies)
+
+
+def _no_reports(req: RunRequest) -> _Reports:
+    return _Reports([{"format": fmt, "pattern": pattern, "files": [], "error": None} for fmt, pattern in req.reports], None, None, {})
+
+
 def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
     req = run.req
     directory = run.ws.path("evidence", run.execution_id)
     directory.mkdir(mode=0o700, parents=True)
-    fingerprint = envinfo.environment_fingerprint()
     timeout_s = req.timeout_s if req.timeout_s is not None else run.cfg["defaults"]["timeout_seconds"]
     snapshot = _snapshot(req.reports, str(directory), run.cwd)
-    outcome = runner.run_process(_concrete_command(req, str(directory)), shell=req.shell, cwd=Path(run.cwd), env=run.environ,
-                                 timeout_s=timeout_s, max_bytes=run.max_bytes, grace_s=grace_s)
-    _repair_evidence(run, directory)
+    ran = _on_host(run, directory, timeout_s, grace_s) if req.container is None else _in_container(run, gate, directory, timeout_s)
+    outcome = ran.outcome
     stdout, stdout_redactions = run.redactor.bytes_(outcome.stdout)
     stderr, stderr_redactions = run.redactor.bytes_(outcome.stderr)
-    reports = _store_reports(run, directory, snapshot)
+    reports = _no_reports(req) if ran.dependency_unavailable else _store_reports(run, directory, snapshot)
     verdict = status.decide(status.StatusInputs(
-        spawn_error=outcome.spawn_error, shell=req.shell, exit_code=outcome.exit_code, timed_out=outcome.timed_out,
+        spawn_error=outcome.spawn_error, shell=req.shell or req.container is not None, exit_code=outcome.exit_code,
+        timed_out=outcome.timed_out, dependency_unavailable=ran.dependency_unavailable,
         report_declared=bool(req.reports), report_error=reports.error, summary=reports.summary,
         allow_empty=req.allow_empty, stderr_tail=stderr[-_STDERR_TAIL:].decode("utf-8", "replace"),
-        orphaned_output=outcome.orphaned_output))
+        orphaned_output=outcome.orphaned_output, anomalies=ran.anomalies))
     for flag, limitation in ((outcome.orphaned_output, "orphaned_output"), (outcome.stdout_dropped, "stdout_truncated"),
                              (outcome.stderr_dropped, "stderr_truncated")):
         if flag:
@@ -720,13 +900,13 @@ def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
     streams = {"stdout.log": (_with_marker(stdout, outcome.stdout_dropped), stdout_redactions),
                "stderr.log": (_with_marker(stderr, outcome.stderr_dropped), stderr_redactions)}
     evidence_manifest, redactions = _write_evidence(run, directory, streams, timeout_s, reports.manifest)
-    record = _execution_data(run, gate, verdict, {
+    record = _execution_data(run, gate, verdict, dict({
         "started_at": outcome.started_at, "ended_at": outcome.ended_at, "duration_ms": outcome.duration_ms,
         "exit_code": outcome.exit_code, "signal": outcome.signal, "timed_out": outcome.timed_out,
-        "environment": dict(fingerprint, **{"class": run.environment["class"]}),
+        "environment": dict(ran.environment, **{"class": run.environment["class"]}),
         "evidence_manifest": evidence_manifest, "reports": reports.entries, "report": _report_block(reports.summary),
         "redactions": redactions,
-    })
+    }, **({} if ran.container is None else {"container": ran.container})))
     with run.ws.lock():
         clean = _append(run, "execution.recorded", record)
         for case in reports.summary.cases if reports.summary is not None else ():

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from typing import List, Optional
 
-from . import config, envinfo, integrity, ledger, state
+from . import authority, config, envinfo, integrity, ledger, state
 from .workspace import Workspace
 
 _DOCKER_TIMEOUT_S = 5
@@ -45,9 +45,13 @@ def _config_drifted(ws: Workspace) -> bool:
 
 def _authority(ws: Workspace) -> dict:
     try:
-        return integrity.authority(ws)
+        report = integrity.authority(ws)
+        count = authority.count_without_authority(ws, ledger.iter_all_events(ws))
+        return dict(report, key=authority.key_status(ws), events_without_authority=count,
+                    recovery=authority.RECOVERY if count else None, limit=authority.LIMIT)
     except Exception as exc:  # what is broken is what doctor reports
-        return {"refused": ["authority_unknown: the check failed (%s)" % type(exc).__name__], "limitation": None}
+        return {"refused": ["authority_unknown: the check failed (%s)" % type(exc).__name__], "limitation": None,
+                "key": None, "events_without_authority": None, "recovery": None, "limit": authority.LIMIT}
 
 
 def doctor(ws: Workspace) -> dict:

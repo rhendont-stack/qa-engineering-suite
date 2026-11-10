@@ -1,6 +1,6 @@
 """Process runner: the one place the kernel starts a project command.
 
-``run_process`` starts the command with ``stdin`` on ``/dev/null``, in its own session (so its whole
+``run_process`` starts the command with ``stdin`` on ``/dev/null`` or on a regular file, in its own session (so its whole
 process group can be signalled), and reads both pipes on one thread each. A reader keeps the
 first ``max_bytes`` of its stream and counts the rest as dropped. Output stays byte-faithful;
 decoding and redaction belong to the caller.
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -96,8 +97,17 @@ def _wait_readers(readers, seconds: float) -> bool:
     return True
 
 
+def _open_stream(path: Path) -> int:
+    """A descriptor on the regular file at ``path``. ``O_NONBLOCK`` keeps a FIFO from hanging the open."""
+    fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError("not a regular file: %s" % path)
+    return fd
+
+
 def run_process(command: Union[List[str], str], *, shell: bool, cwd: Path, env: Dict[str, str],
-                timeout_s: float, max_bytes: int, grace_s: float = 5.0) -> RunOutcome:
+                timeout_s: float, max_bytes: int, grace_s: float = 5.0, stdin_path: Optional[Path] = None) -> RunOutcome:
     started_at = ids.format_ts(ids.now_utc())
     t0 = time.monotonic()
 
@@ -109,9 +119,16 @@ def run_process(command: Union[List[str], str], *, shell: bool, cwd: Path, env: 
         base.update(kw)
         return RunOutcome(**base)
 
+    stream = None
+    if stdin_path is not None:
+        try:
+            stream = _open_stream(stdin_path)
+        except OSError:
+            return outcome(spawn_error="stdin_unreadable")
+
     try:
         proc = subprocess.Popen(command, shell=shell, cwd=str(cwd), env=env, bufsize=0,
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL if stream is None else stream, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, start_new_session=True)
     except FileNotFoundError:
         return outcome(spawn_error="not_found")
@@ -119,6 +136,9 @@ def run_process(command: Union[List[str], str], *, shell: bool, cwd: Path, env: 
         return outcome(spawn_error="not_executable")
     except (OSError, ValueError):
         return outcome(spawn_error="spawn_failed")
+    finally:
+        if stream is not None:
+            os.close(stream)
 
     pgid = proc.pid
     try:

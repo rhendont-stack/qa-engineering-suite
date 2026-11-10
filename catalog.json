@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "skills": [
+    "qa-codebase-intelligence",
+    "qa-orchestrator",
+    "qa-reporting",
+    "qa-test-execution"
+  ],
+  "responsibilities": [
+    {
+      "key": "coordinate-qa-review",
+      "owner": "qa-orchestrator"
+    },
+    {
+      "key": "map-the-codebase",
+      "owner": "qa-codebase-intelligence"
+    },
+    {
+      "key": "run-project-test-suites",
+      "owner": "qa-test-execution"
+    },
+    {
+      "key": "evaluate-evidence-and-report",
+      "owner": "qa-reporting"
+    }
+  ]
+}

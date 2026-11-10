@@ -43,6 +43,14 @@
       },
       "required": ["extra_env_names"],
       "additionalProperties": false
+    },
+    "container": {
+      "type": "object",
+      "properties": {
+        "engine": {"type": "string"}
+      },
+      "required": ["engine"],
+      "additionalProperties": false
     }
   },
   "required": [

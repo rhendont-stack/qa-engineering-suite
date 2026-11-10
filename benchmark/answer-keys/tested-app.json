@@ -1,0 +1,153 @@
+{
+  "fixture": "tested-app",
+  "version": 1,
+  "note": "Test ids are classname::name as the kernel records them from each suite's JUnit report. Statuses are the kernel's: a skipped test is not_run. sync_settles alternates run after run, so it is keyed for the first run in a fresh copy.",
+  "issues": [
+    {
+      "id": "F4-01",
+      "kind": "flaky_test",
+      "location": {"path": "tests/test_sync.py", "test": "test_sync_settles"},
+      "category": "test_quality",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": ["qa run --attempt-of", "pytest"],
+      "expected_record": "failed with flaky true after three isolated re-runs: 4 attempts, 2 passes, ratio 0.5"
+    },
+    {
+      "id": "F4-02",
+      "kind": "assertion_free_test",
+      "location": {"path": "tests/test_text.py", "test": "test_slugify_runs_on_a_title"},
+      "category": "test_quality",
+      "severity_anchor": "FUNC-L1",
+      "detectable_by": ["code review", "mutation testing"]
+    },
+    {
+      "id": "F4-03",
+      "kind": "tautological_assertion",
+      "location": {"path": "tests/test_pricing.py", "test": "test_order_total_agrees_with_itself"},
+      "category": "test_quality",
+      "severity_anchor": "FUNC-L1",
+      "detectable_by": ["code review", "mutation testing"]
+    },
+    {
+      "id": "F4-04",
+      "kind": "skipped_test_hiding_a_failure",
+      "location": {"path": "tests/test_pricing.py", "test": "test_refund_is_proportional", "product": "tested_app/pricing.py:refund_cents"},
+      "category": "functional",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": ["running the skipped test", "code review"],
+      "expected_record": "not_run with the skip reason; the test fails when it is allowed to run"
+    },
+    {
+      "id": "F4-05",
+      "kind": "mocked_unit_under_test",
+      "location": {"path": "tests/test_pricing.py", "test": "test_order_total_is_reported"},
+      "category": "test_quality",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": ["code review", "mutation testing"]
+    },
+    {
+      "id": "F4-06",
+      "kind": "surviving_mutants_under_full_coverage",
+      "location": {"path": "tested_app/pricing.py", "function": "apply_discount"},
+      "category": "test_quality",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": ["mutation testing"],
+      "note": "Every line runs, yet only round amounts are checked, so changing the rounding constant survives."
+    },
+    {
+      "id": "F4-07",
+      "kind": "genuine_failure",
+      "location": {"path": "tests/test_pricing.py", "test": "test_parse_quantity_refuses_zero_and_negatives", "product": "tested_app/pricing.py:parse_quantity"},
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "detectable_by": ["pytest", "qa run"]
+    },
+    {
+      "id": "F4-08",
+      "kind": "genuine_failure",
+      "location": {"path": "web/test/price.test.js", "test": "price > rounds half a cent up", "product": "web/src/price.js:applyDiscount"},
+      "category": "functional",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": ["vitest", "qa run --container"]
+    },
+    {
+      "id": "F4-09",
+      "kind": "skipped_test_hiding_a_failure",
+      "location": {"path": "web/test/price.test.js", "test": "price > raises a nonpositive quantity to 1", "product": "web/src/price.js:clampQuantity"},
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "detectable_by": ["running the skipped test", "code review"]
+    },
+    {
+      "id": "F4-10",
+      "kind": "assertion_free_test",
+      "location": {"path": "web/test/price.test.js", "test": "price > formats a price"},
+      "category": "test_quality",
+      "severity_anchor": "FUNC-L1",
+      "detectable_by": ["code review", "mutation testing"]
+    },
+    {
+      "id": "F4-11",
+      "kind": "genuine_failure",
+      "location": {"path": "jvm/src/test/java/fixture/StockTest.java", "test": "refusesToRestockNothing", "product": "jvm/src/main/java/fixture/Stock.java:restock"},
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "detectable_by": ["gradle test", "qa run --container"]
+    },
+    {
+      "id": "F4-12",
+      "kind": "skipped_test_hiding_a_failure",
+      "location": {"path": "jvm/src/test/java/fixture/StockTest.java", "test": "refusesToReserveANegativeNumber", "product": "jvm/src/main/java/fixture/Stock.java:reserve"},
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "detectable_by": ["running the skipped test", "code review"]
+    },
+    {
+      "id": "F4-13",
+      "kind": "assertion_free_test",
+      "location": {"path": "jvm/src/test/java/fixture/StockTest.java", "test": "restocksFourUnits"},
+      "category": "test_quality",
+      "severity_anchor": "FUNC-L1",
+      "detectable_by": ["code review", "mutation testing"]
+    }
+  ],
+  "suites": {
+    "python": {
+      "run_status": "failed",
+      "tests": {
+        "tests.test_pricing::test_apply_discount_takes_ten_percent_off": "passed",
+        "tests.test_pricing::test_order_total_multiplies_then_discounts": "passed",
+        "tests.test_pricing::test_order_total_agrees_with_itself": "passed",
+        "tests.test_pricing::test_order_total_is_reported": "passed",
+        "tests.test_pricing::test_parse_quantity_reads_a_number": "passed",
+        "tests.test_pricing::test_parse_quantity_refuses_zero_and_negatives": "failed",
+        "tests.test_pricing::test_refund_is_proportional": "not_run",
+        "tests.test_text::test_slugify_lower_cases_and_hyphenates": "passed",
+        "tests.test_text::test_slugify_runs_on_a_title": "passed",
+        "tests.test_sync::test_sync_settles": "failed"
+      },
+      "flaky": {"tests.test_sync::test_sync_settles": {"attempts": 4, "passes": 2, "ratio": 0.5}}
+    },
+    "vitest": {
+      "run_status": "failed",
+      "tests": {
+        "test/price.test.js::price > formats zero as a price": "passed",
+        "test/price.test.js::price > formats a price": "passed",
+        "test/price.test.js::price > takes ten percent off a round amount": "passed",
+        "test/price.test.js::price > rounds half a cent up": "failed",
+        "test/price.test.js::price > caps a quantity at 99": "passed",
+        "test/price.test.js::price > raises a nonpositive quantity to 1": "not_run"
+      }
+    },
+    "gradle": {
+      "run_status": "failed",
+      "tests": {
+        "fixture.StockTest::reservesWhatIsHeld()": "passed",
+        "fixture.StockTest::refusesToReserveMoreThanIsHeld()": "passed",
+        "fixture.StockTest::restocksFourUnits()": "passed",
+        "fixture.StockTest::refusesToRestockNothing()": "failed",
+        "fixture.StockTest::refusesToReserveANegativeNumber()": "not_run"
+      }
+    }
+  }
+}

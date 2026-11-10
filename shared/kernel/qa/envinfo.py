@@ -38,6 +38,15 @@ def host_facts() -> dict:
     }
 
 
+def container_facts(daemon_os: str, daemon_arch: str) -> dict:
+    """A container run's environment: the daemon's platform, with the machine that launched it kept apart.
+
+    Nothing about the interpreter or tools inside the image is known without running something in it, so they are left unsaid.
+    """
+    return {"platform": "%s-%s" % (daemon_os, daemon_arch), "python": None, "implementation": None, "cpu_count": None,
+            "memory_bytes": None, "tools": {}, "launcher": host_facts()}
+
+
 def _version_of(path: str, env: Optional[Dict[str, str]] = None) -> str:
     try:
         # Not in the project: qa doctor runs before any trust decision, and a build tool can read project files at startup.

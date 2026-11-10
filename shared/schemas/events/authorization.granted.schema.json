@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "authorization.granted event data",
-  "description": "A scoped, expiring grant recorded by qa authorize, in the Appendix A.4 shape. environment is the id of a declared environment; targets are bare hosts or http(s) URLs, stored as given. limits is keyed by activity, and the keys an activity needs are listed here; authz.py also requires coordination for a load test on production. targets, environment, approval_quote and the text limits carry no pattern because they may hold redaction markers.",
+  "description": "A scoped, expiring grant recorded by qa authorize, in the Appendix A.4 shape. environment is the id of a declared environment; targets are bare hosts or http(s) URLs, stored as given. limits is keyed by activity, and the keys an activity needs are listed here; authz.py also requires coordination for a load test on production. targets, environment, approval_quote and the text limits carry no pattern because they may hold redaction markers. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority.",
   "type": "object",
   "properties": {
     "id": {"$ref": "defs.schema.json#/$defs/auth_id"},
@@ -43,7 +43,8 @@
     "granted_by": {"const": "user"},
     "approval_quote": {"$ref": "#/$defs/text"},
     "granted_at": {"$ref": "defs.schema.json#/$defs/timestamp"},
-    "expires_at": {"$ref": "defs.schema.json#/$defs/timestamp"}
+    "expires_at": {"$ref": "defs.schema.json#/$defs/timestamp"},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
   },
   "required": [
     "id", "environment", "targets", "activities", "limits",

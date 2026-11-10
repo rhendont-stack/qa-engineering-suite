@@ -1,6 +1,6 @@
 # QA Engineering Suite
 
-> **Status: pre-release, not ready for use.** Only the evidence kernel exists. None of the 16 skills has been built, there is no install path, and no version has been released.
+> **Status: pre-release, not ready for use.** The evidence kernel and the four spine skills exist. Twelve of the 16 skills have not been built, there is no install path, and no version has been released.
 
 An open-source suite of [Agent Skills](https://agentskills.io) meant to let an AI agent act as an independent QA team. Its rule is simple: a result counts only when reproducible evidence backs it. A test that did not run is never reported as passing.
 
@@ -11,7 +11,9 @@ An open-source suite of [Agent Skills](https://agentskills.io) meant to let an A
 | `qa` kernel: Python 3.9 or later, standard library only | `shared/kernel/qa/`, `shared/launcher/qa.py` | Built and tested |
 | JSON Schemas, gate profiles, command-guard rules | `shared/schemas/`, `shared/policies/` | Built and tested |
 | Test suite and repository checks | `tests/`, `tools/` | Built |
-| The 16 skills | none yet | Not started |
+| Spine skills: `qa-orchestrator`, `qa-test-execution`, `qa-codebase-intelligence`, `qa-reporting`, and three Claude Code subagents | `skills/`, `agents/` | Built, evaluated on a pilot basis; see the [milestone 2 report](docs/reports/milestone-2.md) |
+| Container runs (`qa run --container`) | `shared/kernel/qa/container.py` | Built, tested against a remote engine |
+| The other 12 skills | none yet | Not started |
 | Packaging and host manifests | none yet | Not started |
 
 The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports. It also tracks findings, evaluates release gates, renders reports and checks the claims those reports make.
@@ -26,7 +28,20 @@ The kernel's test suite has passed on these platforms:
 | Linux arm64, in containers | 3.9 and 3.15 |
 | Linux x86_64, on GitHub Actions | 3.9 and 3.15 |
 
-Counts, skipped tests and limitations of the local runs are in the [milestone 1 report](docs/reports/milestone-1.md). GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
+Counts, skipped tests and limitations of the local runs are in the [milestone 1 report](docs/reports/milestone-1.md).
+
+Milestone 2 adds the following. Its numbers, evidence IDs and limitations are in the [milestone 2 report](docs/reports/milestone-2.md).
+
+| Check | Result |
+|---|---|
+| Targeted review of fixture F4 through the orchestrator | One run, verdict `NOT_READY`, ledger and report checks clean |
+| Targeted review of fixture F9 through the orchestrator | Two runs. A prompt asking for a release made the orchestrator ask for a mode and record nothing; a re-run that asked for a review of the change reached a gate, `NOT_READY`, which is correct for the whole fixture (one of its runners records a genuine failure) |
+| Scenario F9-01 alone (the absent tool), deterministic, no agent | Gate `INSUFFICIENT_EVIDENCE` under profile `release`, as the answer key expects |
+| Fixture F8 in a container with no network | Two runs, isolation `container`, network `none` |
+| Kernel tests on Linux x86_64 in containers, 3.9 and 3.15 | First runs failed on tests that need `git` in an image without it; after a test-only guard both re-runs passed (3234 passed, 309 skipped, 0 failed) |
+| Kernel tests on macOS arm64 for milestone 2 | Not run locally; left to the macOS CI job |
+
+GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
 
 ## Try the kernel
 
@@ -42,14 +57,14 @@ python3 /path/to/qa-engineering-suite/shared/launcher/qa.py doctor
 
 `init` creates a `.qa/` directory in your project. Every command prints one JSON object on stdout.
 
-A new project starts as `untrusted`. In that state `qa run` records the command as not authorized and does not run it, because container runs do not exist yet. The output of `qa run` says how to approve a change of trust level.
+A new project starts as `untrusted`. In that state `qa run` records a command on the host as not authorized and does not run it. `qa run --container IMAGE@DIGEST` runs it instead in a container with no network and no bind mount, from an image already on the engine. The output of `qa run` says how to do either.
 
 ## Roadmap
 
 | Milestone | Scope | State |
 |---|---|---|
 | 1 | Kernel foundations | Done |
-| 2 | `qa-orchestrator`, `qa-test-execution`, `qa-codebase-intelligence`, `qa-reporting`; container runs | Planned |
+| 2 | `qa-orchestrator`, `qa-test-execution`, `qa-codebase-intelligence`, `qa-reporting`; container runs | Built; exit evidence has open items, see the milestone 2 report |
 | 3 | `qa-requirements`, `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard`, `qa-mutation` | Planned |
 | 4 | `qa-api-testing`, `qa-database`, `qa-security`, `qa-frontend`, `qa-performance`, `qa-release`, `qa-mobile` | Planned |
 | 5 | Packaging, per-skill evaluations, pilot benchmark | Planned |
@@ -60,9 +75,13 @@ A skill that fabricates a claim, violates a safety rule, misreports a status or 
 ## Known limits
 
 - **The command guard is defense in depth, not a security boundary.** It cannot see commands inside scripts or opaque programs. The [milestone 1 report](docs/reports/milestone-1.md) lists the classes it does not cover.
-- **The kernel does not sandbox anything.** Isolation from the program under test arrives with container runs in milestone 2.
+- **The kernel does not sandbox a host run.** Only `qa run --container` isolates the program under test, and only as far as the container engine does.
 - **Mutation testing of the kernel** is deferred to milestone 3.
-- **Evidence IDs in the report** resolve against a local ledger that is kept out of git, so a fresh clone cannot resolve them.
+- **The orchestrator's delegation is fragile under background dispatch.** Subagent launcher calls written with shell variables are denied there, and the fix is not yet applied or measured. See the milestone 2 report.
+- **Evaluation results are small and in-sample.** Three runs per scenario, with descriptions tuned on the same prompts.
+- **Evidence IDs in the report** resolve against local ledgers that are kept out of git, so a fresh clone cannot resolve them. An extra `--ledger` that verifies proves only that its hash chain is internally consistent, not where it came from.
+- **An evidence bundle carries the configured engine string.** `qa config set container.engine` records the value in the ledger, and `qa report bundle` ships the ledger, so an `ssh <alias> docker` engine puts that host alias in every bundle. Use an alias you are willing to share before you export one.
+- **Repository git configuration is neutralised, not trusted.** The kernel blanks the filter and diff programs a repository sets for itself and never enters submodules; a filter configured in your own user-level git config (for example git-lfs) still runs. This needs git 2.26 or later (`git config --show-scope`); with an older git every kernel git read reports `git_unavailable` and fails closed.
 - **The design documents are not published.** Section references such as `§12.2` in code comments and in the report point to them.
 
 ## Project documents

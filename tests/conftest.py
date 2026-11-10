@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,7 @@ from typing import Dict, List
 
 import pytest
 
-from helpers import KERNEL, LAUNCHER
+from helpers import FIXTURES, KERNEL, LAUNCHER, REPO, fake_engine  # noqa: F401 (a fixture, registered by being imported here)
 
 
 class FrozenNow:
@@ -98,3 +99,52 @@ def qa_cli(request):
                               capture_output=True, timeout=120)
         return done.returncode, json.loads(done.stdout)
     return run
+
+
+@pytest.fixture
+def repo_root():
+    return REPO
+
+
+class FixtureProject:
+    """A private copy of one fixture, with a workspace the kernel can run in, driven through the launcher."""
+
+    def __init__(self, root, qa_cli):
+        self.root = root
+        self._qa_cli = qa_cli
+
+    def cli(self, *args, cwd=None, env=None):
+        return self._qa_cli(*args, cwd=cwd or self.root, env=env, workspace=self.root)
+
+    def results(self, execution):
+        """{test id: status} the kernel recorded for ``execution``."""
+        state = self.cli("state", "show", "results")[1]["state"]
+        return {result["test_id"]: result["status"] for result in state.values() if result["execution"] == execution}
+
+
+@pytest.fixture
+def qa_on_fixture(tmp_path, qa_cli):
+    """``qa_on_fixture(name, git=False) -> FixtureProject``: a copy of ``fixtures/<name>`` in its own trusted workspace.
+
+    ``git=True`` also makes the copy a work tree with one commit, which the gate needs; without git the test is skipped.
+    """
+    made = []
+
+    def make(name, git=False):
+        root = tmp_path / ("project-%d" % len(made))
+        shutil.copytree(str(FIXTURES / name), str(root), ignore=shutil.ignore_patterns(
+            "__pycache__", ".pytest_cache", "node_modules", ".gradle", "build", ".qa"))
+        if git:
+            if shutil.which("git") is None:
+                pytest.skip("tool missing: git")
+            subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c"],
+                           check=True)
+        project = FixtureProject(root, qa_cli)
+        assert project.cli("init")[0] == 0
+        assert project.cli("config", "set", "project.trust", "trusted", "--approval", "fixture test")[0] == 0
+        made.append(project)
+        return project
+
+    return make

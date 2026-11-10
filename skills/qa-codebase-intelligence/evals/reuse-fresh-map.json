@@ -1,0 +1,13 @@
+{
+  "id": "qa-codebase-intelligence-reuse-fresh-map",
+  "fixture": "fixtures/tested-app",
+  "skill": "skills/qa-codebase-intelligence",
+  "bash_allow": [
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/qa.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/git_hotspots.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/import_graph.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/inventory_tests.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/write_map.py"
+  ],
+  "prompt": "Please map this project for me (stack, layout, tests, risky files) and keep a written copy of the map in the repository. Once that is done, my colleague wants the up-to-date map of the repository as it is right now, so produce the map once more and tell me where the file is."
+}

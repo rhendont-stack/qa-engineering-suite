@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "workspace.initialized event data",
-  "description": "Recorded when a workspace is created. kernel_version carries no pattern because redaction runs after validation and stored events are validated again later.",
+  "description": "Recorded when a workspace is created. kernel_version carries no pattern because redaction runs after validation and stored events are validated again later. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority.",
   "type": "object",
   "properties": {
     "kernel_version": {"type": "string", "minLength": 1},
     "schema_version": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$"},
-    "config_hash": {"$ref": "defs.schema.json#/$defs/sha256"}
+    "config_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
   },
   "required": ["kernel_version", "schema_version", "config_hash"],
   "additionalProperties": false

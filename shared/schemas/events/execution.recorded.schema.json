@@ -21,7 +21,8 @@
       "properties": {"CI": {"type": "string"}, "NODE_ENV": {"type": "string"}},
       "additionalProperties": false
     },
-    "isolation": {"const": "host"},
+    "isolation": {"enum": ["host", "container"]},
+    "container": {"$ref": "#/$defs/container"},
     "evidence_manifest": {"anyOf": [{"$ref": "#/$defs/evidence_manifest"}, {"type": "null"}]},
     "reports": {"type": "array", "items": {"$ref": "#/$defs/declared_report"}},
     "report": {"anyOf": [{"$ref": "#/$defs/test_report"}, {"$ref": "#/$defs/alert_report"}, {"type": "null"}]},
@@ -80,13 +81,41 @@
       "properties": {
         "class": {"$ref": "defs.schema.json#/$defs/env_class"},
         "platform": {"type": "string"},
+        "python": {"type": ["string", "null"]},
+        "implementation": {"type": ["string", "null"]},
+        "cpu_count": {"type": ["integer", "null"]},
+        "memory_bytes": {"type": ["integer", "null"]},
+        "tools": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},
+        "launcher": {"$ref": "#/$defs/launcher"}
+      },
+      "required": ["class", "platform", "python", "implementation", "cpu_count", "memory_bytes", "tools"],
+      "additionalProperties": false
+    },
+    "launcher": {
+      "description": "The machine that started a container run; the fields above then describe where it ran.",
+      "type": "object",
+      "properties": {
+        "platform": {"type": "string"},
         "python": {"type": "string"},
         "implementation": {"type": "string"},
         "cpu_count": {"type": ["integer", "null"]},
-        "memory_bytes": {"type": ["integer", "null"]},
-        "tools": {"type": "object", "additionalProperties": {"type": ["string", "null"]}}
+        "memory_bytes": {"type": ["integer", "null"]}
       },
-      "required": ["class", "platform", "python", "implementation", "cpu_count", "memory_bytes", "tools"],
+      "required": ["platform", "python", "implementation", "cpu_count", "memory_bytes"],
+      "additionalProperties": false
+    },
+    "container": {
+      "description": "How a run that reached the engine was isolated. image_id, daemon_version and network_mode are null when the engine did not say. engine_kind never names the host.",
+      "type": "object",
+      "properties": {
+        "image": {"type": "string"},
+        "image_id": {"type": ["string", "null"]},
+        "engine_kind": {"enum": ["local", "ssh"]},
+        "daemon_version": {"type": ["string", "null"]},
+        "network_mode": {"type": ["string", "null"]},
+        "install_ran": {"type": "boolean"}
+      },
+      "required": ["image", "image_id", "engine_kind", "daemon_version", "network_mode", "install_ran"],
       "additionalProperties": false
     },
     "evidence_manifest": {

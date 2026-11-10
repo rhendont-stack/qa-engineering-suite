@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from . import gitinfo, ledger, schema
+from .authority import key_status
 from .canonical import loads, sha256_bytes, sha256_file
 from .errors import QaError
 from .ledger import Problem
@@ -216,7 +217,10 @@ def authority(ws: Workspace) -> dict:
 
     ``refused`` holds named limitations, empty when they can: ``tracked_authority`` when git tracks more of ``.qa/`` than
     the two files meant to be shared, because a clone then brings its approvals with it, and ``ledger_unverified`` when a
-    hash chain does not verify. ``limitation`` says why the tracked check could not run: not_a_git_repo or git_unavailable.
+    hash chain does not verify, and ``authority_key_invalid`` when ``.qa/authority.key`` is there but unusable, since no MAC
+    verifies and none can be made. A key that is simply absent is not refused: every approval is powerless until one is
+    recorded here, which creates it (``authority``). ``limitation`` says why the tracked check could not run: not_a_git_repo
+    or git_unavailable.
     """
     tracked, limitation = gitinfo.tracked_under_qa(ws.root)
     refused = []
@@ -229,4 +233,7 @@ def authority(ws: Workspace) -> dict:
     if broken:
         refused.append("ledger_unverified: %d problem(s) in the hash chains, the first at %s; grants and the accepted "
                        "configuration are not honored until `qa ledger verify` is clean" % (len(broken), broken[0].where))
+    if key_status(ws) == "invalid":
+        refused.append("authority_key_invalid: .qa/authority.key is not a readable file of 32 bytes, so no approval in this "
+                       "workspace counts and none can be recorded; delete the file and approve again")
     return {"refused": refused, "limitation": limitation}

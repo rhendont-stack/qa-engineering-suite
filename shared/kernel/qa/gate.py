@@ -302,6 +302,32 @@ _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
 }
 
 
+def _reproduced(st: dict, commit: Optional[str]) -> Set[str]:
+    """Local executions an imported bundle re-ran with the same result at ``commit`` (a ``bundle.compared`` that matched)."""
+    return {comparison["local"] for bundle in st["bundles"].values() for comparison in bundle["comparisons"]
+            if comparison["matching"] and comparison["commit"] == commit
+            and (st["executions"][comparison["local"]]["git"] or {}).get("commit") == commit}
+
+
+def _needs_reproduction(outcome: _Outcome, st: dict, ctx: GateContext) -> _Outcome:
+    """§5.3: a criterion that needs I3 is met only by executions an imported run reproduced at the same commit.
+
+    Only a MET outcome is held back: a failure stays a failure, and missing evidence stays missing. What the bundle's own
+    ledger claims about its independence, grants or results never reaches this; only the comparison the kernel recorded does.
+    """
+    result, detail, evidence = outcome
+    if result != _MET:
+        return outcome
+    run_ids = [item for item in evidence if item in st["executions"]]
+    reproduced = _reproduced(st, ctx.target_commit)
+    missing = [item for item in run_ids if item not in reproduced]
+    if run_ids and not missing:
+        return _MET, "%s; reproduced by an imported bundle" % detail, evidence
+    why = ", ".join(missing) if missing else "no execution"
+    return (_NO_EVIDENCE, "%s; needs I3, and no matching comparison with an imported bundle at commit %s covers %s"
+            % (detail, ctx.target_commit, why), evidence)
+
+
 def evaluate_criterion(c: dict, st: dict, ctx: GateContext) -> dict:
     result = {"id": c["id"], "type": c["type"], "blocking": c["blocking"]}
     if "not_applicable" in c:  # never inferred: load_policy put an accepted or a stated justification here
@@ -311,7 +337,10 @@ def evaluate_criterion(c: dict, st: dict, ctx: GateContext) -> dict:
         capability, milestone = _NEEDS[c["type"]]
         detail = "not evaluable by kernel %s (needs %s, milestone %d)" % (KERNEL_VERSION, capability, milestone)
         return dict(result, outcome=_NO_EVIDENCE, detail=detail, evidence=[])
-    outcome, detail, evidence = evaluator(c, st, ctx)
+    judged = evaluator(c, st, ctx)
+    if c.get("min_independence") == "I3":
+        judged = _needs_reproduction(judged, st, ctx)
+    outcome, detail, evidence = judged
     return dict(result, outcome=outcome, detail=detail, evidence=evidence)
 
 
@@ -343,7 +372,7 @@ def _conditions(criteria: List[dict], risks: List[str], st: dict) -> List[str]:
 def _refuse_drift(ws: Workspace, st: dict) -> None:
     """§11.1: an override applies only after you accept it, so nothing goes on from a file edited by hand."""
     if config.current_hash(ws) != config.accepted_hash(st):
-        raise QaError("config_drift", "config.json was edited outside the CLI; accept it first")
+        raise QaError("config_drift", config.DRIFT_REFUSAL)
 
 
 def _context(ws: Workspace, st: dict, actor: ledger.Actor, target_commit: Optional[str]) -> GateContext:

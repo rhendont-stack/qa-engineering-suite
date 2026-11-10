@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - Windows
 # schema_invalid, invalid_session, invalid_json (from canonical.loads).
 
 SUBDIRS = ("ledger", "evidence", "state", "reports", "work")
+AUTHORITY_KEY_FILE = "authority.key"
 GITIGNORE = "*\n!.gitignore\n!config.json\n"
 _POLL_S = 0.05
 _VERSION_RE = re.compile(r"[0-9]+(\.[0-9]+)*")
@@ -220,9 +221,22 @@ def init_workspace(root: Path) -> Tuple[Workspace, bool]:
         ws.path(d).mkdir(exist_ok=True)
     _create_new(ws.path(".gitignore"), GITIGNORE.encode("utf-8"))
     _create_new(ws.path("redaction.key"), os.urandom(32))
+    ensure_authority_key(ws)
     _create_new(ws.path("default-session"), (new_id("S") + "\n").encode("utf-8"))
     created = _create_new(ws.path("config.json"), config_bytes(default_config(root.name)))
     return ws, created
+
+
+def ensure_authority_key(ws: Workspace) -> None:
+    """Create ``.qa/authority.key`` if there is nothing at that path, and never replace what is there (see ``authority``).
+
+    Under the workspace lock, so two first signatures cannot each write a key and leave one's MACs unverifiable.
+    """
+    path = ws.path(AUTHORITY_KEY_FILE)
+    if not os.path.lexists(str(path)):
+        with ws.lock():
+            if not os.path.lexists(str(path)):
+                write_atomic(path, os.urandom(32))
 
 
 def _create_new(path: Path, data: bytes) -> bool:

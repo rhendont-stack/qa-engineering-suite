@@ -21,6 +21,12 @@ jobs:
           python-version: "3.15"
       - name: Repository has no empty files, bad JSON or unclosed schemas
         run: python -I tools/check_repo.py
+      - name: Vendored kernels equal the shared source
+        run: python -I tools/vendor_kernel.py --check
+      - name: Skills follow the specification and the template
+        run: python -I tools/validate_skills.py
+      - name: Every responsibility has exactly one owner
+        run: python -I tools/check_catalog.py
 
   # L1: the test suite on the oldest and the newest supported interpreter, on both operating systems.
   l1:

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "report.ingested event data",
+  "description": "A report file attached to an existing execution. strength is structured only when the file matches that execution's intact manifest.",
+  "type": "object",
+  "properties": {
+    "execution": {"$ref": "defs.schema.json#/$defs/exe_id"},
+    "format": {"enum": ["junit", "ctrf", "sarif"]},
+    "kind": {"enum": ["tests", "alerts"]},
+    "total": {"type": "integer", "minimum": 0},
+    "file": {"type": "string"},
+    "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "ev_id": {"$ref": "defs.schema.json#/$defs/ev_id"},
+    "strength": {"enum": ["structured", "attested"]},
+    "category": {"$ref": "defs.schema.json#/$defs/category"}
+  },
+  "required": ["execution", "format", "kind", "total", "file", "sha256", "ev_id", "strength", "category"],
+  "additionalProperties": false
+}
