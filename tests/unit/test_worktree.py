@@ -476,10 +476,16 @@ def test_partial_clone_with_a_repository_fetch_program_is_refused(repo, actor, o
 def test_lazy_fetch_is_off_for_a_worktree_checkout_in_a_partial_clone(repo, actor, origin, tmp_path):
     if not gitinfo.lazy_fetch_blocked():
         pytest.skip("this git cannot switch lazy fetch off; test_old_git_is_refused_in_a_partial_clone covers it")
+    control = tmp_path / "control-repo"  # its own partial clone, so its fetch does not fill the workspace's object store
+    control.mkdir()
+    git(control, "init", "-q", "-b", "main")
+    _unused, control_commit = make_partial_clone(control, origin, tmp_path, "control", program=False)
+    git(control, "worktree", "add", "-q", "--detach", str(tmp_path / "control-tree"), control_commit)
+    assert (tmp_path / "control-tree" / "big.txt").read_text() == "blob that is not local"  # the control: plain git fetches it
     _marker, commit = make_partial_clone(repo.root, origin, tmp_path, "ws", program=False)
     with pytest.raises(QaError) as caught:
         worktree.add(repo, actor, commit)
-    assert caught.value.code == "worktree_failed"  # the missing blob was not fetched; without the switch the checkout succeeds
+    assert caught.value.code == "worktree_failed"  # the kernel's session does not fetch the missing blob
     assert gitinfo.git_info(repo.root)[1] != "git_unavailable"
 
 

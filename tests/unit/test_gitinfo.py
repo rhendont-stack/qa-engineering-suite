@@ -390,3 +390,22 @@ def test_a_partial_clone_is_refused_only_where_lazy_fetch_cannot_be_switched_off
     monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: False)
     with pytest.raises(gitinfo.Unavailable, match="partial"):
         gitinfo._program_overrides("git", repo)
+
+
+@pytest.mark.parametrize("value, partial", [
+    ("true", True), ("yes", True), ("on", True), ("1", True), ("2", True), ("-1", True), ("garbage", True), ("", True),
+    (None, True),  # a key with no value at all, which git reads as true
+    ("false", False), ("no", False), ("off", False), ("0", False), ("FALSE", False),
+])
+def test_a_promisor_remote_counts_unless_it_is_explicitly_false(repo, monkeypatch, value, partial):
+    if value is None:
+        with open(str(repo / ".git" / "config"), "a") as handle:
+            handle.write('[remote "origin"]\n\tpromisor\n')
+    else:
+        git(repo, "config", "remote.origin.promisor", value)
+    monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: False)  # a git that cannot switch lazy fetch off
+    if partial:
+        with pytest.raises(gitinfo.Unavailable, match="partial"):
+            gitinfo._program_overrides("git", repo)
+    else:
+        assert gitinfo._program_overrides("git", repo) == []

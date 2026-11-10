@@ -115,12 +115,25 @@ def _first_value_key(key: str) -> bool:
         parts[0] == "remote" and len(parts) >= 3 and parts[-1] in _FIRST_VALUE_REMOTE)
 
 
+def _explicitly_false(value: bytes) -> bool:
+    """Git's false: ``false``, ``no``, ``off`` or an integer that is zero. Anything else, including a value that does not parse
+    and an empty one, is treated as true here, since the question is whether a fetch could happen."""
+    text = value.strip().lower()
+    if text in (b"false", b"no", b"off"):
+        return True
+    try:
+        return int(text, 0) == 0
+    except ValueError:
+        return False
+
+
 def _partial_clone_setting(key: str, value: bytes) -> bool:
+    """Whether this entry makes the repository a partial clone: ``extensions.partialClone``, or a ``remote.<name>.promisor``
+    that is not explicitly false (a key with no value is true to git, so it counts)."""
     parts = key.lower().split(".")
     if parts == ["extensions", "partialclone"]:
         return True
-    return parts[0] == "remote" and parts[-1] == "promisor" and len(parts) >= 3 and value.strip().lower() in (
-        b"true", b"yes", b"on", b"1")
+    return parts[0] == "remote" and parts[-1] == "promisor" and len(parts) >= 3 and not _explicitly_false(value)
 
 
 def _program_overrides(git: str, root: Path) -> List[str]:
