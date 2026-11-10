@@ -83,6 +83,9 @@ HOSTILE = {
     "negative_cobertura": ("cobertura", '<coverage lines-valid="-3" lines-covered="0"/>'),
     "covered_over_total_cobertura": ("cobertura", '<coverage lines-valid="2" lines-covered="3"/>'),
     "branch_fraction_over_total_cobertura": ("cobertura", COBERTURA.replace("(1/2)", "(3/2)")),
+    "huge_condition_coverage_cobertura": ("cobertura", COBERTURA.replace("(1/2)", "(%s/%s)" % ("9" * 5000, "9" * 5000))),
+    "unicode_digits_condition_coverage_cobertura": ("cobertura", COBERTURA.replace("(1/2)", "(\u0661/\u0662)")),
+    "undefined_entity_cobertura": ("cobertura", COBERTURA.replace('filename="src/a.py"', 'filename="&x;"')),
     "nan_cobertura": ("cobertura", '<coverage lines-valid="nan" lines-covered="0"/>'),
     "negative_hits_cobertura": ("cobertura", COBERTURA.replace('number="3" hits="0"', 'number="3" hits="-1"')),
     "negative_jacoco": ("jacoco", JACOCO.replace('missed="1" covered="1"/><counter type="BRANCH"', 'missed="-1" covered="1"/><counter type="BRANCH"')),
@@ -145,6 +148,11 @@ def test_a_path_with_dots_is_recorded_not_refused_and_flagged(fmt, text):
     assert s.anomalies == ("path_outside_project",)
 
 
+def test_a_repeated_lcov_file_merges_by_path_not_by_adding():
+    s = parse("lcov", "SF:a.py\nDA:1,1\nDA:2,0\nend_of_record\nSF:a.py\nDA:1,0\nDA:2,5\nDA:3,0\nend_of_record\nSF:b.py\nDA:1,1\nend_of_record\n")
+    assert [f.path for f in s.files] == ["a.py", "b.py"] and totals(s) == (2, 4, 3, 0, 0)
+
+
 def test_paths_that_stay_inside_are_not_flagged():
     assert parse("lcov", LCOV).anomalies == ()
 
@@ -196,10 +204,21 @@ def test_missing_or_unparseable_declared_coverage_is_inconclusive(trusted, actor
     assert "measurements" not in record(trusted, r)
 
 
-def test_missing_coverage_beside_passing_tests_is_report_missing(trusted, actor, py):
-    r = run(trusted, actor, py, (("{evidence}/junit.xml", '<testsuite><testcase classname="c" name="t"/></testsuite>'),), 0,
-            (("junit", "{evidence}/junit.xml"), ("cobertura", "{evidence}/cov.xml")))
-    assert (r["status"], r["reason"]) == ("inconclusive", "report_missing")
+JUNIT_OK = '<testsuite><testcase classname="c" name="t"/></testsuite>'
+JUNIT_BAD = '<testsuite><testcase classname="c" name="t"><failure/></testcase></testsuite>'
+
+
+@pytest.mark.parametrize("junit,exit_code,coverage,status,reason,note", [
+    (JUNIT_BAD, 1, None, "failed", "assertion", "measurement_missing"),
+    (JUNIT_OK, 0, None, "passed", None, "measurement_missing"),
+    (JUNIT_OK, 0, "garbage\n", "passed", None, "measurement_invalid"),
+    (JUNIT_BAD, 1, "garbage\n", "failed", "assertion", "measurement_invalid")])
+def test_a_bad_measurement_beside_test_reports_never_changes_the_verdict(trusted, actor, py, junit, exit_code, coverage, status, reason, note):
+    files = (("{evidence}/junit.xml", junit),) + ((("{evidence}/cov.info", coverage),) if coverage else ())
+    r = run(trusted, actor, py, files, exit_code, (("junit", "{evidence}/junit.xml"), ("lcov", "{evidence}/cov.info")))
+    assert (r["status"], r["reason"]) == (status, reason)
+    assert any(item.startswith(note) for item in r["limitations"]) and "measurements" not in record(trusted, r)
+    assert [e["error"] for e in record(trusted, r)["reports"]] == [None, "report_missing" if coverage is None else "report_invalid"]
 
 
 def test_missing_tests_beside_coverage_is_report_missing(trusted, actor, py):

@@ -692,6 +692,7 @@ def _store_reports(run: _Run, directory: Path, snapshot: _Snapshot) -> _Reports:
     names, manifest = _copy_reports(run, directory, produced)
     _clear_evidence(run, directory, set(manifest), {source for sources in produced for source in sources})
     parsed: Dict[Tuple[str, str], Optional[ingest.ReportSummary]] = {}  # a file two patterns match counts once
+    run_decides = any(not ingest.is_measurement(fmt) for fmt, _pattern in run.req.reports)
     entries = []
     for (fmt, pattern), sources in zip(run.req.reports, produced):
         files: List[str] = []
@@ -709,10 +710,15 @@ def _store_reports(run: _Run, directory: Path, snapshot: _Snapshot) -> _Reports:
             if parsed[(fmt, source)] is None:
                 error = error or "report_invalid"
         entries.append({"format": fmt, "pattern": pattern, "files": files, "error": error})
+        if error is not None and ingest.is_measurement(fmt) and run_decides:
+            run.note("%s: %s" % ("measurement_" + error.split("_")[1], pattern))
     summaries = [s for s in parsed.values() if s is not None and s.kind not in ingest.MEASUREMENT_KINDS]
     measurements = tuple(_measurement(run, s, "reports/" + names[source], manifest)
                          for (_fmt, source), s in parsed.items() if s is not None and s.kind in ingest.MEASUREMENT_KINDS)
-    first_error = next((e["error"] for e in entries if e["error"] is not None), None)
+    # A measurement that is missing or invalid fails the run only when it is all the run declared; beside test or alert
+    # reports it is noted (measurement_missing, measurement_invalid) and the verdict stays theirs.
+    first_error = next((e["error"] for e in entries if e["error"] is not None
+                        and (run_decides is False or not ingest.is_measurement(e["format"]))), None)
     return _Reports(entries, first_error, ingest.merge(summaries) if summaries else None, manifest, measurements)
 
 

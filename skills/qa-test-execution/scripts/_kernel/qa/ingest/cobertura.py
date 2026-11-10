@@ -13,7 +13,7 @@ from qa.ingest import FileCoverage, ReportInvalid, ReportSummary, add_anomaly, c
 from qa.ingest.xmlsafe import local, parse_xml
 
 _DTD = re.compile(r"http://cobertura\.sourceforge\.net/xml/coverage-0[1-9]\.dtd")
-_CONDITION = re.compile(r"\((\d+)/(\d+)\)\s*$")
+_CONDITION = re.compile(r"\(([0-9]+)/([0-9]+)\)\s*$")
 
 
 def _doctype(name: str, system: Optional[str], public: Optional[str]) -> bool:
@@ -89,7 +89,7 @@ def _add_line(lines: Dict[str, Tuple[int, int, int]], line) -> None:
         found = _CONDITION.search(condition)
         if found is None:
             raise ReportInvalid("invalid_count", what="condition-coverage")
-        covered, total = int(found.group(1)), int(found.group(2))
+        covered, total = count(found.group(1), "condition-coverage"), count(found.group(2), "condition-coverage")
         checked(covered, total, "branches")
     old_hits, old_covered, old_total = lines.get(number, (0, 0, 0))
     lines[number] = (old_hits + hits, max(old_covered, covered), max(old_total, total))
