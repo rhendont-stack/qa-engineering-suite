@@ -557,6 +557,9 @@ WRITE_ARGV = {
     "risk add": ("risk", "add", "--json", "missing.json"),
     "tc add": ("tc", "add", "--json", "missing.json"),
     "tc import": ("tc", "import", "--json", "missing.json"),
+    "trace link": ("trace", "link", "AC-001.1", "verified_by", "TC-001"),
+    "trace scan": ("trace", "scan"),
+    "trace matrix": ("trace", "matrix"),
 }
 READ_ARGV = {
     "doctor": ("doctor",),

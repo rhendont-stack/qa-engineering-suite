@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, workspace, worktree
+from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -40,6 +40,7 @@ WRITE_COMMANDS = (
     "run", "ingest", "result reclassify", "finding add", "finding update", "finding state", "finding dedupe", "state rebuild", "report render", "report bundle", "plan create", "plan update",
     "worktree add", "worktree remove",
     "req add", "req import", "req confirm", "ac add", "asm add", "asm decide", "risk add", "tc add", "tc import",
+    "trace link", "trace scan", "trace matrix",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -314,6 +315,15 @@ def _add_record_commands(groups: Dict[str, Any]) -> None:
     _group(groups, "tc", "record test cases")
     file_command("tc add", "record a test case; links (existing criteria) become verified_by trace links")
     file_command("tc import", "record a JSON list of test cases, all or none")
+    _group(groups, "trace", "link records, map tests to test cases, and write the traceability matrix")
+    link = _command(groups, "trace link", "record one typed link (verified_by, mitigated_by, automated_by, executed_in, red_check, violates)")
+    link.add_argument("source", metavar="SOURCE")
+    link.add_argument("relation", metavar="RELATION")
+    link.add_argument("target", metavar="TARGET")
+    scan = _command(groups, "trace scan", "link test cases to tests from TC-nnn tags and .qa/trace/test-map.json; reads the project, writes nothing in it")
+    scan.add_argument("--root", metavar="PATH", help="the directory to scan (default: the workspace root)")
+    matrix = _command(groups, "trace matrix", "write .qa/trace/matrix.json and print the gap counts")
+    matrix.add_argument("--target", metavar="COMMIT", help="choose the latest result on this commit (default: on any commit)")
 
 
 def build_parser() -> _Parser:
@@ -532,6 +542,23 @@ def cmd_req_list(args: argparse.Namespace, ctx: Context) -> int:
 
 def cmd_ac_add(args: argparse.Namespace, ctx: Context) -> int:
     return _record_one("criterion", args, ctx)
+
+
+def cmd_trace_link(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**trace.link(ctx.ws, ctx.actor, args.source, args.relation, args.target))
+    return 0
+
+
+def cmd_trace_scan(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**trace.scan(ctx.ws, ctx.actor, Path(args.root) if args.root is not None else ctx.ws.root))
+    return 0
+
+
+def cmd_trace_matrix(args: argparse.Namespace, ctx: Context) -> int:
+    result, path = trace.write_matrix(ctx.ws, state.load(ctx.ws), args.target)
+    ctx.reply(path=path.relative_to(ctx.ws.root).as_posix(), target=result["target"], counts=result["counts"],
+              requirements=len(result["requirements"]), testcases=len(result["testcases"]))
+    return 0
 
 
 def cmd_asm_add(args: argparse.Namespace, ctx: Context) -> int:
