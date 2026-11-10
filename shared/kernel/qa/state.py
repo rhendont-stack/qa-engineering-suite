@@ -12,13 +12,14 @@ from .workspace import Workspace, config_bytes, write_atomic
 
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
 _KEYS = ("executions", "results", "tests", "findings", "authorizations", "config",
-         "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees")
-_LISTS = ("blocked_commands", "violations")
+         "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees",
+         "requirements", "criteria", "assumptions", "risks", "testcases", "links")
+_LISTS = ("blocked_commands", "violations", "links")
 # Derived from evaluation or rendering, or about the work rather than the evidence, so excluded from state_hash.
 _UNHASHED = ("gates", "reports", "plans", "heads")
 # Keys added after milestone 2. While one is empty it is left out of state_hash, so a ledger that predates the key keeps the hash
 # it had (a bundle and a gate.evaluated record that hash). Once it holds something it counts like any other key.
-_UNHASHED_WHEN_EMPTY = ("worktrees",)
+_UNHASHED_WHEN_EMPTY = ("worktrees", "requirements", "criteria", "assumptions", "risks", "testcases", "links")
 
 
 def empty_state() -> dict:
@@ -125,6 +126,70 @@ def _worktree_removed(state: dict, event: dict) -> None:
         _violation(state, event, "unknown_worktree")
         return
     known["removed"] = event["id"]
+
+
+# Analysis records (§9.1). Each upsert replaces the whole record under its id. What a person decides is kept beside the record,
+# never inside what its author wrote: a requirement's ``confirmed`` and an assumption's ``status``, ``confirmed_by`` and
+# ``approval``. Those come from signed events, which fold only when their MAC verifies (authority.CONFERRING), and a changed
+# statement drops them, so an approval never outlives the words it approved.
+
+def _requirement_upserted(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = copy.deepcopy(data)
+    prior = state["requirements"].get(data["id"])
+    if prior is not None and "confirmed" in prior and prior["statement"] == data["statement"]:
+        record["confirmed"] = prior["confirmed"]
+    state["requirements"][data["id"]] = record
+
+
+def _requirement_confirmed(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = state["requirements"].get(data["id"])
+    if record is None:
+        _violation(state, event, "unknown_requirement")
+    else:
+        record["confirmed"] = {"approval": data["approval"], "event": event["id"]}
+
+
+def _criterion_upserted(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["requirement"] not in state["requirements"]:
+        _violation(state, event, "unknown_requirement")
+        return
+    state["criteria"][data["id"]] = copy.deepcopy(data)
+
+
+def _assumption_upserted(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = dict(copy.deepcopy(data), status="open")
+    prior = state["assumptions"].get(data["id"])
+    if prior is not None and prior["statement"] == data["statement"]:
+        record.update({name: prior[name] for name in ("status", "confirmed_by", "approval") if name in prior})
+    state["assumptions"][data["id"]] = record
+
+
+def _assumption_decided(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = state["assumptions"].get(data["id"])
+    if record is None:
+        _violation(state, event, "unknown_assumption")
+    else:
+        record.update(status=data["status"], confirmed_by=data["confirmed_by"], approval=data["approval"])
+
+
+def _stored(key: str) -> Callable[[dict, dict], None]:
+    def reduce(state: dict, event: dict) -> None:
+        state[key][event["data"]["id"]] = copy.deepcopy(event["data"])
+    return reduce
+
+
+def _trace_linked(state: dict, event: dict) -> None:
+    """Append the link, once. Whether source and target exist is not judged here: the commands that record a link check it
+    when they record it, and ``trace`` (milestone 3) reports a link whose end is missing as a gap."""
+    data = event["data"]
+    if not any(link["source"] == data["source"] and link["relation"] == data["relation"] and link["target"] == data["target"]
+               for link in state["links"]):
+        state["links"].append(dict(copy.deepcopy(data), event=event["id"]))
 
 
 def _result_recorded(state: dict, event: dict) -> None:
@@ -404,6 +469,14 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "bundle.compared": _queue,
     "worktree.created": _worktree_created,
     "worktree.removed": _worktree_removed,
+    "requirement.upserted": _requirement_upserted,
+    "requirement.confirmed": _requirement_confirmed,
+    "criterion.upserted": _criterion_upserted,
+    "assumption.upserted": _assumption_upserted,
+    "assumption.decided": _assumption_decided,
+    "risk.upserted": _stored("risks"),
+    "testcase.upserted": _stored("testcases"),
+    "trace.linked": _trace_linked,
 }
 
 

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Analysis record definitions",
+  "description": "Definitions shared by the record event schemas (Phase 2 section 9.1). A record holds only what its author states. What others decide is not a field: a requirement's confirmation and an assumption's status come from signed events, and links between records (a test case verifying a criterion, a test case mitigating a risk) are trace.linked events, never fields of these records.",
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/text"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "section": {
+          "$ref": "#/$defs/text"
+        },
+        "url": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "path",
+            "line"
+          ]
+        },
+        {
+          "required": [
+            "path",
+            "section"
+          ]
+        },
+        {
+          "required": [
+            "url"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, redact, report, schema, state, workspace, worktree
+from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -39,6 +39,7 @@ WRITE_COMMANDS = (
     "authorize", "auth revoke", "config set", "config accept", "gate policy propose", "gate policy accept", "gate evaluate",
     "run", "ingest", "result reclassify", "finding add", "finding update", "finding state", "finding dedupe", "state rebuild", "report render", "report bundle", "plan create", "plan update",
     "worktree add", "worktree remove",
+    "req add", "req import", "req confirm", "ac add", "asm add", "asm decide", "risk add", "tc add", "tc import",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -289,6 +290,32 @@ def _add_plan_commands(groups: Dict[str, Any]) -> None:
     listing.add_argument("--skills-dir", metavar="PATH", help="the directory holding the skills (default: next to this skill)")
 
 
+def _add_record_commands(groups: Dict[str, Any]) -> None:
+    def file_command(name: str, text: str) -> None:
+        _command(groups, name, text).add_argument("--json", dest="json_file", required=True, metavar="FILE")
+
+    _group(groups, "req", "record requirements and confirm them")
+    file_command("req add", "record a requirement; with an id in the file, change that requirement")
+    file_command("req import", "record a JSON list of requirements, all or none")
+    confirm = _command(groups, "req confirm", "record the user's confirmation of a requirement")
+    confirm.add_argument("requirement", metavar="REQ")
+    confirm.add_argument("--approval", required=True, metavar="Q", help="the user's words")
+    _command(groups, "req list", "print the requirements")
+    _group(groups, "ac", "record acceptance criteria")
+    file_command("ac add", "record an acceptance criterion of an existing requirement")
+    _group(groups, "asm", "record assumptions and decide them")
+    file_command("asm add", "record an assumption, open until the user decides it")
+    decide = _command(groups, "asm decide", "record the user's decision on an assumption")
+    decide.add_argument("assumption", metavar="ASM")
+    decide.add_argument("decision", metavar="confirmed|rejected")
+    decide.add_argument("--approval", required=True, metavar="Q", help="the user's words")
+    _group(groups, "risk", "record risks")
+    file_command("risk add", "record a risk with mitigations (existing test cases) or an accepted gap")
+    _group(groups, "tc", "record test cases")
+    file_command("tc add", "record a test case; links (existing criteria) become verified_by trace links")
+    file_command("tc import", "record a JSON list of test cases, all or none")
+
+
 def build_parser() -> _Parser:
     parser = _Parser(prog="qa", description="Evidence-recording QA kernel. Every command prints one JSON object on stdout.")
     parser.add_argument("--workspace", metavar="PATH", help="the project root holding .qa/ (default: search upward from here)")
@@ -308,6 +335,7 @@ def build_parser() -> _Parser:
     _add_integrity_commands(groups)
     _add_detect_commands(groups)
     _add_plan_commands(groups)
+    _add_record_commands(groups)
     return parser
 
 
@@ -391,6 +419,13 @@ def _json_object(data: Union[bytes, str]) -> dict:
     return value
 
 
+def _json_list(data: Union[bytes, str]) -> list:
+    value = loads(data)
+    if not isinstance(value, list):
+        raise QaError("invalid_json", "expected a JSON list")
+    return value
+
+
 # --------------------------------------------------------------------------- the commands
 
 def cmd_init(args: argparse.Namespace, ctx: Context) -> int:
@@ -463,6 +498,61 @@ def cmd_plan_update(args: argparse.Namespace, ctx: Context) -> int:
     event = plan.update(ctx.ws, ctx.actor, args.plan, args.step, args.status, args.reason)
     ctx.reply(plan=args.plan, step=args.step, status=args.status, event=event["id"])
     return 0
+
+
+def _record_one(kind: str, args: argparse.Namespace, ctx: Context) -> int:
+    done = records.add(ctx.ws, ctx.actor, kind, _json_object(_read_file(args.json_file)))
+    ctx.reply(**done)
+    return 0
+
+
+def _record_many(kind: str, args: argparse.Namespace, ctx: Context) -> int:
+    done = records.add_many(ctx.ws, ctx.actor, kind, _json_list(_read_file(args.json_file)))
+    ctx.reply(ids=[item["id"] for item in done], events=[item["event"] for item in done])
+    return 0
+
+
+def cmd_req_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("requirement", args, ctx)
+
+
+def cmd_req_import(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_many("requirement", args, ctx)
+
+
+def cmd_req_confirm(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**records.confirm_requirement(ctx.ws, ctx.actor, args.requirement, args.approval))
+    return 0
+
+
+def cmd_req_list(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(requirements=records.list_records(state.load(ctx.ws), "requirement"))
+    return 0
+
+
+def cmd_ac_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("criterion", args, ctx)
+
+
+def cmd_asm_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("assumption", args, ctx)
+
+
+def cmd_asm_decide(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**records.decide_assumption(ctx.ws, ctx.actor, args.assumption, args.decision, args.approval))
+    return 0
+
+
+def cmd_risk_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("risk", args, ctx)
+
+
+def cmd_tc_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("testcase", args, ctx)
+
+
+def cmd_tc_import(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_many("testcase", args, ctx)
 
 
 def cmd_worktree_add(args: argparse.Namespace, ctx: Context) -> int:

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "assumption.decided event data",
+  "description": "The user confirmed or rejected an assumption. confirmed_by is always user. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority and folds to nothing.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/asm_id"},
+    "status": {"enum": ["confirmed", "rejected"]},
+    "confirmed_by": {"const": "user"},
+    "approval": {"type": "string", "minLength": 1},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
+  },
+  "required": ["id", "status", "confirmed_by", "approval"],
+  "additionalProperties": false
+}

@@ -10,7 +10,8 @@ INIT = {"kernel_version": "0.1.0-dev", "schema_version": "1", "config_hash": "sh
 
 def test_skeleton():
     assert set(state.fold([])) == {"executions", "results", "tests", "findings", "authorizations", "config",
-                                   "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees"}
+                                   "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees",
+                                   "requirements", "criteria", "assumptions", "risks", "testcases", "links"}
 
 
 def test_unknown_type_is_violation():
@@ -94,4 +95,14 @@ def test_state_hash_of_a_milestone_2_ledger_is_unchanged():
 def test_a_new_key_counts_once_it_holds_something():
     base = state.fold([])
     held = dict(base, worktrees={".qa/work/wt-0": {"commit": "0" * 40, "event": "EVT-1", "removed": None}})
+    assert state.state_hash(held) != state.state_hash(base)
+
+
+def test_new_record_keys_are_left_out_of_the_hash_while_empty():
+    base = state.fold([])
+    for key in ("requirements", "criteria", "assumptions", "risks", "testcases", "links"):
+        assert key in base and not base[key]
+    stripped = {k: v for k, v in base.items() if k not in ("requirements", "criteria", "assumptions", "risks", "testcases", "links")}
+    assert state.state_hash(base) == state.state_hash(stripped)
+    held = dict(base, links=[{"source": "AC-001.1", "relation": "verified_by", "target": "TC-001", "event": "EVT-1"}])
     assert state.state_hash(held) != state.state_hash(base)

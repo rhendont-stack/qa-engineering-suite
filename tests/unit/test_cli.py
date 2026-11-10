@@ -548,6 +548,15 @@ WRITE_ARGV = {
     "report bundle": ("report", "bundle", "--output", "x.tar.gz"),
     "plan create": ("plan", "create", "--template", "missing.json"),
     "plan update": ("plan", "update", "PLAN-0001", "S01", "--status", "blocked", "--reason", "r"),
+    "req add": ("req", "add", "--json", "missing.json"),
+    "req import": ("req", "import", "--json", "missing.json"),
+    "req confirm": ("req", "confirm", "REQ-001", "--approval", "q"),
+    "ac add": ("ac", "add", "--json", "missing.json"),
+    "asm add": ("asm", "add", "--json", "missing.json"),
+    "asm decide": ("asm", "decide", "ASM-001", "confirmed", "--approval", "q"),
+    "risk add": ("risk", "add", "--json", "missing.json"),
+    "tc add": ("tc", "add", "--json", "missing.json"),
+    "tc import": ("tc", "import", "--json", "missing.json"),
 }
 READ_ARGV = {
     "doctor": ("doctor",),
@@ -565,6 +574,7 @@ READ_ARGV = {
     "detect tests": ("detect", "tests"),
     "plan status": ("plan", "status"),
     "catalog list": ("catalog", "list"),
+    "req list": ("req", "list"),
     "compare": ("compare", "EXE-" + "0" * 25 + "A", "EXE-" + "0" * 25 + "B"),  # the test below records both
 }
 READ_COMMANDS = set(READ_ARGV) | {"init"}  # init writes, but runs without find_workspace and rewrites nothing

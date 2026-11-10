@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "trace.linked event data",
+  "description": "One typed link of the trace chain (Phase 2 section 9.2): source, relation, target. Trace links are the single source of truth for the chain; records never hold link lists. Milestone 3 relations are verified_by (AC to TC) and mitigated_by (RSK to TC); the rest of the chain's relations are named here so later events need no new vocabulary. source and target carry no pattern because a target may be a test id (classname::name).",
+  "type": "object",
+  "properties": {
+    "source": {"type": "string", "minLength": 1},
+    "relation": {"enum": ["has", "verified_by", "mitigated_by", "automated_by", "executed_in", "produced", "evidenced_by", "detected_by", "violates", "addressed_by", "validated_by"]},
+    "target": {"type": "string", "minLength": 1}
+  },
+  "required": ["source", "relation", "target"],
+  "additionalProperties": false
+}
