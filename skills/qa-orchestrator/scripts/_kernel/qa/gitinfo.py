@@ -14,6 +14,7 @@ Limitations returned instead of facts: not_a_git_repo, no_commit, git_unavailabl
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import shutil
@@ -35,7 +36,11 @@ _QA_PATHSPEC = ":(icase).qa"  # a case-insensitive filesystem reads a tracked .Q
 _SHAREABLE = (".qa/.gitignore", ".qa/config.json")  # .qa/.gitignore keeps everything else out of git
 _PROGRAM_KEYS = {"filter": ("clean", "smudge", "process"), "diff": ("command", "textconv")}
 _LFS_SHAPES = {"extension": ("clean", "smudge"), "customtransfer": ("path", "args")}  # lfs.<kind>.<name>.<key>
-_LFS_SELECTORS = ("standalonetransferagent",)  # lfs.<key>: picks a transfer agent program by name
+_LFS_SELECTORS = ("standalonetransferagent",)  # lfs.<key>: picks a transfer agent by name (the program is lfs.customtransfer.*)
+# Keys that name a transport or authentication program, which a fetch (a lazy one included) would start.
+_CORE_PROGRAMS = ("sshcommand", "askpass", "gitproxy")  # core.<key>
+_REMOTE_PROGRAMS = ("uploadpack", "receivepack", "vcs")  # remote.<name>.<key>
+_MULTI_VALUED = "credential"  # credential.helper lists helpers; an empty value resets the list, so it is reset and then refilled
 _TRUSTED_SCOPES = ("system", "global", "command")  # the user's own configuration and environment, not the repository's
 _CHUNK = 1 << 20
 
@@ -47,7 +52,26 @@ class _Unavailable(Exception):
 def _env() -> Dict[str, str]:
     env = dict(os.environ)
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"  # a credential or passphrase is never asked for on a terminal
+    env["GIT_NO_LAZY_FETCH"] = "1"  # git that has it never fetches a missing object of a partial clone; older git ignores it
     return env
+
+
+@functools.lru_cache(maxsize=None)
+def _lazy_fetch_blocked(git: str) -> bool:
+    try:
+        done = subprocess.run([git, "--no-lazy-fetch", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=_TIMEOUT_S, env=_env())
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+def lazy_fetch_blocked() -> bool:
+    """Whether the installed git supports switching lazy fetch off (it does from git 2.44), so that the environment this
+    module sets really stops it. Detected by running git, not by comparing version numbers."""
+    git = shutil.which("git")
+    return git is not None and _lazy_fetch_blocked(git)
 
 
 def _spawn(git: str, root: Path, opts: List[str], args: List[str], stdout=subprocess.PIPE,
@@ -62,9 +86,15 @@ def _spawn(git: str, root: Path, opts: List[str], args: List[str], stdout=subpro
 def _names_a_program(key: str) -> bool:
     parts = key.lower().split(".")
     if parts[0] == "lfs":  # only the lfs keys that name a program to run, or select the one that will; lfs.url and the like do not
-        if len(parts) == 2:
-            return parts[1] in _LFS_SELECTORS
+        if len(parts) >= 2 and parts[-1] in _LFS_SELECTORS:
+            return True
         return len(parts) >= 4 and _LFS_SHAPES.get(parts[1]) is not None and parts[-1] in _LFS_SHAPES[parts[1]]
+    if parts[0] == "credential":  # credential.helper and credential.<url>.helper
+        return len(parts) >= 2 and parts[-1] == "helper"
+    if parts[0] == "core":
+        return len(parts) == 2 and parts[1] in _CORE_PROGRAMS
+    if parts[0] == "remote":
+        return len(parts) >= 3 and parts[-1] in _REMOTE_PROGRAMS
     return len(parts) >= 3 and parts[-1] in _PROGRAM_KEYS.get(parts[0], ())
 
 
@@ -80,7 +110,7 @@ def _program_overrides(git: str, root: Path) -> List[str]:
         items.pop()
     if len(items) % 2:
         raise _Unavailable()
-    trusted: Dict[str, str] = {}
+    trusted: Dict[str, List[str]] = {}
     repository: List[str] = []
     for scope_raw, entry in zip(items[0::2], items[1::2]):
         key_raw, _, value_raw = entry.partition(b"\n")
@@ -88,7 +118,7 @@ def _program_overrides(git: str, root: Path) -> List[str]:
         if not _names_a_program(key):
             continue
         if scope_raw.decode("ascii", "replace") in _TRUSTED_SCOPES:
-            trusted[key] = value_raw.decode("utf-8", "surrogateescape")
+            trusted.setdefault(key, []).append(value_raw.decode("utf-8", "surrogateescape"))
         else:
             repository.append(key)
     opts: List[str] = []
@@ -96,11 +126,16 @@ def _program_overrides(git: str, root: Path) -> List[str]:
     for key in dict.fromkeys(repository):
         if "=" in key:
             raise _Unavailable()  # "-c" would split the key there
-        opts += ["-c", "%s=%s" % (key, trusted.get(key, ""))]
+        if key.split(".")[0].lower() == _MULTI_VALUED:
+            opts += ["-c", key + "="]  # forget the repository's helpers, then give back the user's own, in order
+            for value in trusted.get(key, []):
+                opts += ["-c", "%s=%s" % (key, value)]
+        else:
+            opts += ["-c", "%s=%s" % (key, (trusted.get(key) or [""])[-1])]
         if key.split(".")[0].lower() == "filter":
             drivers.add(key.rsplit(".", 1)[0])
     for driver in sorted(drivers):
-        if not any(trusted.get("%s.%s" % (driver, name)) for name in _PROGRAM_KEYS["filter"]):
+        if not any((trusted.get("%s.%s" % (driver, name)) or [""])[-1] for name in _PROGRAM_KEYS["filter"]):
             opts += ["-c", driver + ".required=false"]  # a blanked driver must not turn into a failed read
     return opts
 

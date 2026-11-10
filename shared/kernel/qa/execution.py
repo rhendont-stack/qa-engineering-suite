@@ -379,7 +379,10 @@ def _authorize(run: _Run, gate: _Gate) -> None:
             continue
         gate.policy_denied = gate.policy_denied or verdict.reason == "policy_denied"
         gate.not_authorized = gate.not_authorized or verdict.reason == "not_authorized"
-        run.note("%s on environment %s: %s: %s" % (activity, environment["id"], verdict.reason, verdict.detail))
+        detail = verdict.detail
+        if detail == authz.UNTRUSTED and worktree.containing(run.ws, run.st, run.cwd) is not None:
+            detail = authz.UNTRUSTED_IN_WORKTREE  # the container route the usual hint names is refused inside a worktree
+        run.note("%s on environment %s: %s: %s" % (activity, environment["id"], verdict.reason, detail))
 
 
 def _git_identity(git: Optional[dict]) -> Tuple[Optional[str], Optional[str]]:

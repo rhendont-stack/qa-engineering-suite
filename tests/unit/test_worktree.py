@@ -10,17 +10,24 @@ from types import SimpleNamespace
 import pytest
 
 from helpers import WRITE_JUNIT, req
-from qa import execution, gitinfo, ledger, state, workspace, worktree
+from qa import config, execution, gitinfo, ledger, state, workspace, worktree
 from qa.errors import QaError
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 FAKE_LFS = """#!/bin/sh
+export GIT_TERMINAL_PROMPT=0
 # Stands for git-lfs: runs every lfs.extension.<name>.clean that git's configuration gives, then passes the content on.
 for key in $(git config --name-only --get-regexp '^lfs\\.extension\\..*\\.clean$' | sort -u); do
   cmd=$(git config --get "$key")
   if [ -n "$cmd" ]; then sh -c "$cmd" </dev/null; fi
 done
+# the download step: what git-lfs (or a lazy fetch) would start to reach a server
+for key in core.sshcommand core.askpass core.gitproxy remote.origin.uploadpack remote.origin.receivepack remote.origin.vcs; do
+  cmd=$(git config --get "$key")
+  if [ -n "$cmd" ]; then sh -c "$cmd" </dev/null; fi
+done
+printf 'protocol=https\nhost=example.invalid\n\n' | git credential fill >/dev/null 2>&1 || true
 agent=$(git config --get lfs.standalonetransferagent)
 if [ -n "$agent" ]; then
   program=$(git config --get "lfs.customtransfer.$agent.path")
@@ -122,6 +129,36 @@ def test_repository_transfer_agent_runs_nothing(lfs_repo, actor, tmp_path):
     gitinfo.git_info(root)
     worktree.add(lfs_repo.ws, actor, head(root))
     assert not marker.exists()
+
+
+TRANSPORT_KEYS = {  # a repository-scope key naming a transport or authentication program -> how its value runs a marker
+    "core.sshcommand": touching, "core.askpass": touching, "core.gitproxy": touching, "remote.origin.uploadpack": touching,
+    "remote.origin.receivepack": touching, "remote.origin.vcs": touching,
+    "credential.helper": lambda marker: "!touch %s" % shlex.quote(str(marker)),
+    "credential.https://example.invalid.helper": lambda marker: "!touch %s" % shlex.quote(str(marker)),
+}
+
+
+def test_repository_transport_programs_run_nothing(lfs_repo, actor, tmp_path):
+    root = lfs_repo.root
+    markers = {key: tmp_path / ("ran-" + str(n)) for n, key in enumerate(TRANSPORT_KEYS)}
+    for key, how in TRANSPORT_KEYS.items():
+        set_in(root / ".git" / "config", key, how(markers[key]))
+    git(root, "worktree", "add", "-q", "--detach", str(tmp_path / "control"), head(root))
+    assert all(marker.exists() for marker in markers.values()), [k for k, m in markers.items() if not m.exists()]  # the control
+    for marker in markers.values():
+        marker.unlink()
+    gitinfo.git_info(root)
+    worktree.add(lfs_repo.ws, actor, head(root))
+    assert not any(marker.exists() for marker in markers.values()), [k for k, m in markers.items() if m.exists()]
+
+
+def test_user_level_transport_programs_still_apply(lfs_repo, user_level, tmp_path):
+    markers = {key: tmp_path / ("user-" + str(n)) for n, key in enumerate(TRANSPORT_KEYS)}
+    for key, how in TRANSPORT_KEYS.items():
+        set_in(user_level, key, how(markers[key]))
+    gitinfo.git_info(lfs_repo.root)
+    assert all(marker.exists() for marker in markers.values()), [k for k, m in markers.items() if not m.exists()]
 
 
 def test_user_level_transfer_agent_still_applies(lfs_repo, user_level, tmp_path):
@@ -303,6 +340,101 @@ def test_a_container_run_inside_a_worktree_is_refused(repo, actor, fake_engine):
                                                             cwd=repo.root / done["path"]))
     assert caught.value.code == "container_in_worktree"
     assert len(state.load(repo)["executions"]) == before and fake_engine.calls == []
+
+
+def make_partial_clone(root, origin, tmp_path, tag):
+    """``root`` (an existing repository) as a partial clone of ``origin``: its blobs are missing, so a checkout must fetch them,
+    and its own configuration names a program for the fetch (``remote.origin.uploadpack``). Returns (marker, commit)."""
+    marker = tmp_path / ("fetch-program-ran-" + tag)
+    script = tmp_path / ("upload-pack-%s.sh" % tag)
+    script.write_text("#!/bin/sh\ntouch %s\nexec git upload-pack \"$@\"\n" % shlex.quote(str(marker)))
+    git(root, "remote", "add", "origin", "file://" + str(origin))
+    git(root, "config", "remote.origin.promisor", "true")
+    git(root, "config", "remote.origin.partialclonefilter", "blob:none")
+    git(root, "config", "extensions.partialClone", "origin")
+    git(root, "config", "remote.origin.uploadpack", "sh " + str(script))
+    git(root, "fetch", "-q", "--filter=blob:none", "origin", "main")
+    marker.unlink()
+    return marker, git(root, "rev-parse", "FETCH_HEAD").stdout.strip()
+
+
+@pytest.fixture
+def origin(tmp_path):
+    path = tmp_path / "origin"
+    path.mkdir()
+    git(path, "init", "-q", "-b", "main")
+    (path / "big.txt").write_text("blob that is not local")
+    git(path, "add", "big.txt")
+    git(path, "commit", "-q", "-m", "o1")
+    git(path, "config", "uploadpack.allowFilter", "true")
+    git(path, "config", "uploadpack.allowAnySHA1InWant", "true")
+    return path
+
+
+def test_worktree_add_starts_no_repository_fetch_program(repo, actor, origin, tmp_path):
+    control = tmp_path / "control-repo"  # its own partial clone: the control's fetch must not fill the workspace's object store
+    control.mkdir()
+    git(control, "init", "-q", "-b", "main")
+    control_marker, control_commit = make_partial_clone(control, origin, tmp_path, "control")
+    git(control, "worktree", "add", "-q", "--detach", str(tmp_path / "control-tree"), control_commit)
+    assert control_marker.exists()  # the control: unprotected, the checkout fetches through the repository's own program
+    marker, commit = make_partial_clone(repo.root, origin, tmp_path, "ws")
+    try:
+        worktree.add(repo, actor, commit)
+    except QaError as refused:
+        assert refused.code == "worktree_failed"  # lazy fetch is off where git supports that: the missing blob cannot be had
+    assert not marker.exists()
+
+
+def test_git_calls_never_prompt_and_lazy_fetch_support_is_detected():
+    env = gitinfo._env()
+    assert env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_NO_LAZY_FETCH"] == "1"
+    probed = subprocess.run(["git", "--no-lazy-fetch", "version"], capture_output=True).returncode == 0
+    assert gitinfo.lazy_fetch_blocked() is probed
+
+
+def _case_insensitive(path):
+    probe = path / "CaseProbe"
+    probe.mkdir()
+    return (path / "caseprobe").exists()
+
+
+def test_case_variant_start_path_inside_a_worktree_is_not_a_workspace(repo, actor, tmp_path):
+    if not _case_insensitive(tmp_path):
+        pytest.skip("the filesystem is case sensitive, so a differently spelled path names another directory")
+    nested = repo.root / "pkg"
+    (nested / ".qa").mkdir(parents=True)
+    (nested / ".qa" / "config.json").write_text("{}")
+    git(repo.root, "add", "-f", "pkg/.qa/config.json")
+    git(repo.root, "commit", "-q", "-m", "a sub-project with its own config")
+    done = worktree.add(repo, actor, head(repo.root))
+    spelled = repo.root / ".QA" / "WORK" / done["path"].split("/")[-1] / "pkg"
+    assert spelled.is_dir()
+    assert workspace.find_workspace(spelled).root == repo.root
+
+
+def test_case_variant_cwd_inside_a_worktree_is_attributed_to_it(repo, actor, tmp_path):
+    if not _case_insensitive(tmp_path):
+        pytest.skip("the filesystem is case sensitive, so a differently spelled path names another directory")
+    done = worktree.add(repo, actor, head(repo.root))
+    spelled = repo.root / ".QA" / "Work" / done["path"].split("/")[-1]
+    assert worktree.containing(repo, state.load(repo), str(spelled)) == done["path"]
+
+
+def test_the_untrusted_hint_in_a_worktree_does_not_suggest_a_container(ws, actor, py):
+    git(ws.root, "init", "-q", "-b", "main")
+    (ws.root / "a.txt").write_text("1")
+    git(ws.root, "add", "a.txt")
+    git(ws.root, "commit", "-q", "-m", "c1")
+    config.record_initialized(ws, actor)  # the project stays untrusted
+    done = worktree.add(ws, actor, head(ws.root))
+    ran = execution.execute(ws, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass", cwd=ws.root / done["path"]))
+    record = state.load(ws)["executions"][ran["execution"]]
+    assert record["status"] == "blocked" and record["git"]["worktree"] == done["path"]
+    text = " ".join(record["limitations"])
+    assert "not_authorized" in text and "project.trust" in text and "--container" not in text
+    plain = execution.execute(ws, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))
+    assert "--container" in " ".join(state.load(ws)["executions"][plain["execution"]]["limitations"])  # elsewhere it still does
 
 
 def test_cli_adds_and_removes(repo, qa_cli):

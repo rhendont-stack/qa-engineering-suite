@@ -67,12 +67,18 @@ def containing(ws: Workspace, st: dict, cwd: str) -> Optional[str]:
     """The path (relative to the workspace) of the open worktree that holds ``cwd``, else None."""
     here = os.path.realpath(cwd)
     for path in open_worktrees(st):
-        root = os.path.realpath(os.path.join(str(ws.root), path))
-        try:
-            if os.path.commonpath([root, here]) == root:
-                return path
-        except ValueError:
-            continue
+        root = os.path.join(str(ws.root), path)
+        current = here
+        while True:  # the filesystem says whether a directory is the worktree, so letter case in the spelling does not matter
+            try:
+                if os.path.samefile(current, root):
+                    return path
+            except OSError:
+                pass
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
     return None
 
 

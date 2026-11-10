@@ -322,6 +322,10 @@ def test_qa_plan_create_runs_no_repository_program(trusted, qa_cli, tmp_path, ho
     ("lfs.extension.x.priority", False), ("lfs.extension.clean", False), ("lfs.clean", False), ("lfs.url", False),
     ("lfs.customtransfer.agent.path", True), ("lfs.customtransfer.a.b.args", True), ("lfs.standalonetransferagent", True),
     ("lfs.customtransfer.agent.concurrent", False), ("lfs.customtransfer.path", False), ("lfs.standalonetransferagent.x", False),
+    ("credential.helper", True), ("credential.https://example.invalid.helper", True), ("credential.username", False),
+    ("core.sshCommand", True), ("core.askPass", True), ("core.gitProxy", True), ("core.editor", False), ("core.sshcommand.x", False),
+    ("remote.origin.uploadpack", True), ("remote.a.b.receivepack", True), ("remote.origin.vcs", True), ("remote.origin.url", False),
+    ("remote.uploadpack", False), ("lfs.https://example.invalid/x.standalonetransferagent", True),
     ("filter.x.clean", True), ("diff.x.textconv", True), ("core.editor", False),
 ])
 def test_names_a_program(key, expected):
@@ -352,3 +356,18 @@ def test_repository_transfer_agent_keys_are_blanked_and_the_users_is_kept(repo, 
     subprocess.run(["git", "config", "-f", str(user), "lfs.customtransfer.evil.args", "mine"], check=True)
     assert gitinfo._program_overrides("git", repo) == ["-c", "lfs.standalonetransferagent=", "-c", "lfs.customtransfer.evil.path=",
                                                        "-c", "lfs.customtransfer.evil.args=mine"]
+
+
+def test_repository_transport_keys_are_blanked_and_the_users_credential_helpers_all_stay(repo, tmp_path, monkeypatch):
+    user = tmp_path / "user.gitconfig"
+    user.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git(repo, "config", "core.sshCommand", "x")
+    git(repo, "config", "credential.helper", "!x")
+    git(repo, "config", "remote.origin.uploadpack", "y")
+    subprocess.run(["git", "config", "-f", str(user), "--add", "credential.helper", "one"], check=True)
+    subprocess.run(["git", "config", "-f", str(user), "--add", "credential.helper", "two"], check=True)
+    assert gitinfo._program_overrides("git", repo) == ["-c", "core.sshcommand=", "-c", "credential.helper=",
+                                                       "-c", "credential.helper=one", "-c", "credential.helper=two",
+                                                       "-c", "remote.origin.uploadpack="]

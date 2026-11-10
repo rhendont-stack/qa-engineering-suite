@@ -69,6 +69,9 @@ _BARE_BRACKETED = re.compile(r"\[([^\]]*)\](?::[0-9]{1,5})?")
 _IPV6_TEXT = re.compile(r"[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?")
 _UNTRUSTED = ("untrusted project: run it with `qa run --container IMAGE@DIGEST`, "
               "or approve `qa config set project.trust trusted`")
+# A run inside a suite worktree cannot be containerised (its archive would hold the main tree), so only trust is offered.
+UNTRUSTED_IN_WORKTREE = "untrusted project: a run inside a suite worktree needs `qa config set project.trust trusted` approved"
+UNTRUSTED = _UNTRUSTED
 
 
 def _count(value: Any) -> bool:
