@@ -79,7 +79,7 @@ def test_fold_reraises_non_schema_errors(monkeypatch):
     assert e.value.code == "resource_missing"
 
 
-# The hash of data/milestone2-events.json as the milestone 2 kernel (a8460cc) computed it: that kernel folded the ledger and
+# The hash of tests/unit/milestone2-events.json as the milestone 2 kernel (a8460cc) computed it: that kernel folded the ledger and
 # hashed the state without the worktrees key. The file is a milestone 2 ledger (one passing run), so no event is new.
 MILESTONE_2_HASH = "sha256:fda6837b1cb743887acd09ec943d29273b3a5cb89ce754739526daf45f452dd4"
 

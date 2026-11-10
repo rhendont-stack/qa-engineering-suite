@@ -21,6 +21,11 @@ for key in $(git config --name-only --get-regexp '^lfs\\.extension\\..*\\.clean$
   cmd=$(git config --get "$key")
   if [ -n "$cmd" ]; then sh -c "$cmd" </dev/null; fi
 done
+agent=$(git config --get lfs.standalonetransferagent)
+if [ -n "$agent" ]; then
+  program=$(git config --get "lfs.customtransfer.$agent.path")
+  if [ -n "$program" ]; then sh -c "$program" </dev/null; fi
+fi
 cat
 """
 
@@ -90,15 +95,41 @@ def lfs_repo(repo, tmp_path, user_level):
     return SimpleNamespace(ws=repo, root=root, marker=marker)
 
 
-def test_repository_lfs_extension_runs_nothing(lfs_repo, actor):
+def test_repository_lfs_extension_runs_nothing(lfs_repo, actor, tmp_path):
     root, marker = lfs_repo.root, lfs_repo.marker
     git(root, "diff", "HEAD")  # the control: unprotected, the fake git-lfs does run the repository's extension
     assert marker.exists()
     marker.unlink()
     gitinfo.git_info(root)
     assert not marker.exists()
+    control = tmp_path / "control"
+    git(root, "worktree", "add", "-q", "--detach", str(control), head(root))
+    assert marker.exists()  # the control for the add side: unprotected, checking files out runs the extension too
+    marker.unlink()
     worktree.add(lfs_repo.ws, actor, head(root))
     assert not marker.exists()
+
+
+def test_repository_transfer_agent_runs_nothing(lfs_repo, actor, tmp_path):
+    root = lfs_repo.root
+    marker = tmp_path / "agent-ran"
+    set_in(root / ".git" / "config", "lfs.standalonetransferagent", "t")
+    set_in(root / ".git" / "config", "lfs.customtransfer.t.path", touching(marker))
+    set_in(root / ".git" / "config", "lfs.customtransfer.t.args", "--x")
+    git(root, "worktree", "add", "-q", "--detach", str(tmp_path / "control"), head(root))
+    assert marker.exists()  # the control: the stand-in downloads through the agent unless it is neutralised
+    marker.unlink()
+    gitinfo.git_info(root)
+    worktree.add(lfs_repo.ws, actor, head(root))
+    assert not marker.exists()
+
+
+def test_user_level_transfer_agent_still_applies(lfs_repo, user_level, tmp_path):
+    marker = tmp_path / "user-agent-ran"
+    set_in(user_level, "lfs.standalonetransferagent", "u")
+    set_in(user_level, "lfs.customtransfer.u.path", touching(marker))
+    gitinfo.git_info(lfs_repo.root)
+    assert marker.exists()
 
 
 def test_user_level_lfs_extension_still_applies(lfs_repo, user_level, tmp_path):
@@ -248,6 +279,30 @@ def test_worktree_with_a_tracked_config_is_not_a_workspace(repo, actor):
     assert workspace.find_workspace(inside).root == repo.root
     assert workspace.find_workspace(inside / ".qa").root == repo.root
     assert workspace.find_workspace(repo.root).root == repo.root
+
+
+@pytest.mark.parametrize("depth", ["", "pkg", "pkg/deep"])
+def test_a_tracked_config_below_a_worktree_is_not_a_workspace(repo, actor, depth):
+    nested = repo.root / "pkg"
+    (nested / ".qa").mkdir(parents=True)
+    (nested / "deep").mkdir()
+    (nested / ".qa" / "config.json").write_text("{}")
+    git(repo.root, "add", "-f", "pkg/.qa/config.json")
+    git(repo.root, "commit", "-q", "-m", "a sub-project with its own config")
+    done = worktree.add(repo, actor, head(repo.root))
+    inside = repo.root / done["path"] / depth
+    assert (repo.root / done["path"] / "pkg" / ".qa" / "config.json").is_file()
+    assert workspace.find_workspace(inside).root == repo.root
+
+
+def test_a_container_run_inside_a_worktree_is_refused(repo, actor, fake_engine):
+    done = worktree.add(repo, actor, head(repo.root))
+    before = len(state.load(repo)["executions"])
+    with pytest.raises(QaError) as caught:
+        execution.execute(repo, actor, execution.RunRequest(command=["true"], container="python@sha256:" + "a" * 64,
+                                                            cwd=repo.root / done["path"]))
+    assert caught.value.code == "container_in_worktree"
+    assert len(state.load(repo)["executions"]) == before and fake_engine.calls == []
 
 
 def test_cli_adds_and_removes(repo, qa_cli):

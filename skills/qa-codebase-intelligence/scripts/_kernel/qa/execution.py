@@ -274,11 +274,16 @@ def _counts(summary: Optional[ingest.ReportSummary]) -> Dict[str, int]:
 
 def _gate(run: _Run) -> _Gate:
     req = run.req
+    tree = worktree.containing(run.ws, run.st, run.cwd)  # a run inside a suite worktree is a run at that worktree's commit
+    if tree is not None and req.container is not None:
+        # The container receives an archive of the workspace root, not of the worktree, so recording the worktree's commit
+        # would name a commit that was not tested. Until the archive can hold the worktree, refuse.
+        raise QaError("container_in_worktree", "a container run cannot start inside a suite worktree: its archive would hold "
+                      "the main working tree, not the worktree's commit", cwd=tree)
     decision = guard.classify(req.command, shell=req.shell, ws_root=run.ws.root, qa_dir=run.ws.qa_dir, config=run.cfg,
                               declared_activity=req.activity, cwd=req.cwd)
     if req.install is not None:
         decision = _with_install(run, decision)
-    tree = worktree.containing(run.ws, run.st, run.cwd)  # a run inside a suite worktree is a run at that worktree's commit
     git, git_limitation = gitinfo.git_info(run.ws.root if tree is None else run.ws.root / tree)
     if git_limitation is not None:
         run.note(git_limitation)

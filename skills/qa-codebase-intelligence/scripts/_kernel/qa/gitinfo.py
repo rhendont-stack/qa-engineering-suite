@@ -5,7 +5,8 @@ own worktrees), and the repository's own configuration is data: nothing it names
 disables fsmonitor, the untracked cache, hooks, signature checks and the ``ext::`` transport, and sets GIT_OPTIONAL_LOCKS=0,
 so inspecting a tree neither runs a program nor rewrites its index. Before each read the configuration is listed with its
 scope; every ``filter.<driver>.clean|smudge|process``, ``diff.<driver>.command|textconv`` and
-``lfs.extension.<name>.clean|smudge`` that the repository sets (its ``.git/config``, a file that includes, or ``config.worktree``) is replaced by the user's own value for that key, or blanked
+``lfs.extension.<name>.clean|smudge``, ``lfs.customtransfer.<name>.path|args`` and
+``lfs.standalonetransferagent`` that the repository sets (its ``.git/config``, a file that includes, or ``config.worktree``) is replaced by the user's own value for that key, or blanked
 when the user has none. A user-level driver such as git-lfs therefore still applies. Submodules are never entered, since
 each has a configuration of its own. When the listing fails, or a key cannot be overridden, git does not run.
 
@@ -32,8 +33,9 @@ _BASE_OPTS = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "
               "-c", "gpg.x509.program=" + os.devnull]
 _QA_PATHSPEC = ":(icase).qa"  # a case-insensitive filesystem reads a tracked .QA/ as this .qa/
 _SHAREABLE = (".qa/.gitignore", ".qa/config.json")  # .qa/.gitignore keeps everything else out of git
-_PROGRAM_KEYS = {"filter": ("clean", "smudge", "process"), "diff": ("command", "textconv"),
-                 "lfs": ("clean", "smudge")}  # lfs.extension.<name>.clean|smudge: git-lfs runs these around its own filter
+_PROGRAM_KEYS = {"filter": ("clean", "smudge", "process"), "diff": ("command", "textconv")}
+_LFS_SHAPES = {"extension": ("clean", "smudge"), "customtransfer": ("path", "args")}  # lfs.<kind>.<name>.<key>
+_LFS_SELECTORS = ("standalonetransferagent",)  # lfs.<key>: picks a transfer agent program by name
 _TRUSTED_SCOPES = ("system", "global", "command")  # the user's own configuration and environment, not the repository's
 _CHUNK = 1 << 20
 
@@ -59,8 +61,10 @@ def _spawn(git: str, root: Path, opts: List[str], args: List[str], stdout=subpro
 
 def _names_a_program(key: str) -> bool:
     parts = key.lower().split(".")
-    if parts[0] == "lfs":  # only lfs.extension.<name>.<clean|smudge>; lfs.<name> and lfs.url name no program
-        return len(parts) >= 4 and parts[1] == "extension" and parts[-1] in _PROGRAM_KEYS["lfs"]
+    if parts[0] == "lfs":  # only the lfs keys that name a program to run, or select the one that will; lfs.url and the like do not
+        if len(parts) == 2:
+            return parts[1] in _LFS_SELECTORS
+        return len(parts) >= 4 and _LFS_SHAPES.get(parts[1]) is not None and parts[-1] in _LFS_SHAPES[parts[1]]
     return len(parts) >= 3 and parts[-1] in _PROGRAM_KEYS.get(parts[0], ())
 
 

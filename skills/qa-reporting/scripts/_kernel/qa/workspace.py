@@ -259,6 +259,12 @@ def _not_redirected(ws: Workspace) -> Workspace:
     return ws
 
 
+def _under_qa_work(path: Path) -> bool:
+    """Whether ``path`` is ``.qa/work`` or lies below it, at any depth."""
+    parts = path.parts
+    return any(parts[i] == ".qa" and parts[i + 1] == "work" for i in range(len(parts) - 1))
+
+
 def find_workspace(start: Path, explicit: Optional[Path] = None) -> Workspace:
     if explicit is not None:
         root = Path(explicit).resolve()
@@ -267,8 +273,8 @@ def find_workspace(start: Path, explicit: Optional[Path] = None) -> Workspace:
         raise QaError("no_workspace", "no .qa/config.json in the given workspace", path=str(root))
     here = Path(start).resolve()
     for candidate in [here] + list(here.parents):
-        if candidate.parent.name == "work" and candidate.parent.parent.name == ".qa":
-            continue  # a worktree the suite made: it may track its own .qa/config.json, but the workspace is the one outside
+        if _under_qa_work(candidate):
+            continue  # inside a worktree the suite made: whatever it tracks, the workspace is the one outside
         if (candidate / ".qa" / "config.json").is_file():
             return _not_redirected(Workspace(root=candidate, qa_dir=candidate / ".qa"))
     raise QaError("no_workspace", "no .qa/config.json found here or in any parent", start=str(here))

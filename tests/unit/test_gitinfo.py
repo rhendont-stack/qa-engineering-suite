@@ -320,6 +320,8 @@ def test_qa_plan_create_runs_no_repository_program(trusted, qa_cli, tmp_path, ho
 @pytest.mark.parametrize("key, expected", [
     ("lfs.extension.x.clean", True), ("lfs.extension.x.smudge", True), ("LFS.Extension.Dotted.Name.CLEAN", True),
     ("lfs.extension.x.priority", False), ("lfs.extension.clean", False), ("lfs.clean", False), ("lfs.url", False),
+    ("lfs.customtransfer.agent.path", True), ("lfs.customtransfer.a.b.args", True), ("lfs.standalonetransferagent", True),
+    ("lfs.customtransfer.agent.concurrent", False), ("lfs.customtransfer.path", False), ("lfs.standalonetransferagent.x", False),
     ("filter.x.clean", True), ("diff.x.textconv", True), ("core.editor", False),
 ])
 def test_names_a_program(key, expected):
@@ -337,3 +339,16 @@ def test_repository_lfs_extension_is_blanked_and_the_users_is_kept(repo, tmp_pat
     git(repo, "config", "lfs.extension.mine.priority", "0")
     options = gitinfo._program_overrides("git", repo)
     assert options == ["-c", "lfs.extension.mine.clean=", "-c", "lfs.extension.both.smudge=trusted"]
+
+
+def test_repository_transfer_agent_keys_are_blanked_and_the_users_is_kept(repo, tmp_path, monkeypatch):
+    user = tmp_path / "user.gitconfig"
+    user.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git(repo, "config", "lfs.standalonetransferagent", "evil")
+    git(repo, "config", "lfs.customtransfer.evil.path", "x")
+    git(repo, "config", "lfs.customtransfer.evil.args", "y")
+    subprocess.run(["git", "config", "-f", str(user), "lfs.customtransfer.evil.args", "mine"], check=True)
+    assert gitinfo._program_overrides("git", repo) == ["-c", "lfs.standalonetransferagent=", "-c", "lfs.customtransfer.evil.path=",
+                                                       "-c", "lfs.customtransfer.evil.args=mine"]
