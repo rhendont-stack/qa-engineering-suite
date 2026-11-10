@@ -7,7 +7,7 @@ Prints one JSON object on stdout: ``{"ok": true, "files": [...], "lang": ..., "h
 NFC-normalised line (not bytes), ``term`` is the listed term, ``matched`` the text as it is in the file, ``langs`` the lists that hold
 the term. Hits are ordered by file (as given), line and column, so the same input always gives the same bytes.
 
-Matching is case-insensitive and ignores accents (``rapido`` and ``RÁPIDO`` both match ``rápido``), whole words only (``fast`` is not
+Matching is case-insensitive and ignores accents (``facil`` and ``FÁCIL`` both match ``fácil``), whole words only (``fast`` is not
 found in ``breakfast``), within one line (a phrase broken across lines is not found). Where two terms overlap, the one that starts
 first wins, and of two that start together the longer one (``as fast as possible`` hides ``fast``). A hit is a prompt for review, not a verdict: ``should`` in a quotation, or ``clear`` in a
 defined term, may be fine. Read the line before recording it as a quality issue.
@@ -98,7 +98,7 @@ def terms() -> List[Tuple[str, List[str], str]]:
 def _pattern(term: str) -> str:
     words = fold(term).split(" ")
     body = r"[ \t]+".join(re.escape(w) for w in words)
-    if body.endswith(r"\."):  # "etc." also matches "etc" with no full stop
+    if body.endswith(r"\."):  # a term ending in a full stop also matches without it
         return r"(?<!\w)" + body[:-2] + r"(?!\w)\.?"
     return r"(?<!\w)" + body + r"(?!\w)"
 

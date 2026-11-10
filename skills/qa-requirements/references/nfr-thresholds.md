@@ -6,19 +6,19 @@ The `type` of the requirement is the ISO/IEC 25010:2023 characteristic, spelled 
 
 | Kind of wording | `type` | Measurable shape (`threshold`) | Question for the user (the assumption) |
 |---|---|---|---|
-| speed: fast, responsive, rápido | performance-efficiency | p95 (and p99) of `<operation>` ≤ `<N>` ms at `<R>` requests/s, `<data size>`, measured at `<where>` | What is the slowest acceptable time for `<operation>`, at which percentile, under what load? |
+| speed: fast, responsive, lento | performance-efficiency | p95 (and p99) of `<operation>` ≤ `<N>` ms at `<R>` requests/s, `<data size>`, measured at `<where>` | What is the slowest acceptable time for `<operation>`, at which percentile, under what load? |
 | capacity: handles many users, scalable | performance-efficiency | `<N>` concurrent users / `<R>` requests/s for `<D>` minutes with error rate ≤ `<E>` % and p95 ≤ `<T>` ms | What peak load must it carry, and for how long? |
 | resource use: lightweight, low overhead | performance-efficiency | CPU ≤ `<C>` %, memory ≤ `<M>` MB, or cost ≤ `<X>` per call, on `<hardware>` | Which resource matters, and what is the budget? |
 | availability: reliable, robust, always on | reliability | availability ≥ `<A>` % per `<period>` excluding `<maintenance>`; MTTR ≤ `<T>`; no loss of `<records>` on `<failure>` | What downtime per month is acceptable, and what must survive which failure? |
 | recovery: recovers gracefully | reliability | after `<fault>`, service resumes within `<T>` with no lost `<records>` | Which faults, and how fast must it recover? |
-| ease of use: user-friendly, intuitivo | interaction-capability | `<P>` % of `<representative users>` complete `<task>` unaided within `<T>` minutes or `<S>` steps; or WCAG 2.2 level `<AA>` for `<pages>` | Which task, which users, and what success rate counts? |
+| ease of use: user-friendly, sencillo, fácil de usar | interaction-capability | `<P>` % of `<representative users>` complete `<task>` unaided within `<T>` minutes or `<S>` steps; or WCAG 2.2 level `<AA>` for `<pages>` | Which task, which users, and what success rate counts? |
 | presentation: readable, clear output | interaction-capability | `<document or screen>` shows fields `<list>` in `<order>`, with `<format>` (units, decimals, locale) | Which fields must appear, and in what format? |
 | protection: secure, safe | security | a named control: `<authentication method>`, `<authorization rule>`, `<data>` encrypted with `<algorithm>` at rest or in transit, lockout after `<N>` failures | Which assets, against which threats, with which controls? |
 | reach: works everywhere, compatible | compatibility | supported `<browsers / OS / API versions>` listed by version; `<integration>` contract `<version>` | Which platforms and versions must be supported? |
 | change: maintainable, modular | maintainability | a checkable proxy agreed with the team (a module boundary rule, a change-impact limit) | What change must be cheap, and how will that be checked? |
-| escape clause: as appropriate, if possible, según corresponda | the requirement's own type | the condition made explicit: "when `<condition>`, then `<behaviour>`; otherwise `<behaviour>`" | Under exactly which condition does this apply, and what happens otherwise? |
+| escape clause: where applicable, if possible, según corresponda | the requirement's own type | the condition made explicit: "when `<condition>`, then `<behaviour>`; otherwise `<behaviour>`" | Under exactly which condition does this apply, and what happens otherwise? |
 | precision: a calculated value with no stated rule | functional | `<rounding mode>` to `<N>` decimals (or significant digits), applied at `<step>` | Which rule, to what precision, at which step? |
-| open list: etc. | the requirement's own type | an explicit, closed list | What is the complete list? |
+| open list: including but not limited to, y así sucesivamente | the requirement's own type | an explicit, closed list | What is the complete list? |
 
 ## Recording the result
 

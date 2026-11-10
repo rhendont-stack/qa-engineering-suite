@@ -16,7 +16,7 @@ The characteristics follow ISO/IEC/IEEE 29148 (requirements engineering), in our
 | Complete | It says what happens for every input it admits, with units and conditions. | No unit, no time base, no behaviour for the empty, zero, negative or largest case. | a finding `omission` when a tester must decide the case; an assumption for the value |
 | Singular | It states one behaviour. | "X and Y", "X, unless Y" with two outcomes. | split into two requirements |
 | Feasible | It can be achieved with the stated constraints. | 100 % availability, zero latency. | a finding `unverifiable`; an assumption for a feasible target |
-| Verifiable | A test can pass or fail it, with a stated measurement. | "responsive", "state-of-the-art", "as appropriate". | criterion with `verifiable: false`; an assumption asking for the number (`nfr-thresholds.md`) |
+| Verifiable | A test can pass or fail it, with a stated measurement. | "responsive", "state-of-the-art", "where applicable". | criterion with `verifiable: false`; an assumption asking for the number (`nfr-thresholds.md`) |
 | Correct | It states what the owner means. Only the owner can say. | A requirement inferred from code that reflects a defect. | provenance `inferred`; the doubtful behaviour as an assumption |
 | Conforming | It follows the project's template and vocabulary (shall/must for binding text). | "should" or "may" where the text means "must". | `quality_issues`: "weak modal 'should': binding or optional?" |
 
@@ -24,8 +24,8 @@ The characteristics follow ISO/IEC/IEEE 29148 (requirements engineering), in our
 
 | Characteristic | Check | Typical defect | Record it as |
 |---|---|---|---|
-| Complete | Every behaviour a tester meets is covered, including errors and limits. | No rule for an upload of zero bytes, for a second sign-in while a session is open, for a meeting that crosses midnight between two time zones. | a finding `omission`, one per missing behaviour |
-| Consistent | No two requirements contradict, and terms mean the same everywhere. | "one active session per user" and "up to three devices signed in at once"; "account" meaning the login in one place and the billing entity in another. | a finding `contradiction` naming both sources, linked `violates` to both requirements |
+| Complete | Every behaviour a tester meets is covered, including errors and limits. | No rule for a password reset requested for a locked account, for a file in a format the importer does not list, for a report requested while its source data is still loading. | a finding `omission`, one per missing behaviour |
+| Consistent | No two requirements contradict, and terms mean the same everywhere. | "exports are kept for 30 days" and "an export is deleted as soon as it is downloaded"; "account" meaning the login in one place and the billing entity in another. | a finding `contradiction` naming both sources, linked `violates` to both requirements |
 | Feasible | The set can be met together within its constraints. | Two performance targets that exclude each other. | a finding `contradiction` |
 | Comprehensible | A reader can tell what the system must do and why. | Undefined abbreviations, missing context. | `quality_issues` |
 | Able to be validated | The owner could confirm the set describes what they need. | Requirements only inferred, never shown to the owner. | open assumptions put to the user; no confirmation recorded on your own |

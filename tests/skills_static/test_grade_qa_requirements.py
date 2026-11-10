@@ -128,6 +128,26 @@ def test_f5_baseline_is_judged_on_the_answer_and_its_record_criteria_are_absent(
     assert verdicts(grade.grade_f5(labels_only, None, False, ""))["answer_cites_every_requirement_line"] is False
 
 
+F5_RECORD = ("every_req_cites_path_and_line", "contradiction_is_a_requirements_finding", "missing_behavior_is_a_requirements_finding",
+             "both_findings_name_their_risk")
+INFER_RECORD = ("every_req_inferred", "none_confirmed", "critical_assumptions_recorded_open", "assumptions_put_to_user",
+                "nothing_marked_verified")
+
+
+@pytest.mark.parametrize("function, names", [("grade_f5", F5_RECORD), ("grade_infer", INFER_RECORD)])
+def test_a_with_skill_run_that_left_no_state_fails_every_record_criterion(function, names):
+    """A with-skill run with no ledger (no init, or a state the kernel could not fold) is a failure, never an absence."""
+    lines = ", ".join("requirements.md:%d" % n for n in F5_LINES)
+    answer = ("Cited: %s. R7 and R8 contradict each other; a coupon may exceed the order total. These are inferred from the code. "
+              "Please confirm ASM-001: is the limit inclusive?" % lines)
+    criteria = getattr(grade, function)(answer, None, True, "")
+    by_name = {c["name"]: c for c in criteria}
+    for name in names:
+        assert by_name[name]["hard"] is True and by_name[name]["pass"] is False, name
+        assert by_name[name]["detail"] == "no ledger in the run's evidence"
+    assert [c["name"] for c in criteria if c["hard"] and c["pass"] is False] == list(names)
+
+
 def test_with_the_skill_the_answer_patterns_are_secondary():
     criteria = grade.grade_f5("", facts(f5_state()), True, "")
     assert "answer_cites_every_requirement_line" not in hard(criteria)

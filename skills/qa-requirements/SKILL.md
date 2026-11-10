@@ -128,7 +128,7 @@ Trace skeleton: .qa/trace/matrix.json (<gap counts>)
 
 Request: "Here is our refund spec (docs/refunds.md). Give me acceptance criteria."
 
-1. `init`, then `weak_words.py docs/refunds.md`: `docs/refunds.md:14 "promptly" (vague)`, `:22 "etc." (open-ended)`.
+1. `init`, then `weak_words.py docs/refunds.md`: `docs/refunds.md:14 "promptly" (vague)`, `:22 "including but not limited to" (open-ended)`.
 2. `req import`: REQ-001..REQ-006, each with `source {path: docs/refunds.md, line: N}`, `provenance: documented`; REQ-003 (line 14) carries `weak word "promptly" (vague): no time limit`.
 3. Line 9 allows refunds "within 30 days of delivery" and line 31 "within 30 days of purchase": FND-001 `contradiction` (FUNC-M1), impact "orders delivered late are refused or accepted depending on which rule is built", linked `violates` REQ-001 and REQ-006. Nothing says whether an exchanged item can still be refunded: FND-002 `omission` (FUNC-M2).
 4. ASM-001 "the spec gives no refund deadline; 'promptly' needs a number from the product owner" (REQ-003, critical).

@@ -17,7 +17,8 @@ Kinds of criterion:
 In a with-skill run the ``record`` and ``action`` criteria are the hard ones; the ``substance`` ones are a secondary signal,
 reported with ``hard: false``. A baseline run has no kernel and no bundled scripts, so its ``record`` and ``action`` criteria are
 reported as ``absent`` and it is judged on the ``substance`` criteria, which are then hard: each restates a hard record criterion
-as what the answer itself must show. Read the final answers as well; the patterns are heuristics, documented where they are made.
+as what the answer itself must show. A with-skill run that left no ledger (no ``init``, or a state the kernel could not fold)
+fails every ``record`` criterion; it is never treated as absent. Read the final answers as well; the patterns are heuristics, documented where they are made.
 
 Fixed facts: the F5 requirement lines come from ``fixtures/seeded-defects/requirements.md`` (R7 on line 23 and R8 on line 25
 contradict; R2 on line 9 leaves a coupon larger than the order undefined). The Spanish scenario's words come from ``_spanish.py``.
@@ -176,6 +177,11 @@ def absent(names: Iterable[str], kind: str = "record") -> List[Dict[str, Any]]:
     return [crit(name, True, kind, None, "no kernel or bundled script in a baseline run") for name in names]
 
 
+def unrecorded(names: Iterable[str], kind: str = "record") -> List[Dict[str, Any]]:
+    """A with-skill run that left no ledger (no ``init``, or a state the kernel could not fold): each record criterion fails."""
+    return [crit(name, True, kind, False, "no ledger in the run's evidence") for name in names]
+
+
 # --------------------------------------------------------------------------- record helpers
 
 def requirement_lines(path: Path) -> Dict[int, str]:
@@ -274,9 +280,12 @@ def grade_f5(text: str, facts: Optional[Dict[str, Any]], with_skill: bool, stdou
         crit("answer_names_the_missing_behavior", not with_skill, "substance", bool(COUPON_OVER.search(text)),
              "a coupon worth more than the order, or a total below zero: %s" % (COUPON_OVER.search(text).group(0) if COUPON_OVER.search(text) else "none")),
     ]
-    if not with_skill or facts is None:
-        return absent(("every_req_cites_path_and_line", "contradiction_is_a_requirements_finding", "missing_behavior_is_a_requirements_finding",
-                       "both_findings_name_their_risk")) + substance
+    names = ("every_req_cites_path_and_line", "contradiction_is_a_requirements_finding", "missing_behavior_is_a_requirements_finding",
+             "both_findings_name_their_risk")
+    if not with_skill:
+        return absent(names) + substance
+    if facts is None:
+        return unrecorded(names) + substance
     state = facts["state"]
     reqs = state["requirements"]
     bad = [rid for rid, r in sorted(reqs.items())
@@ -319,8 +328,10 @@ def grade_infer(text: str, facts: Optional[Dict[str, Any]], with_skill: bool, st
         crit("answer_claims_nothing_verified", not with_skill, "substance", not claims, "verified claims: %s" % (claims or "none")),
     ]
     names = ("every_req_inferred", "none_confirmed", "critical_assumptions_recorded_open", "assumptions_put_to_user", "nothing_marked_verified")
-    if not with_skill or facts is None:
+    if not with_skill:
         return absent(names) + substance
+    if facts is None:
+        return unrecorded(names) + substance
     state = facts["state"]
     reqs = state["requirements"]
     not_inferred = {rid: r.get("provenance") for rid, r in sorted(reqs.items()) if r.get("provenance") != "inferred"}
