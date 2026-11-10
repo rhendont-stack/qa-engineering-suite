@@ -1,0 +1,11 @@
+{
+  "id": "qa-test-strategy-f5-risk-based-plan",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-test-strategy",
+  "setup_script": "skills/qa-test-strategy/evals/setup_requirements.py",
+  "allow_write": true,
+  "bash_allow": [
+    "python3 .claude/skills/qa-test-strategy/scripts/qa.py"
+  ],
+  "prompt": "The requirements and acceptance criteria for this shop are already recorded under .qa/. Plan the testing of the pricing and coupon rules: where they can go wrong, which test cases we need, and how each one is designed. The testers start implementing on Monday."
+}
