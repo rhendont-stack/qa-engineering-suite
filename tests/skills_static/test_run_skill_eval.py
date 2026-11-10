@@ -940,12 +940,15 @@ def test_a_run_with_another_key_source_is_failed(world, source):
     assert rec["cost_usd"] == 0.25 and rec["cost_unknown"] is False
 
 
-def test_with_no_accepted_source_every_run_is_failed(world):
-    r = run(world, direct=True)                        # the shipped constant, unset: even a helper-style source is not accepted
+def test_the_shipped_constant_accepts_only_the_measured_source(world):
+    assert _harness_module().HELPER_KEY_SOURCE == "apiKeyHelper"      # measured by the paid probe of 2026-11-10
+    r = run(world, direct=True)                        # the shipped file, not the runner: another source is not accepted
     rec = records(world)[0]
     assert r.returncode == 1 and rec["status"] == "failed" and rec["api_key_source"] == FAKE_SOURCE
-    r = run(world, direct=True, mode="noinit")         # None must never equal the unset constant
+    r = run(world, direct=True, mode="noinit")         # a missing init event never matches
     assert r.returncode == 1 and records(world)[1]["status"] == "failed"
+    r = run(world, direct=True, env={"FAKE_API_KEY_SOURCE": "apiKeyHelper"})
+    assert r.returncode == 0 and records(world)[2]["status"] == "ok"
 
 
 def test_escaped_setsid_grandchild_is_killed(world):

@@ -42,7 +42,8 @@ path outside the repository is refused.
 The CLI runs with ``--output-format stream-json --verbose``. The ``init`` event gives ``api_key_source`` and the skills and
 tools listed; the final ``result`` event gives the metrics. A run whose ``api_key_source`` is not ``HELPER_KEY_SOURCE`` (or
 that has no ``init`` event) is recorded with status ``failed`` and its cost, whatever else happened. ``HELPER_KEY_SOURCE`` is
-the value the CLI reports when it takes its key from an ``apiKeyHelper``; while it is ``None`` no source is accepted.
+the value the CLI reports when it takes its key from an ``apiKeyHelper`` (measured: ``apiKeyHelper``); if it were ``None`` no
+source would be accepted.
 
 The budget authority is one ledger (``--ledger``, default ``.superpowers/eval-ledger/costs.jsonl`` under the repository root),
 read under an exclusive lock before every run, whatever ``--out`` is. A run writes a ``start`` line before it begins and an
@@ -104,9 +105,9 @@ BASE_TOOLS = ["Read", "Grep", "Glob", "Bash(git status *)", "Bash(git log *)", "
               "Bash(ls *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)"]
 FORBIDDEN_BARE = {"python", "python3", "find", "bash", "sh", "zsh", "env", "node", "sudo", "xargs", "eval", "exec"}
 KEY_VAR = "ANTHROPIC_API_KEY"
-# The ``api_key_source`` the CLI reports when it takes its key from an ``apiKeyHelper``; set from the paid probe. While it is
-# None no source is accepted, so every run is recorded failed.
-HELPER_KEY_SOURCE: Optional[str] = None
+# The ``api_key_source`` the CLI reports when it takes its key from an ``apiKeyHelper``, as measured by the paid probe of
+# 2026-11-10 (three runs, every ``init`` event reported this value). While it is None no source is accepted.
+HELPER_KEY_SOURCE: Optional[str] = "apiKeyHelper"
 WRITE_TOOLS = ["Edit", "Write"]
 SWEEP_INTERVAL = 0.5
 MARKER = "[REDACTED:%s]" % KEY_VAR
