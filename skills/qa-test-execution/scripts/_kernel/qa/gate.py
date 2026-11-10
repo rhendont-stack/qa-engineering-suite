@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from . import KERNEL_VERSION, config, gitinfo, ids, integrity, ledger, resource_dir, schema, state, trace, vocab
+from . import KERNEL_VERSION, config, gitinfo, ids, ingest, integrity, ledger, resource_dir, schema, state, trace, vocab
 from .canonical import hash_obj, loads
 from .errors import QaError
 from .findings import SEVERITIES
@@ -160,8 +160,12 @@ def _no_unresolved_findings(c: dict, st: dict, ctx: GateContext) -> _Outcome:
 
 
 def _is_suite_run(record: dict) -> bool:
-    """A clean scan is not a suite run, and a dirty scan does not fail one."""
-    return record["activity"] == _SUITE_ACTIVITY and (record["report"] is None or record["report"]["kind"] != "alerts")
+    """A clean scan is not a suite run, and a dirty scan does not fail one. Nor is a run that declared only measurement
+    reports: a coverage file says how much code ran, not that the tests passed."""
+    reports = record.get("reports") or []
+    measured_only = bool(reports) and all(ingest.is_measurement(declared["format"]) for declared in reports)
+    return (record["activity"] == _SUITE_ACTIVITY and not measured_only
+            and (record["report"] is None or record["report"]["kind"] != "alerts"))
 
 
 def _on_target(record: dict, target: Optional[str]) -> bool:

@@ -14,6 +14,8 @@ def suite(p=0, f=0, e=0, s=0, anomalies=()):
     return ReportSummary("junit", "tests", tuple(cases), (), 1, tuple(anomalies))
 def alerts(*levels, runs=1):
     return ReportSummary("sarif", "alerts", (), tuple(Alert("t", "R", lv, None, "m", None, None, {}, ()) for lv in levels), runs, ())
+def coverage():
+    return ReportSummary("lcov", "coverage", (), (), 1, ())
 R = dict(report_declared=True)
 CASES = [
     ("r1-policy", dict(guard_denied=True, config_drift=True, not_authorized=True), ("blocked", "policy_denied", None, ())),
@@ -75,12 +77,18 @@ CASES = [
     ("t13r6-alert-exit0", dict(exit_code=0, summary=alerts("error"), **R), ("failed", "assertion", "structured", ())),
     ("t13r6-timeout", dict(timed_out=True, summary=alerts("error"), **R), ("inconclusive", "timeout", "structured", ("partial",))),
     ("t13r6-report-missing", dict(exit_code=0, report_error="report_missing", **R), ("inconclusive", "report_missing", "exit_code", ())),
+    # A measurement report never decides: with one in the inputs the rules read as if it were absent (rules 10 and 11).
+    ("measurement-exit0", dict(exit_code=0, summary=coverage()), ("passed", None, "exit_code", ())),
+    ("measurement-nonzero", dict(exit_code=2, summary=coverage()), ("failed", "nonzero_exit", "exit_code", ())),
+    ("measurement-env-error", dict(exit_code=1, summary=coverage(), stderr_tail="ModuleNotFoundError"), ("blocked", "environment_error", "exit_code", ())),
+    ("measurement-timeout", dict(timed_out=True, summary=coverage()), ("inconclusive", "timeout", None, ())),
+    ("measurement-report-missing", dict(exit_code=0, report_error="report_missing"), ("inconclusive", "report_missing", "exit_code", ())),
     # T13-R7: signatures are case-sensitive, rule 11 only.
     ("t13r7-case-sensitive", dict(exit_code=1, stderr_tail="modulenotfounderror"), ("failed", "nonzero_exit", "exit_code", ())),
     ("t13r7-not-in-rule10", dict(exit_code=0, stderr_tail="ModuleNotFoundError"), ("passed", None, "exit_code", ())),
     ("t13r7-not-with-report", dict(exit_code=1, stderr_tail="ModuleNotFoundError", summary=suite(f=1), **R), ("failed", "assertion", "structured", ())),
 ]
-HEURISTIC = {"r11-env", "t13r2-signal-env"}
+HEURISTIC = {"r11-env", "t13r2-signal-env", "measurement-env-error"}
 
 
 @pytest.mark.parametrize("name,kw,want", CASES, ids=[c[0] for c in CASES])

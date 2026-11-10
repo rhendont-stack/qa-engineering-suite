@@ -1,7 +1,9 @@
-"""Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0) into counted results and alerts."""
+"""Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0) into counted results and alerts, and coverage
+reports (LCOV, Cobertura, JaCoCo) into measurements."""
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -45,13 +47,44 @@ class Alert:
 
 
 @dataclass(frozen=True)
+class FileCoverage:
+    """One source file's counts, its path as the report wrote it (normalised to ``/``)."""
+    path: str
+    lines_total: int
+    lines_covered: int
+    branches_total: int
+    branches_covered: int
+
+
+@dataclass(frozen=True)
 class ReportSummary:
     format: str
-    kind: str  # tests | alerts
+    kind: str  # tests | alerts | coverage
     cases: Tuple[CaseResult, ...]
     alerts: Tuple[Alert, ...]
     runs: int
     anomalies: Tuple[str, ...]
+    files: Tuple[FileCoverage, ...] = ()
+
+    @property
+    def lines_total(self) -> int:
+        return sum(f.lines_total for f in self.files)
+
+    @property
+    def lines_covered(self) -> int:
+        return sum(f.lines_covered for f in self.files)
+
+    @property
+    def branches_total(self) -> int:
+        return sum(f.branches_total for f in self.files)
+
+    @property
+    def branches_covered(self) -> int:
+        return sum(f.branches_covered for f in self.files)
+
+    def coverage_totals(self) -> Dict[str, int]:
+        return {"files": len(self.files), "lines_total": self.lines_total, "lines_covered": self.lines_covered,
+                "branches_total": self.branches_total, "branches_covered": self.branches_covered}
 
     @property
     def passed(self) -> int:
@@ -74,18 +107,29 @@ class ReportSummary:
         return self.passed + self.failed + self.errors + self.skipped
 
 
+_DRIVE = re.compile(r"^[A-Za-z]:/")
+
+
+def normalize_path(path: str) -> str:
+    """A path as a report wrote it, with ``\\`` read as ``/``. Nothing else changes: it is a name the tool gave."""
+    return path.replace("\\", "/")
+
+
+def outside_project(path: str, root: Optional[str] = None) -> bool:
+    """Does a recorded path leave the project? It does when it climbs (a ``..`` part) or, once ``root`` is known, is absolute
+    and not under it. Such a path is recorded as given and flagged, and is never matched against a ``paths`` glob."""
+    norm = normalize_path(path)
+    if ".." in norm.split("/"):
+        return True
+    if root is not None and (norm.startswith("/") or _DRIVE.match(norm)):
+        base = normalize_path(root).rstrip("/")
+        return not (norm == base or norm.startswith(base + "/"))
+    return False
+
+
 def add_anomaly(anomalies: List[str], name: str) -> None:
     if name not in anomalies:
         anomalies.append(name)
-
-
-from qa.ingest import ctrf as _ctrf  # noqa: E402  (after the models they import)
-from qa.ingest import junit as _junit  # noqa: E402
-from qa.ingest import sarif as _sarif  # noqa: E402
-
-_PARSERS = {"junit": _junit.parse, "ctrf": _ctrf.parse, "sarif": _sarif.parse}
-# What each format counts, so a request mixing kinds is refused before anything runs.
-FORMAT_KINDS = {"junit": "tests", "ctrf": "tests", "sarif": "alerts"}
 
 
 def read_report(path: Path, max_bytes: int) -> bytes:
@@ -135,4 +179,54 @@ def merge(summaries: List[ReportSummary]) -> ReportSummary:
         alerts=tuple(a for s in summaries for a in s.alerts),
         runs=sum(s.runs for s in summaries),
         anomalies=tuple(anomalies),
+        files=tuple(f for s in summaries for f in s.files),
     )
+
+
+_COUNT = re.compile(r"[0-9]{1,15}")
+
+
+def count(value: object, what: str) -> int:
+    """A count as a report wrote it: digits only. A sign, a fraction, NaN, infinity or an absurd length is not a count."""
+    if isinstance(value, str) and _COUNT.fullmatch(value.strip()):
+        return int(value)
+    raise ReportInvalid("invalid_count", what=what)
+
+
+def checked(covered: int, total: int, what: str) -> None:
+    if covered > total:
+        raise ReportInvalid("covered_over_total", what=what)
+
+
+def file_coverage(path: str, lines_total: int, lines_covered: int, branches_total: int, branches_covered: int) -> FileCoverage:
+    checked(lines_covered, lines_total, "lines")
+    checked(branches_covered, branches_total, "branches")
+    return FileCoverage(normalize_path(path), lines_total, lines_covered, branches_total, branches_covered)
+
+
+def coverage_summary(fmt: str, files: List[FileCoverage], anomalies: Optional[List[str]] = None) -> ReportSummary:
+    found = list(anomalies or [])
+    if any(outside_project(f.path) for f in files):
+        add_anomaly(found, "path_outside_project")
+    return ReportSummary(fmt, "coverage", (), (), 1, tuple(found), tuple(files))
+
+
+# The parsers import the models and helpers above, so they come last.
+from qa.ingest import ctrf as _ctrf  # noqa: E402  (after the models they import)
+from qa.ingest import cobertura as _cobertura  # noqa: E402
+from qa.ingest import jacoco as _jacoco  # noqa: E402
+from qa.ingest import junit as _junit  # noqa: E402
+from qa.ingest import lcov as _lcov  # noqa: E402
+from qa.ingest import sarif as _sarif  # noqa: E402
+
+_PARSERS = {"junit": _junit.parse, "ctrf": _ctrf.parse, "sarif": _sarif.parse, "lcov": _lcov.parse,
+            "cobertura": _cobertura.parse, "jacoco": _jacoco.parse}
+# What each format counts, so a request mixing kinds is refused before anything runs.
+FORMAT_KINDS = {"junit": "tests", "ctrf": "tests", "sarif": "alerts", "lcov": "coverage", "cobertura": "coverage",
+                "jacoco": "coverage"}
+# Measurement reports are numbers a tool measured. They are recorded beside a run and never decide its status.
+MEASUREMENT_KINDS = ("coverage",)
+
+
+def is_measurement(fmt: str) -> bool:
+    return FORMAT_KINDS.get(fmt) in MEASUREMENT_KINDS

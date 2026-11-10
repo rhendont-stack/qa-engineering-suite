@@ -306,14 +306,15 @@ def test_malformed_request_is_refused_before_anything_runs(trusted, actor, py, t
 
 def test_report_format_without_a_parser_is_refused(trusted, actor, py, tmp_path):
     marker = tmp_path / "ran"
-    error = _refusal(trusted, actor, command=py.argv(_touch(marker)), reports=(("cobertura", "a.xml"),))
+    error = _refusal(trusted, actor, command=py.argv(_touch(marker)), reports=(("nosuchformat", "a.xml"),))
     assert (error.code, error.details["detail"]) == ("report_invalid", "unknown_format") and not marker.exists()
     assert isinstance(error, ingest.ReportInvalid)
 
 
 def test_format_kinds_name_every_parser():
     assert set(ingest.FORMAT_KINDS) == set(ingest._PARSERS)
-    assert ingest.FORMAT_KINDS == {"junit": "tests", "ctrf": "tests", "sarif": "alerts"}
+    assert ingest.FORMAT_KINDS == {"junit": "tests", "ctrf": "tests", "sarif": "alerts", "lcov": "coverage", "cobertura": "coverage",
+                                   "jacoco": "coverage"}
 
 
 def test_string_without_the_shell_flag_goes_to_the_guard(trusted, actor):
@@ -1047,7 +1048,7 @@ def test_alert_report_shape(trusted, actor, py):
 def test_execution_record_has_exactly_the_ruled_keys(trusted, actor, py):
     r = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))
     doc = schema.load_schema("events/execution.recorded.schema.json")
-    assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"]) - {"container"}  # only a container run has it
+    assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"]) - {"container", "measurements"}  # only a container run has the one, only a run that parsed a measurement the other
     assert set(_data(trusted, "execution.recorded")[0]) == set(doc["required"])
     assert set(_record(trusted, r)) == set(doc["required"]) | {"ingested"}
 
@@ -1134,7 +1135,7 @@ def test_results_follow_the_execution_event(trusted, actor, py):
 @pytest.mark.parametrize("name", ["execution.recorded", "result.recorded", "result.reclassified", "command.blocked", "report.ingested"])
 def test_event_schemas_are_closed(name):
     doc = schema.load_schema("events/%s.schema.json" % name)
-    optional = {"container"} if name == "execution.recorded" else set()
+    optional = {"container", "measurements"} if name == "execution.recorded" else {"totals", "anomalies"} if name == "report.ingested" else set()
     assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"]) - optional
 
 

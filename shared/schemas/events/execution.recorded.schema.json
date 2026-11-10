@@ -26,6 +26,7 @@
     "evidence_manifest": {"anyOf": [{"$ref": "#/$defs/evidence_manifest"}, {"type": "null"}]},
     "reports": {"type": "array", "items": {"$ref": "#/$defs/declared_report"}},
     "report": {"anyOf": [{"$ref": "#/$defs/test_report"}, {"$ref": "#/$defs/alert_report"}, {"type": "null"}]},
+    "measurements": {"type": "array", "items": {"$ref": "#/$defs/measurement"}, "minItems": 1, "description": "absent, never empty, when no measurement report parsed"},
     "status": {"$ref": "defs.schema.json#/$defs/status"},
     "reason": {"anyOf": [{"$ref": "defs.schema.json#/$defs/reason"}, {"type": "null"}]},
     "strength": {"anyOf": [{"$ref": "defs.schema.json#/$defs/strength"}, {"type": "null"}]},
@@ -132,7 +133,7 @@
     "declared_report": {
       "type": "object",
       "properties": {
-        "format": {"enum": ["junit", "ctrf", "sarif"]},
+        "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco"]},
         "pattern": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
         "error": {"enum": ["report_missing", "report_invalid", null]}
@@ -162,6 +163,32 @@
         "runs": {"type": "integer", "minimum": 0}
       },
       "required": ["format", "kind", "alerts", "runs"],
+      "additionalProperties": false
+    },
+    "measurement": {
+      "description": "A measurement report that parsed (coverage). It never decides the run's status; the totals are those of the stored copy named by file.",
+      "type": "object",
+      "properties": {
+        "format": {"enum": ["lcov", "cobertura", "jacoco"]},
+        "kind": {"const": "coverage"},
+        "file": {"type": "string"},
+        "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "totals": {"$ref": "#/$defs/coverage_totals"},
+        "anomalies": {"type": "array", "items": {"enum": ["path_outside_project", "partial"]}, "minItems": 1}
+      },
+      "required": ["format", "kind", "file", "sha256", "totals"],
+      "additionalProperties": false
+    },
+    "coverage_totals": {
+      "type": "object",
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "lines_total": {"type": "integer", "minimum": 0},
+        "lines_covered": {"type": "integer", "minimum": 0},
+        "branches_total": {"type": "integer", "minimum": 0},
+        "branches_covered": {"type": "integer", "minimum": 0}
+      },
+      "required": ["files", "lines_total", "lines_covered", "branches_total", "branches_covered"],
       "additionalProperties": false
     },
     "allowed_check": {

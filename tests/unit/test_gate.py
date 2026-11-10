@@ -513,6 +513,26 @@ DISQUALIFIED = {
 WEAK = {"attested": {"strength": "attested"}, "no_strength_at_all": {"strength": None}}
 
 
+def _declared(*formats):
+    return [{"format": fmt, "pattern": "{evidence}/x", "files": ["reports/x"], "error": None} for fmt in formats]
+
+
+@pytest.mark.parametrize("formats", [("lcov",), ("cobertura",), ("jacoco",), ("lcov", "jacoco")])
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_coverage_run_is_not_a_suite_run_for_the_gate(formats, status):
+    r = _suite(_st(_exe(status=status, report=None, reports=_declared(*formats))))
+    assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", []) and "no execution qualified" in r["detail"]
+
+
+def test_coverage_beside_tests_still_counts_as_a_suite_run():
+    assert _suite(_st(_exe(reports=_declared("junit", "lcov"))))["outcome"] == "MET"
+    assert _suite(_st(_exe(status="failed", reports=_declared("junit", "cobertura"))))["outcome"] == "NOT_MET"
+
+
+def test_a_run_with_no_declared_reports_is_still_a_suite_run():
+    assert _suite(_st(_exe(report=None, reports=[])))["outcome"] == "MET"
+
+
 @pytest.mark.parametrize("change", DISQUALIFIED.values(), ids=DISQUALIFIED)
 @pytest.mark.parametrize("status", ["passed", "failed"])
 def test_a_disqualified_execution_is_no_evidence(change, status):

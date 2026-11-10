@@ -75,5 +75,65 @@
     "kind": "alerts",
     "normalizations": ["temporary directory path"],
     "expected": {"alerts": 3, "runs": 1}
+  },
+  {
+    "file": "cobertura/coveragepy-7.10.7-shipping.xml",
+    "format": "cobertura",
+    "producer": "coverage.py",
+    "version": "7.10.7",
+    "command": "python3 tests/corpus/producers/coverage_py/generate.py, run on the remote Docker host (runs in container python@sha256:2d97f6910b16bd338d3060f261f53f144965f755599aab1acda1e13cf1731b1b, python:3.9-slim: pip install --require-hashes -r requirements.txt, then python -m coverage run --branch --source=. --omit=test_*.py,site/* -m pytest -q; python -m coverage xml -o coverage.xml; python -m coverage report; pytest 8.4.2)",
+    "date": "2026-11-10",
+    "kind": "coverage",
+    "normalizations": ["epoch timestamp", "container path"],
+    "expected": {"files": 1, "lines_total": 13, "lines_covered": 8, "branches_total": 8, "percent": {"combined": 57}},
+    "console": "Name Stmts Miss Branch BrPart Cover | shipping.py 13 5 8 2 57% | TOTAL 13 5 8 2 57%"
+  },
+  {
+    "file": "lcov/coveragepy-7.10.7-shipping.info",
+    "format": "lcov",
+    "producer": "coverage.py",
+    "version": "7.10.7",
+    "command": "python3 tests/corpus/producers/coverage_py/generate.py, run on the remote Docker host (runs in container python@sha256:2d97f6910b16bd338d3060f261f53f144965f755599aab1acda1e13cf1731b1b, python:3.9-slim: pip install --require-hashes -r requirements.txt, then python -m coverage run --branch --source=. --omit=test_*.py,site/* -m pytest -q; python -m coverage lcov -o coverage.lcov; python -m coverage report; pytest 8.4.2)",
+    "date": "2026-11-10",
+    "kind": "coverage",
+    "normalizations": [],
+    "expected": {"files": 1, "lines_total": 13, "lines_covered": 8, "branches_total": 8, "percent": {"combined": 57}},
+    "console": "Name Stmts Miss Branch BrPart Cover | shipping.py 13 5 8 2 57% | TOTAL 13 5 8 2 57%"
+  },
+  {
+    "file": "cobertura/vitest-coverage-v8-3.2.7-shipping.xml",
+    "format": "cobertura",
+    "producer": "@vitest/coverage-v8",
+    "version": "3.2.7",
+    "command": "python3 tests/corpus/producers/vitest_coverage/generate.py, run on the remote Docker host (runs in container node@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072, node:lts-slim, Node v26.13.0, npm 11.20.0: npm ci --ignore-scripts, then npx vitest run --coverage --reporter=default with --network=none; vitest 3.2.7, coverage.provider v8, reporters text, lcovonly, cobertura)",
+    "date": "2026-11-10",
+    "kind": "coverage",
+    "normalizations": ["epoch timestamp", "container path"],
+    "expected": {"files": 1, "percent": {"lines": 52.63, "branches": 50}},
+    "console": "All files | 52.63 | 50 | 50 | 52.63 | | shipping.mjs | 52.63 | 50 | 50 | 52.63 | 3-4,10-11,16-20 (columns: % Stmts, % Branch, % Funcs, % Lines, Uncovered Line #s)"
+  },
+  {
+    "file": "lcov/vitest-coverage-v8-3.2.7-shipping.info",
+    "format": "lcov",
+    "producer": "@vitest/coverage-v8",
+    "version": "3.2.7",
+    "command": "python3 tests/corpus/producers/vitest_coverage/generate.py, run on the remote Docker host (runs in container node@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072, node:lts-slim, Node v26.13.0, npm 11.20.0: npm ci --ignore-scripts, then npx vitest run --coverage --reporter=default with --network=none; vitest 3.2.7, coverage.provider v8, reporters text, lcovonly, cobertura)",
+    "date": "2026-11-10",
+    "kind": "coverage",
+    "normalizations": [],
+    "expected": {"files": 1, "percent": {"lines": 52.63, "branches": 50}},
+    "console": "All files | 52.63 | 50 | 50 | 52.63 | | shipping.mjs | 52.63 | 50 | 50 | 52.63 | 3-4,10-11,16-20 (columns: % Stmts, % Branch, % Funcs, % Lines, Uncovered Line #s)"
+  },
+  {
+    "file": "jacoco/gradle-9.5.0-jacoco-0.8.13-shipping.xml",
+    "format": "jacoco",
+    "producer": "jacoco-gradle-plugin",
+    "version": "0.8.13",
+    "command": "python3 tests/corpus/producers/gradle_jacoco/generate.py, run on the remote Docker host (runs in container gradle@sha256:dfb52c9c5247cf6129770cd60597bbc1e67cdcfb7fd3691ed450d1c60737ea9e, gradle:9.5.0-jdk17, Gradle 9.5.0, JUnit 5.14.4: gradle --no-daemon test jacocoTestReport with a network, then the same with --offline and --network=none)",
+    "date": "2026-11-10",
+    "kind": "coverage",
+    "normalizations": ["epoch timestamp", "session id"],
+    "expected": {"files": 1, "lines_total": 11, "lines_covered": 6, "branches_total": 8, "branches_covered": 4},
+    "console": "LINE_MISSED=5 LINE_COVERED=6 BRANCH_MISSED=4 BRANCH_COVERED=4 files=1 (jacocoTestReport.csv, written by the same task)"
   }
 ]

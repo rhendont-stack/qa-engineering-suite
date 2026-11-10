@@ -3,7 +3,7 @@
 Usage: normalize.py <file> [<file> ...]
 
 Rewrites each file in place, replacing the hostname, timestamps, absolute
-paths, container paths, Surefire system property values and the user name
+paths, container paths, coverage report epochs and session ids, Surefire system property values and the user name
 with fixed tokens. Run it on every corpus file after
 the producer has written it.
 """
@@ -26,6 +26,10 @@ HOSTNAME_ATTR = re.compile(r'hostname="[^"]*"')
 # Surefire lists the whole JVM environment (user, home, paths, OS) as <property name=".." value=".."/>.
 # No value is kept: a fixed token cannot name this machine, whoever runs the producer.
 SUREFIRE_PROPERTY = re.compile(r'(<property\b[^>]*?\bvalue=")[^"]*(")')
+# Coverage reports date themselves in epoch milliseconds: Cobertura's timestamp, JaCoCo's session start and dump.
+EPOCH_ATTR = re.compile(r'\b(timestamp|start|dump)="\d{10,13}"')
+# JaCoCo names the session after the host that ran it: "<host>-<hex>".
+SESSION_ID = re.compile(r'(<sessioninfo\b[^>]*?\bid=")[^"]*(")')
 # The Maven container runs as root with the project at /work and its repository at /root/.m2.
 CONTAINER_PATHS = re.compile(r"/root(?![\w.-])|/work(?![\w.-])")
 
@@ -67,6 +71,8 @@ def normalize_text(text: str) -> str:
     text = HOSTNAME_ATTR.sub('hostname="HOST"', text)
     text = SUREFIRE_PROPERTY.sub(r"\1{PROPERTY}\2", text)
     text = CONTAINER_PATHS.sub(lambda m: "{CONTAINER_HOME}" if m.group(0) == "/root" else "{WORK}", text)
+    text = EPOCH_ATTR.sub(lambda m: '%s="0"' % m.group(1), text)
+    text = SESSION_ID.sub(r"\1SESSION\2", text)
     text = TEMP_DIR.sub("{TMP}", text)
     text = TIMESTAMP.sub("1970-01-01T00:00:00.000+00:00", text)
     for _label, pattern, token in sensitive_patterns():

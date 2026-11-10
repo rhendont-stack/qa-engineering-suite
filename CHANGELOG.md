@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The `qa` kernel, on Python 3.9 or later with the standard library only: workspace, IDs, canonical JSON, hash-chained ledger, derived state, schema validation, process runner, status rules, command guard, authorization, configuration changes and drift detection, secret redaction, and read-only git information.
 - Ingestion of JUnit, CTRF and SARIF reports.
+- Coverage reports (LCOV, Cobertura XML, JaCoCo XML) as measurement reports: `qa run --report lcov|cobertura|jacoco:PATH` and `qa ingest lcov|cobertura|jacoco FILE --from EXE` record each file's totals and never decide a run's status. A run that declares only measurement reports takes its status from the exit code, and is not a suite run for the gate. A path with `..` or an absolute path outside the project is recorded as given and flagged `path_outside_project`. The parsers are tested against real output from coverage.py, Vitest (V8) and Gradle JaCoCo, produced in containers.
 - Findings, release gates, Markdown and JSON reports, and checking of the claims a report makes.
 - JSON Schemas, gate profiles and command-guard policies.
 - The kernel's test suite, repository checks and a GitHub Actions workflow.

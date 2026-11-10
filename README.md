@@ -16,7 +16,7 @@ An open-source suite of [Agent Skills](https://agentskills.io) meant to let an A
 | The other 12 skills | none yet | Not started |
 | Packaging and host manifests | none yet | Not started |
 
-The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports. It also tracks findings, evaluates release gates, renders reports and checks the claims those reports make.
+The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports, and records LCOV, Cobertura and JaCoCo coverage as measurements that never decide a status. It also tracks findings, evaluates release gates, renders reports and checks the claims those reports make.
 
 ## Verification so far
 

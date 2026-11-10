@@ -48,7 +48,8 @@ _STDERR_TAIL = 64 * 1024
 _MIB = 2 ** 20
 _CATEGORY = {"$ref": "defs.schema.json#/$defs/category"}
 _UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production": a real environment may hold that id
-_MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json"}
+_MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json", "lcov": "text/plain",
+                "cobertura": "application/xml", "jacoco": "application/xml"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
 _BEFORE_INSTALL = ("volume_create", "copy_in", None)  # where a failed pipeline stopped when no install had started; None: no step
@@ -142,6 +143,7 @@ class _Recorded(NamedTuple):
     evidence: Optional[str]
     summary: Optional[ingest.ReportSummary]
     limitations: List[str]
+    measurements: Tuple[dict, ...] = ()
 
 
 class _Ran(NamedTuple):
@@ -156,8 +158,9 @@ class _Ran(NamedTuple):
 class _Reports(NamedTuple):
     entries: List[dict]  # the event's "reports" list, one per declared pair
     error: Optional[str]
-    summary: Optional[ingest.ReportSummary]
+    summary: Optional[ingest.ReportSummary]  # of the reports that decide a status; a measurement never joins it
     manifest: Dict[str, dict]
+    measurements: Tuple[dict, ...] = ()
 
 
 # --------------------------------------------------------------------------- the request
@@ -179,7 +182,8 @@ def _check_request(req: RunRequest) -> None:
     for fmt, _pattern in req.reports:
         if fmt not in ingest.FORMAT_KINDS:
             raise ingest.ReportInvalid("unknown_format", format=fmt)
-    if len({ingest.FORMAT_KINDS[fmt] for fmt, _pattern in req.reports}) > 1:
+    # A measurement report (coverage) goes beside either kind; test reports and alert reports do not go together.
+    if len({ingest.FORMAT_KINDS[fmt] for fmt, _pattern in req.reports if not ingest.is_measurement(fmt)}) > 1:
         raise QaError("kind_mismatch", "one request cannot mix test reports and alert reports")
     argv = [command] if isinstance(command, str) else command
     if not all(map(_encodable, argv + [pattern for _fmt, pattern in req.reports] + [req.attempt_of or ""])):
@@ -252,6 +256,7 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
         "evidence": recorded.evidence,
         "findings": raised,
         "limitations": recorded.limitations,
+        **({"measurements": list(recorded.measurements)} if recorded.measurements else {}),
     }
 
 
@@ -704,9 +709,32 @@ def _store_reports(run: _Run, directory: Path, snapshot: _Snapshot) -> _Reports:
             if parsed[(fmt, source)] is None:
                 error = error or "report_invalid"
         entries.append({"format": fmt, "pattern": pattern, "files": files, "error": error})
-    summaries = [s for s in parsed.values() if s is not None]
+    summaries = [s for s in parsed.values() if s is not None and s.kind not in ingest.MEASUREMENT_KINDS]
+    measurements = tuple(_measurement(run, s, "reports/" + names[source], manifest)
+                         for (_fmt, source), s in parsed.items() if s is not None and s.kind in ingest.MEASUREMENT_KINDS)
     first_error = next((e["error"] for e in entries if e["error"] is not None), None)
-    return _Reports(entries, first_error, ingest.merge(summaries) if summaries else None, manifest)
+    return _Reports(entries, first_error, ingest.merge(summaries) if summaries else None, manifest, measurements)
+
+
+def _flags(run_root: Path, summary: ingest.ReportSummary) -> List[str]:
+    """The summary's anomalies, plus ``path_outside_project`` for an absolute path that is not under the workspace."""
+    found = list(summary.anomalies)
+    if any(ingest.outside_project(f.path, str(run_root)) for f in summary.files):
+        ingest.add_anomaly(found, "path_outside_project")
+    return found
+
+
+def _measurement(run: _Run, summary: ingest.ReportSummary, file: str, manifest: Dict[str, dict]) -> dict:
+    entry = {"format": summary.format, "kind": summary.kind, "file": file, "sha256": manifest[file]["sha256"],
+             "totals": summary.coverage_totals()}
+    flags = _flags(run.ws.root, summary)
+    return dict(entry, anomalies=flags) if flags else entry
+
+
+def readable_measurements(record: dict) -> List[dict]:
+    """The measurements a reader may show: those of a run that passed or failed. A blocked or inconclusive run
+    parsed them (or not) under conditions nobody can vouch for, and a not_run run measured nothing."""
+    return list(record.get("measurements", [])) if record.get("status") in ("passed", "failed") else []
 
 
 def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
@@ -901,7 +929,8 @@ def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
     verdict = status.decide(status.StatusInputs(
         spawn_error=outcome.spawn_error, shell=req.shell or req.container is not None, exit_code=outcome.exit_code,
         timed_out=outcome.timed_out, dependency_unavailable=ran.dependency_unavailable,
-        report_declared=bool(req.reports), report_error=reports.error, summary=reports.summary,
+        report_declared=any(not ingest.is_measurement(fmt) for fmt, _pattern in req.reports),
+        report_error=reports.error, summary=reports.summary,
         allow_empty=req.allow_empty, stderr_tail=stderr[-_STDERR_TAIL:].decode("utf-8", "replace"),
         orphaned_output=outcome.orphaned_output, anomalies=ran.anomalies))
     for flag, limitation in ((outcome.orphaned_output, "orphaned_output"), (outcome.stdout_dropped, "stdout_truncated"),
@@ -917,12 +946,14 @@ def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
         "environment": dict(ran.environment, **{"class": run.environment["class"]}),
         "evidence_manifest": evidence_manifest, "reports": reports.entries, "report": _report_block(reports.summary),
         "redactions": redactions,
-    }, **({} if ran.container is None else {"container": ran.container})))
+    }, **({} if ran.container is None else {"container": ran.container}),
+        **({"measurements": list(reports.measurements)} if reports.measurements else {})))
     with run.ws.lock():
         clean = _append(run, "execution.recorded", record)
         for case in reports.summary.cases if reports.summary is not None else ():
             _append(run, "result.recorded", _result_data(case, run.execution_id))
-    return _Recorded(verdict, directory.relative_to(run.ws.root).as_posix(), reports.summary, clean["limitations"])
+    return _Recorded(verdict, directory.relative_to(run.ws.root).as_posix(), reports.summary, clean["limitations"],
+                     reports.measurements)
 
 
 # --------------------------------------------------------------------------- after the run
@@ -962,7 +993,13 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     redactor = redact.load_redactor(ws)
     clean = redactor.bytes_(original)[0]
     digest = sha256_bytes(clean)
-    total = len(summary.cases) if summary.kind == "tests" else len(summary.alerts)
+    total = {"tests": len(summary.cases), "alerts": len(summary.alerts), "coverage": len(summary.files)}[summary.kind]
+    measured: dict = {}
+    if summary.kind == "coverage":  # the numbers are on the event, so a reader need not parse the file again
+        measured["totals"] = summary.coverage_totals()
+        flags = _flags(ws.root, summary)
+        if flags:
+            measured["anomalies"] = flags
     with ws.lock():
         folder = ws.path("evidence", from_execution, "ingested")
         folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -971,7 +1008,7 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
         write_atomic(folder / name, clean)
         event = ledger.append(ws, actor, "report.ingested", {
             "execution": from_execution, "format": fmt, "kind": summary.kind, "total": total, "file": "ingested/" + name,
-            "sha256": digest, "ev_id": ids.ev_id(digest), "strength": strength, "category": category})
+            "sha256": digest, "ev_id": ids.ev_id(digest), "strength": strength, "category": category, **measured})
     raised = {"opened": 0, "updated": 0}
     if summary.kind == "alerts":  # §8.2: a standard report becomes results or findings, or the gate never sees it
         raised = findings.ingest_alerts(ws, actor, _redacted(redactor, summary), execution_id=from_execution, category=category)

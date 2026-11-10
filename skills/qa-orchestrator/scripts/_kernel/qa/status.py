@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Optional, Tuple
 
-from qa.ingest import ReportSummary
+from qa.ingest import MEASUREMENT_KINDS, ReportSummary
 
 STATUSES = ("passed", "failed", "blocked", "not_run", "inconclusive")
 ANOMALY_ORDER = ("exit_code_mismatch", "no_tests_collected", "retried_in_framework", "partial", "untested_tool_version",
@@ -73,6 +73,8 @@ def _decision(inp: StatusInputs, status: str, reason: Optional[str], extra: Tupl
 
 
 def decide(inp: StatusInputs) -> StatusDecision:
+    if inp.summary is not None and inp.summary.kind in MEASUREMENT_KINDS:
+        inp = replace(inp, summary=None)  # a measurement (coverage) never decides: the run reads as if it had no report
     decision = _first_match(inp)
     # A pass means the tests ran with no network; without proof of that, the run shows nothing either way.
     if decision.status == "passed" and "network_not_isolated" in decision.anomalies:

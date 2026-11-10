@@ -15,8 +15,39 @@ ENTRIES = json.loads((CORPUS / "MANIFEST.json").read_text())
 @pytest.mark.parametrize("entry", ENTRIES, ids=[e["file"] for e in ENTRIES])
 def test_corpus_matches_tool_console(entry):
     s = ingest.parse_report(entry["format"], CORPUS / entry["file"], 50 * 2**20)
+    if s.kind == "coverage":
+        check_coverage(s, entry)
+        return
     got = {"total": s.total, "passed": s.passed, "failed": s.failed, "errors": s.errors, "skipped": s.skipped} if s.kind == "tests" else {"alerts": len(s.alerts), "runs": s.runs}
     assert got == entry["expected"]
+
+
+def check_coverage(s, entry):
+    """The totals the tool printed for itself (its own console or its own CSV) are the totals the parser finds.
+
+    A tool prints counts, percentages, or both. A count it printed must equal ours exactly. A percentage is compared at the
+    precision the tool printed it: ours is computed from the same file, never taken from the tool.
+    """
+    expected = dict(entry["expected"])
+    percent = expected.pop("percent", {})
+    ours = {"files": len(s.files), "lines_total": s.lines_total, "lines_covered": s.lines_covered,
+            "branches_total": s.branches_total, "branches_covered": s.branches_covered}
+    assert {key: ours[key] for key in expected} == expected
+    assert entry["console"] and (expected or percent)
+    computed = {"lines": 100.0 * s.lines_covered / s.lines_total, "branches": 100.0 * s.branches_covered / s.branches_total,
+                "combined": 100.0 * (s.lines_covered + s.branches_covered) / (s.lines_total + s.branches_total)}
+    for name, printed in percent.items():
+        places = len(repr(printed).split(".")[1]) if isinstance(printed, float) else 0
+        assert round(computed[name], places) == printed, name
+    assert s.anomalies == ()  # a sample project has no path outside itself
+
+
+@pytest.mark.parametrize("entry", [e for e in ENTRIES if e["kind"] == "coverage"], ids=lambda e: e["file"])
+def test_coverage_corpus_files_are_normalized_and_name_their_tool(entry):
+    normalize = load_producer_module("normalize.py")
+    text = (CORPUS / entry["file"]).read_text(encoding="utf-8")
+    assert normalize.normalize_text(text) == text
+    assert entry["format"] in ("lcov", "cobertura", "jacoco") and entry["producer"] and entry["version"]
 
 
 def corpus_files():
