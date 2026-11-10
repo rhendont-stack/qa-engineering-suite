@@ -71,7 +71,8 @@
         "commit": {"type": "string"},
         "branch": {"type": ["string", "null"]},
         "dirty": {"type": "boolean"},
-        "diff_hash": {"$ref": "defs.schema.json#/$defs/sha256"}
+        "diff_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "worktree": {"type": "string", "description": "present only when the run was inside a suite worktree: its path, relative to the workspace root; the facts above are then the worktree's"}
       },
       "required": ["commit", "branch", "dirty", "diff_hash"],
       "additionalProperties": false

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from qa import ledger, state
 
@@ -9,7 +10,7 @@ INIT = {"kernel_version": "0.1.0-dev", "schema_version": "1", "config_hash": "sh
 
 def test_skeleton():
     assert set(state.fold([])) == {"executions", "results", "tests", "findings", "authorizations", "config",
-                                   "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads"}
+                                   "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees"}
 
 
 def test_unknown_type_is_violation():
@@ -76,3 +77,21 @@ def test_fold_reraises_non_schema_errors(monkeypatch):
     with pytest.raises(QaError) as e:
         state.fold([{"id": "EVT-Z", "type": "workspace.initialized", "data": INIT}])
     assert e.value.code == "resource_missing"
+
+
+# The hash of data/milestone2-events.json as the milestone 2 kernel (a8460cc) computed it: that kernel folded the ledger and
+# hashed the state without the worktrees key. The file is a milestone 2 ledger (one passing run), so no event is new.
+MILESTONE_2_HASH = "sha256:fda6837b1cb743887acd09ec943d29273b3a5cb89ce754739526daf45f452dd4"
+
+
+def test_state_hash_of_a_milestone_2_ledger_is_unchanged():
+    events = json.loads((Path(__file__).parent / "milestone2-events.json").read_text(encoding="utf-8"))
+    folded = state.fold(events)
+    assert folded["violations"] == [] and len(folded["executions"]) == 1 and folded["worktrees"] == {}
+    assert state.state_hash(folded) == MILESTONE_2_HASH
+
+
+def test_a_new_key_counts_once_it_holds_something():
+    base = state.fold([])
+    held = dict(base, worktrees={".qa/work/wt-0": {"commit": "0" * 40, "event": "EVT-1", "removed": None}})
+    assert state.state_hash(held) != state.state_hash(base)

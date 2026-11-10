@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Set, Tuple, Union
 
 from . import (KERNEL_VERSION, authz, config, container, envinfo, findings, gitinfo, guard, ids, ingest, integrity, ledger,
-               redact, runner, schema, state, status, vocab)
+               redact, runner, schema, state, status, vocab, worktree)
 from .canonical import dumps, loads, sha256_bytes, sha256_file
 from .errors import QaError
 from .workspace import FileTooLarge, Workspace, read_limited, write_atomic
@@ -278,9 +278,12 @@ def _gate(run: _Run) -> _Gate:
                               declared_activity=req.activity, cwd=req.cwd)
     if req.install is not None:
         decision = _with_install(run, decision)
-    git, git_limitation = gitinfo.git_info(run.ws.root)
+    tree = worktree.containing(run.ws, run.st, run.cwd)  # a run inside a suite worktree is a run at that worktree's commit
+    git, git_limitation = gitinfo.git_info(run.ws.root if tree is None else run.ws.root / tree)
     if git_limitation is not None:
         run.note(git_limitation)
+    elif tree is not None:
+        git = dict(git, worktree=tree)
     gate = _Gate(decision, git)
     if decision.decision == "deny":
         gate.policy_denied = True

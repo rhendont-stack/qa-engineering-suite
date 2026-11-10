@@ -12,10 +12,13 @@ from .workspace import Workspace, config_bytes, write_atomic
 
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
 _KEYS = ("executions", "results", "tests", "findings", "authorizations", "config",
-         "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads")
+         "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees")
 _LISTS = ("blocked_commands", "violations")
 # Derived from evaluation or rendering, or about the work rather than the evidence, so excluded from state_hash.
 _UNHASHED = ("gates", "reports", "plans", "heads")
+# Keys added after milestone 2. While one is empty it is left out of state_hash, so a ledger that predates the key keeps the hash
+# it had (a bundle and a gate.evaluated record that hash). Once it holds something it counts like any other key.
+_UNHASHED_WHEN_EMPTY = ("worktrees",)
 
 
 def empty_state() -> dict:
@@ -105,6 +108,23 @@ def _execution_recorded(state: dict, event: dict) -> None:
         _violation(state, event, "duplicate_id")
         return
     state["executions"][data["id"]] = dict(copy.deepcopy(data), ingested=[])
+
+
+def _worktree_created(state: dict, event: dict) -> None:
+    data = event["data"]
+    known = state["worktrees"].get(data["path"])
+    if known is not None and known["removed"] is None:  # the first record of an open worktree stays
+        _violation(state, event, "duplicate_path")
+        return
+    state["worktrees"][data["path"]] = {"commit": data["commit"], "event": event["id"], "removed": None}
+
+
+def _worktree_removed(state: dict, event: dict) -> None:
+    known = state["worktrees"].get(event["data"]["path"])
+    if known is None or known["removed"] is not None:
+        _violation(state, event, "unknown_worktree")
+        return
+    known["removed"] = event["id"]
 
 
 def _result_recorded(state: dict, event: dict) -> None:
@@ -382,6 +402,8 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "plan.step_updated": _queue,
     "bundle.ingested": _bundle_ingested,
     "bundle.compared": _queue,
+    "worktree.created": _worktree_created,
+    "worktree.removed": _worktree_removed,
 }
 
 
@@ -440,4 +462,5 @@ def rebuild(ws: Workspace) -> dict:
 
 
 def state_hash(state: dict) -> str:
-    return hash_obj({k: v for k, v in state.items() if k not in _UNHASHED})
+    return hash_obj({k: v for k, v in state.items()
+                     if k not in _UNHASHED and not (k in _UNHASHED_WHEN_EMPTY and not v)})

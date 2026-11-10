@@ -267,6 +267,8 @@ def find_workspace(start: Path, explicit: Optional[Path] = None) -> Workspace:
         raise QaError("no_workspace", "no .qa/config.json in the given workspace", path=str(root))
     here = Path(start).resolve()
     for candidate in [here] + list(here.parents):
+        if candidate.parent.name == "work" and candidate.parent.parent.name == ".qa":
+            continue  # a worktree the suite made: it may track its own .qa/config.json, but the workspace is the one outside
         if (candidate / ".qa" / "config.json").is_file():
             return _not_redirected(Workspace(root=candidate, qa_dir=candidate / ".qa"))
     raise QaError("no_workspace", "no .qa/config.json found here or in any parent", start=str(here))

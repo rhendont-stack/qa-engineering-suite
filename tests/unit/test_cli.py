@@ -534,6 +534,8 @@ WRITE_ARGV = {
     "gate policy propose": ("gate", "policy", "propose", "suite_executed", "--override", "{}", "--rationale", "r"),
     "gate policy accept": ("gate", "policy", "accept", "EVT-X", "--approval", "q"),
     "gate evaluate": ("gate", "evaluate", "--profile", "change"),
+    "worktree add": ("worktree", "add", "HEAD"),
+    "worktree remove": ("worktree", "remove", ".qa/work/wt-000000000000"),
     "run": ("run", "--", "true"),
     "ingest": ("ingest", "junit", "missing.xml", "--from", "EXE-X"),
     "result reclassify": ("result", "reclassify", "RES-X", "blocked", "--reason", "r", "--evidence", "EXE-X"),

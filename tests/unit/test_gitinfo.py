@@ -315,3 +315,25 @@ def test_qa_plan_create_runs_no_repository_program(trusted, qa_cli, tmp_path, ho
     code, out = qa_cli("plan", "create", "--template", str(template))
     assert not marker.exists()
     assert code == 0, out
+
+
+@pytest.mark.parametrize("key, expected", [
+    ("lfs.extension.x.clean", True), ("lfs.extension.x.smudge", True), ("LFS.Extension.Dotted.Name.CLEAN", True),
+    ("lfs.extension.x.priority", False), ("lfs.extension.clean", False), ("lfs.clean", False), ("lfs.url", False),
+    ("filter.x.clean", True), ("diff.x.textconv", True), ("core.editor", False),
+])
+def test_names_a_program(key, expected):
+    assert gitinfo._names_a_program(key) is expected
+
+
+def test_repository_lfs_extension_is_blanked_and_the_users_is_kept(repo, tmp_path, monkeypatch):
+    user = tmp_path / "user.gitconfig"
+    user.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git(repo, "config", "lfs.extension.mine.clean", "evil")
+    git(repo, "config", "lfs.extension.both.smudge", "evil")
+    subprocess.run(["git", "config", "-f", str(user), "lfs.extension.both.smudge", "trusted"], check=True)
+    git(repo, "config", "lfs.extension.mine.priority", "0")
+    options = gitinfo._program_overrides("git", repo)
+    assert options == ["-c", "lfs.extension.mine.clean=", "-c", "lfs.extension.both.smudge=trusted"]

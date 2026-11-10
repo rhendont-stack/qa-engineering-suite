@@ -1,10 +1,11 @@
 """Read-only facts about the user's git tree (commit, branch, dirty flag, diff hash).
 
-Only read-only git subcommands run, and the repository's own configuration is data: nothing it names may run. Every call
+Only read-only git subcommands run here (worktree.py reuses the same neutralised session to add and remove the suite's
+own worktrees), and the repository's own configuration is data: nothing it names may run. Every call
 disables fsmonitor, the untracked cache, hooks, signature checks and the ``ext::`` transport, and sets GIT_OPTIONAL_LOCKS=0,
 so inspecting a tree neither runs a program nor rewrites its index. Before each read the configuration is listed with its
-scope; every ``filter.<driver>.clean|smudge|process`` and ``diff.<driver>.command|textconv`` that the repository sets (its
-``.git/config``, a file that includes, or ``config.worktree``) is replaced by the user's own value for that key, or blanked
+scope; every ``filter.<driver>.clean|smudge|process``, ``diff.<driver>.command|textconv`` and
+``lfs.extension.<name>.clean|smudge`` that the repository sets (its ``.git/config``, a file that includes, or ``config.worktree``) is replaced by the user's own value for that key, or blanked
 when the user has none. A user-level driver such as git-lfs therefore still applies. Submodules are never entered, since
 each has a configuration of its own. When the listing fails, or a key cannot be overridden, git does not run.
 
@@ -31,7 +32,8 @@ _BASE_OPTS = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "
               "-c", "gpg.x509.program=" + os.devnull]
 _QA_PATHSPEC = ":(icase).qa"  # a case-insensitive filesystem reads a tracked .QA/ as this .qa/
 _SHAREABLE = (".qa/.gitignore", ".qa/config.json")  # .qa/.gitignore keeps everything else out of git
-_PROGRAM_KEYS = {"filter": ("clean", "smudge", "process"), "diff": ("command", "textconv")}
+_PROGRAM_KEYS = {"filter": ("clean", "smudge", "process"), "diff": ("command", "textconv"),
+                 "lfs": ("clean", "smudge")}  # lfs.extension.<name>.clean|smudge: git-lfs runs these around its own filter
 _TRUSTED_SCOPES = ("system", "global", "command")  # the user's own configuration and environment, not the repository's
 _CHUNK = 1 << 20
 
@@ -46,17 +48,20 @@ def _env() -> Dict[str, str]:
     return env
 
 
-def _spawn(git: str, root: Path, opts: List[str], args: List[str], stdout=subprocess.PIPE) -> "subprocess.CompletedProcess[bytes]":
+def _spawn(git: str, root: Path, opts: List[str], args: List[str], stdout=subprocess.PIPE,
+           timeout_s: int = _TIMEOUT_S) -> "subprocess.CompletedProcess[bytes]":
     try:
         return subprocess.run([git, "-C", str(root), *_BASE_OPTS, *opts, *args], stdout=stdout, stderr=subprocess.PIPE,
-                              timeout=_TIMEOUT_S, env=_env())
+                              timeout=timeout_s, env=_env())
     except (OSError, subprocess.SubprocessError) as exc:
         raise _Unavailable() from exc
 
 
 def _names_a_program(key: str) -> bool:
-    parts = key.split(".")
-    return len(parts) >= 3 and parts[-1].lower() in _PROGRAM_KEYS.get(parts[0].lower(), ())
+    parts = key.lower().split(".")
+    if parts[0] == "lfs":  # only lfs.extension.<name>.<clean|smudge>; lfs.<name> and lfs.url name no program
+        return len(parts) >= 4 and parts[1] == "extension" and parts[-1] in _PROGRAM_KEYS["lfs"]
+    return len(parts) >= 3 and parts[-1] in _PROGRAM_KEYS.get(parts[0], ())
 
 
 def _program_overrides(git: str, root: Path) -> List[str]:
@@ -103,8 +108,18 @@ class _Git:
         self.git, self.root = git, root
         self.opts = _program_overrides(git, root)
 
-    def run(self, args: List[str], stdout=subprocess.PIPE) -> "subprocess.CompletedProcess[bytes]":
-        return _spawn(self.git, self.root, self.opts, args, stdout=stdout)
+    def run(self, args: List[str], stdout=subprocess.PIPE, timeout_s: int = _TIMEOUT_S) -> "subprocess.CompletedProcess[bytes]":
+        return _spawn(self.git, self.root, self.opts, args, stdout=stdout, timeout_s=timeout_s)
+
+
+Unavailable = _Unavailable  # for the callers that change the tree (worktree.py) and so need the same neutralised session
+
+
+def session(root: Path) -> Optional[_Git]:
+    """A neutralised git session on ``root``; None when git is missing. Raises ``Unavailable`` when the configuration cannot be
+    listed or a key cannot be overridden, so that git then does not run."""
+    git = shutil.which("git")
+    return None if git is None else _Git(git, Path(root))
 
 
 def _run(git: str, root: Path, args: List[str]) -> "subprocess.CompletedProcess[bytes]":

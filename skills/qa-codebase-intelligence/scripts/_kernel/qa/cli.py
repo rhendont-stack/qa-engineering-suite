@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, redact, report, schema, state, workspace
+from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, redact, report, schema, state, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -38,6 +38,7 @@ from .workspace import Workspace, write_atomic
 WRITE_COMMANDS = (
     "authorize", "auth revoke", "config set", "config accept", "gate policy propose", "gate policy accept", "gate evaluate",
     "run", "ingest", "result reclassify", "finding add", "finding update", "finding state", "finding dedupe", "state rebuild", "report render", "report bundle", "plan create", "plan update",
+    "worktree add", "worktree remove",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -278,6 +279,11 @@ def _add_plan_commands(groups: Dict[str, Any]) -> None:
     diff = _command(groups, "compare", "compare two recorded runs test by test: new failures, fixes, appeared, disappeared, flaky")
     diff.add_argument("base", metavar="BASE", help="the earlier execution ID")
     diff.add_argument("head", metavar="HEAD", help="the later execution ID")
+    _group(groups, "worktree", "check a commit out into a worktree the suite owns, so a run never touches your working tree")
+    add = _command(groups, "worktree add", "create .qa/work/wt-<12 hex of the commit> at COMMIT and record it")
+    add.add_argument("commit", metavar="COMMIT")
+    drop = _command(groups, "worktree remove", "remove a worktree this suite created")
+    drop.add_argument("path", metavar="PATH", help="as `worktree add` printed it")
     _group(groups, "catalog", "list the skills installed beside this one")
     listing = _command(groups, "catalog list", "list the suite skills with their roles and artifact types")
     listing.add_argument("--skills-dir", metavar="PATH", help="the directory holding the skills (default: next to this skill)")
@@ -456,6 +462,18 @@ def cmd_plan_status(args: argparse.Namespace, ctx: Context) -> int:
 def cmd_plan_update(args: argparse.Namespace, ctx: Context) -> int:
     event = plan.update(ctx.ws, ctx.actor, args.plan, args.step, args.status, args.reason)
     ctx.reply(plan=args.plan, step=args.step, status=args.status, event=event["id"])
+    return 0
+
+
+def cmd_worktree_add(args: argparse.Namespace, ctx: Context) -> int:
+    done = worktree.add(ctx.ws, ctx.actor, args.commit)
+    ctx.reply(path=done["path"], commit=done["commit"], event=done["event"])
+    return 0
+
+
+def cmd_worktree_remove(args: argparse.Namespace, ctx: Context) -> int:
+    done = worktree.remove(ctx.ws, ctx.actor, args.path)
+    ctx.reply(path=done["path"], event=done["event"])
     return 0
 
 

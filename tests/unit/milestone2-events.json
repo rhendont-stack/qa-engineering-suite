@@ -1,0 +1,182 @@
+[
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "authority_mac": "hmac-sha256:d30d60467b2686d0a794b9ed955a161914e70da3524aff0eae46b851737d0e84",
+   "config_hash": "sha256:c4792060b12fc141d789329a77a6dc77157bec51a21478629cf7c673caf60f25",
+   "kernel_version": "0.1.0-dev",
+   "schema_version": "1"
+  },
+  "hash": "sha256:b67d11241d5e9a3cf6db707fe216385164b8b0e05f6079d15df5c86b3526edb0",
+  "id": "EVT-01M72S73FWAG22AQ3E5QPHKHZM",
+  "prev": null,
+  "seq": 1,
+  "ts": "2026-11-10T13:09:04.124Z",
+  "type": "workspace.initialized",
+  "v": 1
+ },
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "approval": "test approval",
+   "authority_mac": "hmac-sha256:4a3a7fdf3ea4c81ef9c70e5e0e16f7af4d52c645a8df99822c12cd75a23d74c9",
+   "hash": "sha256:8a004c0e22d4e2b481b3ff922df91036972dadb0d43d8367715abeedb468739a",
+   "key": "project.trust",
+   "new": "trusted",
+   "old": "untrusted"
+  },
+  "hash": "sha256:dee4c516b095f7d4410a2678ce52703f9c73b9dc0255700bc6398f161b571ac8",
+  "id": "EVT-01M72S73GAN80TGJWKFWTB2J1B",
+  "prev": "sha256:b67d11241d5e9a3cf6db707fe216385164b8b0e05f6079d15df5c86b3526edb0",
+  "seq": 2,
+  "ts": "2026-11-10T13:09:04.138Z",
+  "type": "config.changed",
+  "v": 1
+ },
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "activity": "test-execution-local",
+   "actor": {
+    "role": "verifier",
+    "session": "S-00000000000000000000000000",
+    "skill": "qa-test-execution"
+   },
+   "anomalies": [],
+   "attempt_of": null,
+   "authorization": "trusted:local",
+   "authorizations": [
+    {
+     "activity": "test-execution-local",
+     "authorization": "trusted:local",
+     "environment": "local"
+    }
+   ],
+   "category": "functional",
+   "classification": "deterministic",
+   "command": {
+    "argv": [
+     "python3",
+     "-c",
+     "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('<testsuite><testcase classname=\"c\" name=\"t\"/></testsuite>')",
+     "{evidence}/junit.xml"
+    ],
+    "cwd": ".",
+    "shell": false
+   },
+   "config_hash": "sha256:8a004c0e22d4e2b481b3ff922df91036972dadb0d43d8367715abeedb468739a",
+   "duration_ms": 357,
+   "ended_at": "2026-11-10T13:09:12.089Z",
+   "env_names": [
+    "PATH"
+   ],
+   "env_values": {},
+   "environment": {
+    "class": "local",
+    "cpu_count": 8,
+    "implementation": "CPython",
+    "memory_bytes": 17179869184,
+    "platform": "linux-x86_64",
+    "python": "3.9.6",
+    "tools": {}
+   },
+   "environment_id": "local",
+   "evidence_manifest": {
+    "files": [
+     "command.json",
+     "reports/junit.xml",
+     "stderr.log",
+     "stdout.log"
+    ],
+    "ids": {
+     "command.json": "EV-bf763721287b",
+     "reports/junit.xml": "EV-ddedde35f493",
+     "stderr.log": "EV-e3b0c44298fc",
+     "stdout.log": "EV-e3b0c44298fc"
+    },
+    "sha256": "sha256:59cf8e882b8b1e2c1230de26341b36a11077bc609501bd2d88c1b48682d0d5ea"
+   },
+   "exit_code": 0,
+   "git": null,
+   "id": "EXE-01M72S73JS0C2RP5B6E68SFPH2",
+   "independence": "I1",
+   "isolation": "host",
+   "kernel": {
+    "manifest": null,
+    "version": "0.1.0-dev"
+   },
+   "limitations": [
+    "not_a_git_repo"
+   ],
+   "reason": null,
+   "redactions": 0,
+   "report": {
+    "errors": 0,
+    "failures": 0,
+    "format": "junit",
+    "kind": "tests",
+    "skipped": 0,
+    "tests": 1
+   },
+   "reports": [
+    {
+     "error": null,
+     "files": [
+      "reports/junit.xml"
+     ],
+     "format": "junit",
+     "pattern": "{evidence}/junit.xml"
+    }
+   ],
+   "scope": "targeted",
+   "signal": null,
+   "started_at": "2026-11-10T13:09:11.732Z",
+   "status": "passed",
+   "strength": "structured",
+   "timed_out": false
+  },
+  "hash": "sha256:2f84937b1a44c78f73742e8fda1f9210f74d6885996cc10cfeadbbcf48fe5ec1",
+  "id": "EVT-01M72S7BC6YSWWJZV18NQ2YTJR",
+  "prev": "sha256:dee4c516b095f7d4410a2678ce52703f9c73b9dc0255700bc6398f161b571ac8",
+  "seq": 3,
+  "ts": "2026-11-10T13:09:12.198Z",
+  "type": "execution.recorded",
+  "v": 1
+ },
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "duration_ms": null,
+   "execution": "EXE-01M72S73JS0C2RP5B6E68SFPH2",
+   "failure_kind": null,
+   "flaky": false,
+   "id": "RES-01M72S7BC8SQCZDAZG53QKD04E",
+   "skip_reason": null,
+   "status": "passed",
+   "test_id": "c::t"
+  },
+  "hash": "sha256:eecbd76ec978870b2fcb7836b9193ffe417b5ab33d0d276672cc89433dd3dd2e",
+  "id": "EVT-01M72S7BCQT2VZ5VCTN6ZDFXC2",
+  "prev": "sha256:2f84937b1a44c78f73742e8fda1f9210f74d6885996cc10cfeadbbcf48fe5ec1",
+  "seq": 4,
+  "ts": "2026-11-10T13:09:12.216Z",
+  "type": "result.recorded",
+  "v": 1
+ }
+]
