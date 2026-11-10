@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 
 from helpers import FIXTURES, answer_key
@@ -124,3 +125,18 @@ def test_f5_trace_matrix_reports_the_expected_gaps(qa_on_fixture):
                              "fnd_without_fix": 0, "fix_without_rvl": 0, "rvl_off_target": 0}
     first = next(case for case in matrix["testcases"] if case["id"] == "TC-001")
     assert first["status"] == "passed" and first["tests"][0]["test_id"] == smoke
+
+
+def test_f5_sales_tax_is_not_a_second_rounding_problem():
+    # Tax rounds half up to the cent, so the only float money problem left in the code is the one the key names (to_cents).
+    code = "from shop.pricing import sales_tax; print([sales_tax(x) for x in (6.0, 10.0, 12.0, 100.5)])"
+    done = subprocess.run([sys.executable, "-B", "-c", code], cwd=str(F5), capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [0.5, 0.83, 0.99, 8.29]
+    keyed = [issue["location"].get("function") for issue in answer_key("seeded-defects")["issues"] if issue["kind"] == "float_money_rounding"]
+    assert keyed == ["to_cents"]
+
+
+def test_f5_each_requirement_problem_is_stated_once():
+    texts = {issue["kind"]: issue["expected_record"] for issue in answer_key("seeded-defects")["issues"]}
+    assert "second one is refused" not in texts["missing_behavior"] and "R7" in texts["contradiction"]

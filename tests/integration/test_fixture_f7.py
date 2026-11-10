@@ -7,6 +7,7 @@ rewrites failures as passes. Runs go through the real CLI, in suite worktrees wh
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,7 @@ PYTEST = ("-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "junit_family=xu
 WEAKENED = "tests.test_pricing.PricingTests::test_discount_on_an_odd_total"
 ORDER_TOTAL = "tests.test_service.ServiceTests::test_payable_amount_after_ten_percent"
 LOYALTY = "tests.test_service.ServiceTests::test_summary_lists_loyalty_points"
+TOP_TIER = "tests.test_pricing.PricingTests::test_twenty_two_units_get_the_top_tier"
 
 
 def git(root, *args):
@@ -33,10 +35,11 @@ def commits(root):
     return git(root, "rev-list", "--reverse", "HEAD").split()
 
 
-def generate(directory, *extra):
+def generate(directory, *extra, env=None):
     if shutil.which("git") is None:
         pytest.skip("tool missing: git")
-    return subprocess.run([sys.executable, str(GENERATOR), str(directory)] + list(extra), capture_output=True, text=True, timeout=120)
+    return subprocess.run([sys.executable, str(GENERATOR), str(directory)] + list(extra), capture_output=True, text=True, timeout=120,
+                          env=env)
 
 
 def run_in(project, where, *extra):
@@ -81,6 +84,7 @@ def test_f7_history_has_the_six_commits_and_nothing_else(tmp_path):
     assert again.returncode == 0 and commits(tmp_path / "again") == commits(root)    # the same commits, bit for bit
     key = answer_key("regression-repo")
     assert [entry["index"] for entry in key["commits"]] == [0, 1, 2, 3, 4, 5] and key["fixture"] == "regression-repo"
+    assert {i["id"] for i in key["issues"] if i["commit"] == 1} == {"F7-01", "F7-02", "F7-07"}      # every real defect of C1 is keyed
     for issue in key["issues"]:
         text = git(root, "show", "%s:%s" % (commits(root)[issue["commit"]], issue["location"]["path"]))
         assert issue["location"]["match"] in text, issue["id"]
@@ -137,13 +141,13 @@ def test_f7_c3_revalidates(qa_on_generated):
     project = qa_on_generated("regression-repo", checkout=3)
     c0, c1, c2, c3 = commits(project.root)
     finding = record_failing_order_total(project)
-    base_code, base_run = run_in(project, at(project, c2))
-    head_code, head_run = run_in(project, at(project, c3))
-    assert (base_code, base_run["status"], head_code, head_run["status"]) == (1, "failed", 0, "passed")
     path = project.root.parent / "fix.json"
     path.write_text(json.dumps({"findings": [finding], "base_commit": c2, "fix_commit": c3, "description": "Round the discount down again"}))
     code, fix = project.cli("fix", "add", "--json", str(path))
     assert code == 0 and fix["id"] == "FIX-001", fix
+    base_code, base_run = run_in(project, at(project, c2))
+    head_code, head_run = run_in(project, at(project, c3))
+    assert (base_code, base_run["status"], head_code, head_run["status"]) == (1, "failed", 0, "passed")
     pair = "%s:%s" % (base_run["execution"], head_run["execution"])
     code, out = project.cli("revalidate", fix["id"], "--f2p", pair, "--p2p", pair, "--defect-test", ORDER_TOTAL)
     assert code == 0 and out["outcome"] == "passed", out
@@ -161,3 +165,31 @@ def test_f7_c5_hook_rewrites_outcomes(qa_on_generated):
     assert "pytest_runtest_makereport" in (project.root / "conftest.py").read_text(encoding="utf-8")
     code, plain = run_in(project, project.root, "--noconftest")
     assert (code, plain["status"]) == (1, "failed") and project.results(plain["execution"])[LOYALTY] == "failed"
+
+
+def test_f7_history_does_not_depend_on_the_machines_git_configuration(tmp_path):
+    clean = generate(tmp_path / "clean")
+    assert clean.returncode == 0, clean.stderr
+    home = tmp_path / "home"
+    home.mkdir()
+    hostile = home / ".gitconfig"
+    hostile.write_text("[user]\n\tname = Someone Else\n\temail = else@example.invalid\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n"
+                       "[core]\n\tautocrlf = true\n\thooksPath = %s\n[init]\n\tdefaultBranch = trunk\n" % (home / "hooks"))
+    env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home), GIT_CONFIG_GLOBAL=str(hostile), GIT_AUTHOR_NAME="Other",
+               GIT_COMMITTER_DATE="2001-01-01T00:00:00 +0000")
+    again = generate(tmp_path / "again", env=env)
+    assert again.returncode == 0, again.stderr
+    assert commits(tmp_path / "again") == commits(tmp_path / "clean")
+
+
+def test_f7_c4_passes_its_test_while_neighbouring_inputs_stay_wrong(qa_on_generated):
+    project = qa_on_generated("regression-repo", checkout=4)
+    code, ran = run_in(project, project.root)
+    assert (code, ran["status"]) == (0, "passed")
+    assert project.results(ran["execution"])[TOP_TIER] == "passed"      # the test the "fix" was written for
+    code = "from orders.pricing import tier_percent; print([tier_percent(n) for n in (20, 21, 22, 23, 25, 26)])"
+    done = subprocess.run([sys.executable, "-B", "-c", code], cwd=str(project.root), capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [5, 5, 10, 5, 5, 10]             # the docstring gives 10 from 20 units: only 22 was made right
+    source = (project.root / "orders" / "pricing.py").read_text(encoding="utf-8")
+    assert "quantity == 22" in source and "quantity > 25" in source

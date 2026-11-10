@@ -8,7 +8,7 @@ def line_total(unit_cents, quantity):
 
 def tier_percent(quantity):
     """The bulk discount for ``quantity`` units: 5 percent from 10 units, 10 percent from 20 units."""
-    if quantity > 20:
+    if quantity > 25:
         return 10
     if quantity >= 10:
         return 5

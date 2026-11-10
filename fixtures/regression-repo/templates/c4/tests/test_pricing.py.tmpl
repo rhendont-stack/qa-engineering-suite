@@ -24,5 +24,5 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(tier_percent(10), 5)
         self.assertEqual(tier_percent(30), 10)
 
-    def test_twenty_units_get_the_top_tier(self):
-        self.assertEqual(tier_percent(20), 10)
+    def test_twenty_two_units_get_the_top_tier(self):
+        self.assertEqual(tier_percent(22), 10)

@@ -147,7 +147,7 @@
         "requirements review",
         "qa-requirements-analysis"
       ],
-      "expected_record": "nothing says what happens when a coupon is worth more than the order, or whether a second one is refused"
+      "expected_record": "nothing says what happens when a coupon is worth more than the order"
     }
   ],
   "suites": {

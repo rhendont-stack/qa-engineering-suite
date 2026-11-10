@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
-TAX_RATE = 0.0825
+TAX_RATE = Decimal("0.0825")
 BULK_THRESHOLD = 100.00
 BULK_PERCENT = 10
 PROMO_ENDS = datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
@@ -29,7 +30,8 @@ def discounted(subtotal, percent, coupon):
 
 def sales_tax(amount):
     """The tax on ``amount``, to the cent."""
-    return round(amount * TAX_RATE, 2)
+    exact = Decimal(str(amount)) * TAX_RATE
+    return float(exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def to_cents(amount):

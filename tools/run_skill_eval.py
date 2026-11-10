@@ -3,11 +3,12 @@
 Usage: python -I tools/run_skill_eval.py --case PATH --config with-skill|baseline --model MODEL --budget-usd N --out DIR
        [--timeout SECONDS] [--ledger PATH] [--keep-workdir]
 
-The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?, "exclude"?, "keep_history"?, "checkout"?}``. ``fixture`` and ``skill`` are paths,
-relative ones resolved against the repository root. The harness copies the fixture into a fresh temporary directory
-without answer keys or any SKILL.md, gives the copy a newly generated one-commit git history, places only the skill under
-test in ``.claude/skills/`` (``with-skill`` only), runs the agent there, and appends one record per run to
-``DIR/costs.jsonl``. It never reads, prints or records the environment it passes to the agent.
+The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?, "exclude"?, "keep_history"?,
+"checkout"?}``. ``fixture`` and ``skill`` are paths, relative ones resolved against the repository root. The harness copies the
+fixture into a fresh temporary directory without answer keys or any SKILL.md, gives the copy a one-commit git history of its own
+(or, with ``keep_history``, the generator's), places only the skill under test in ``.claude/skills/`` (``with-skill`` only),
+runs the agent there, and appends one record per run to ``DIR/costs.jsonl``. It never reads, prints or records the environment it
+passes to the agent.
 
 Confinement, stated plainly: tool patterns do not fully confine an agent that can run shell commands. The harness gives the
 child a minimal environment (``PATH`` and a per-run temporary ``HOME`` and ``CLAUDE_CONFIG_DIR``; no key),
@@ -35,7 +36,7 @@ is refused with exit 2. ``checkout`` (an integer of 0 or more, only with ``keep_
 left at; later commits are not in the copy at all, because the generator stops there. ``exclude`` (optional case field) is a list
 of repository-relative paths, files or directories of the fixture, removed from the copy before any history is made, so an excluded
 file shows in no commit and not in ``git status``; a path the copy does not hold, an absolute path or one with ``..`` is refused
-with exit 2. ``exclude`` cannot be combined with ``keep_history``.
+with exit 2 (so is any path with a ``..`` component). ``exclude`` cannot be combined with ``keep_history``.
 
 ``skills`` and ``agents`` (optional case fields, ``with-skill`` only) install a whole set together, for a skill that works
 with others and delegates to subagents. ``skills`` is a list of skill directories (each holding a SKILL.md) copied to the
@@ -211,8 +212,8 @@ def check_exclude(entries: Any) -> List[str]:
     found: List[str] = []
     for entry in entries:
         path = os.path.normpath(entry)
-        if os.path.isabs(entry) or path in (".", "..") or path.startswith(".." + os.sep):
-            raise usage_error("exclude entry must stay inside the fixture: %s" % entry)
+        if os.path.isabs(entry) or ".." in entry.replace("\\", "/").split("/") or path == ".":
+            raise usage_error("exclude entry must be a plain relative path, with no '..': %s" % entry)
         if path not in found:
             found.append(path)
     return found
@@ -335,12 +336,26 @@ def generate_fixture(fixture: Path, workdir: Path, case: Dict[str, Any]) -> None
         raise usage_error("the generator refused: %s" % exc.code)
     except Exception as exc:
         raise usage_error("the generator failed: %s" % type(exc).__name__)
+    check_generated_tree(workdir)
     if keep:
-        check_kept_history(workdir)
+        check_kept_history(workdir, case.get("checkout"))
 
 
-def check_kept_history(workdir: Path) -> None:
-    """A kept history is one branch with HEAD on it, no remote and no tag (a tag or any other ref is a ref); otherwise exit 2."""
+def check_generated_tree(workdir: Path) -> None:
+    """The generator's output follows the copy rules that matter: no symlink, no answer-key name, no ``.claude`` or ``benchmark``."""
+    for base, dirs, files in os.walk(str(workdir), followlinks=False):
+        if base == str(workdir) and ".git" in dirs:
+            dirs.remove(".git")
+        for name in dirs + files:
+            if os.path.islink(os.path.join(base, name)):
+                raise usage_error("the generator wrote a symlink, which is refused: %s" % name)
+            if name.startswith(SKIP_PREFIXES) or name in (".claude", "benchmark"):
+                raise usage_error("the generator wrote a name no copy may hold: %s" % name)
+
+
+def check_kept_history(workdir: Path, checkout: Optional[int] = None) -> None:
+    """A kept history is one branch with HEAD on it, no remote and no tag (a tag or any other ref is a ref), a clean work tree and,
+    with ``checkout``, exactly ``checkout + 1`` commits; otherwise exit 2."""
     env = _git_env()
 
     def git(*args: str) -> "subprocess.CompletedProcess[str]":
@@ -351,6 +366,10 @@ def check_kept_history(workdir: Path) -> None:
     if refs.returncode != 0 or head.returncode != 0 or refs.stdout.split() != [head.stdout.strip()] \
             or not head.stdout.startswith("refs/heads/") or git("remote").stdout.strip():
         raise usage_error("the generated history must hold one branch with HEAD on it, no remote and no tag")
+    count = git("rev-list", "--count", "--all")
+    if git("status", "--porcelain").stdout.strip() or count.returncode != 0 \
+            or (checkout is not None and count.stdout.strip() != str(checkout + 1)):
+        raise usage_error("the generated history must leave a clean work tree and, with checkout, exactly checkout + 1 commits")
 
 
 def remove_excluded(workdir: Path, relative: str) -> None:

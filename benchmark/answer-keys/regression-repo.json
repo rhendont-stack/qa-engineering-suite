@@ -1,7 +1,7 @@
 {
   "fixture": "regression-repo",
   "version": 1,
-  "note": "Generated at run time by fixtures/regression-repo/generate.py; the history is never kept in the repository. Commit indexes are positions from the first commit. Test ids are classname::name as JUnit records them. The renamed field at C2 has an entry but no tool leg yet.",
+  "note": "Generated at run time by fixtures/regression-repo/generate.py; the history is never kept in the repository. Commit indexes are positions from the first commit. Test ids are classname::name as JUnit records them. The renamed field at C2 has an entry but no tool leg yet. Every real defect of a commit has an entry; F7-07 is present from C1 on, F7-01 from C1 to C2.",
   "commits": [
     {
       "index": 0,
@@ -11,7 +11,7 @@
     {
       "index": 1,
       "kind": "feature_breaks_existing_function",
-      "summary": "apply_discount changes its rounding and its test is weakened from assertEqual to assertTrue; one other test starts to fail"
+      "summary": "apply_discount changes its rounding and its test is weakened from assertEqual to assertTrue, so one other test starts to fail; the new tier_percent returns 5 instead of 10 for 20 to 25 units, which no test reaches"
     },
     {
       "index": 2,
@@ -21,12 +21,12 @@
     {
       "index": 3,
       "kind": "fix_with_fail_to_pass_test",
-      "summary": "apply_discount is restored and its weakened test is strict again; the failing order total test flips from failed to passed"
+      "summary": "apply_discount is restored and its weakened test is strict again; the failing order total test flips from failed to passed; the tier boundary is left as it was"
     },
     {
       "index": 4,
       "kind": "fix_special_casing_the_input",
-      "summary": "tier_percent returns 10 for exactly 20 units with a branch of its own, and the new test uses 20"
+      "summary": "tier_percent returns 10 for exactly 22 units with a branch of its own, and the new test uses 22; 20, 21, 23, 24 and 25 units still get 5 percent"
     },
     {
       "index": 5,
@@ -109,15 +109,16 @@
       "location": {
         "path": "orders/pricing.py",
         "function": "tier_percent",
-        "match": "if quantity == 20:"
+        "match": "if quantity == 22:"
       },
       "category": "test-quality",
       "severity_anchor": "FUNC-M1",
       "detectable_by": [
         "diff review",
-        "test_weakening_scan"
+        "test_weakening_scan",
+        "boundary-value analysis"
       ],
-      "expected_record": "the product code branches on the very value the new test uses; the boundary comparison above it is unchanged"
+      "expected_record": "the product code branches on the one quantity the new test uses (22), while the comparison below it, quantity > 25, is unchanged: 20, 21, 23, 24 and 25 units still get 5 percent instead of 10"
     },
     {
       "id": "F7-06",
@@ -136,6 +137,24 @@
         "pytest --noconftest"
       ],
       "expected_record": "the JUnit report says every test passed while tests.test_service.ServiceTests::test_summary_lists_loyalty_points asserts False; with --noconftest it fails"
+    },
+    {
+      "id": "F7-07",
+      "kind": "boundary_comparison",
+      "commit": 1,
+      "location": {
+        "path": "orders/pricing.py",
+        "function": "tier_percent",
+        "match": "if quantity > 25:"
+      },
+      "category": "functional",
+      "severity_anchor": "FUNC-M1",
+      "detectable_by": [
+        "boundary-value analysis",
+        "diff review",
+        "pytest"
+      ],
+      "expected_record": "the docstring gives 10 percent from 20 units but the code needs more than 25; present from C1 to C3, and at C4 and C5 for every quantity from 20 to 25 except 22. No test of C1 to C3 reaches it."
     }
   ]
 }

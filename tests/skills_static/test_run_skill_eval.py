@@ -1137,6 +1137,8 @@ def test_the_helper_script_names_cat_by_absolute_path_and_refuses_without_one(tm
 # -- generated fixtures, kept history, checkout and exclude ---------------------------------------------------------------
 
 # A generator that makes a three-commit repository. ``generate`` writes the final tree only; ``generate_history`` makes the commits.
+# A ``mode.txt`` beside it (the folder is never copied) makes it misbehave: ignore the checkout, leave a stray file, write a symlink,
+# an answer-key-named file or a ``.claude`` directory.
 GENERATOR = textwrap.dedent('''\
     import os, subprocess
 
@@ -1144,6 +1146,11 @@ GENERATOR = textwrap.dedent('''\
               {"app.py": "def f():\\n    return 2\\n"},
               {"app.py": "def f():\\n    return 3\\n", "notes/extra.md": "three\\n"}]
     MESSAGES = ["add f", "change f", "change f again"]
+    HERE = os.path.dirname(os.path.abspath(__file__))
+
+    def _mode():
+        path = os.path.join(HERE, "mode.txt")
+        return open(path).read().strip() if os.path.exists(path) else ""
 
     def _tree(directory, upto):
         for stage in STAGES[:upto + 1]:
@@ -1152,29 +1159,47 @@ GENERATOR = textwrap.dedent('''\
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 open(path, "w").write(text)
 
+    def _extras(directory):
+        mode = _mode()
+        if mode == "symlink":
+            os.symlink("/etc/hosts", os.path.join(str(directory), "link.txt"))
+        if mode == "answerkey":
+            open(os.path.join(str(directory), "answer-key.json"), "w").write("{}")
+        if mode == "claude":
+            os.makedirs(os.path.join(str(directory), ".claude"))
+            open(os.path.join(str(directory), ".claude", "x.md"), "w").write("x")
+
     def generate(directory):
         _tree(directory, len(STAGES) - 1)
+        _extras(directory)
 
     def generate_history(directory, checkout=None):
-        last = len(STAGES) - 1 if checkout is None else checkout
+        last = len(STAGES) - 1 if checkout is None or _mode() == "ignore-checkout" else checkout
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        env.update(GIT_AUTHOR_NAME="g", GIT_AUTHOR_EMAIL="g@example.invalid", GIT_COMMITTER_NAME="g", GIT_COMMITTER_EMAIL="g@example.invalid")
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="g", GIT_AUTHOR_EMAIL="g@example.invalid",
+                   GIT_COMMITTER_NAME="g", GIT_COMMITTER_EMAIL="g@example.invalid")
         def git(*args):
-            subprocess.run(["git", "-C", str(directory)] + list(args), check=True, env=env, capture_output=True)
+            subprocess.run(["git", "-C", str(directory), "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + list(args),
+                           check=True, env=env, capture_output=True)
         git("init", "-q")
         git("symbolic-ref", "HEAD", "refs/heads/work")
         for number in range(last + 1):
             _tree(directory, number)
+            _extras(directory)
             git("add", "-A")
             git("commit", "-q", "-m", MESSAGES[number])
+        if _mode() == "stray":
+            open(os.path.join(str(directory), "stray.txt"), "w").write("left over")
 ''')
 
 
-def _generated_world(w, **fields):
+def _generated_world(w, mode=None, **fields):
     number = len(list(w.root.glob("generated-*.json")))
     folder = w.root / ("generated-%d" % number)
     folder.mkdir()
     (folder / "generate.py").write_text(GENERATOR)
+    if mode:
+        (folder / "mode.txt").write_text(mode)
     case = w.root / ("generated-%d.json" % number)
     case.write_text(json.dumps(dict({"id": "gen-1", "prompt": "Review this.", "fixture": str(folder),
                                      "skill": json.loads(w.case.read_text())["skill"]}, **fields)))
@@ -1264,10 +1289,25 @@ def test_exclude_applies_to_a_generated_fixture_without_history(world):
 
 
 @pytest.mark.parametrize("value", ["requirements.md", [], [""], [1], ["../x"], ["/etc/hosts"], ["a/../../b"], ["."], ["docs/../.."], ["x\x00y"],
-                                   ["missing.md"], {"a": 1}])
+                                   ["missing.md"], {"a": 1}, ["notes/../app.py"], ["x/./../app.py"], ["docs/.."]])
 def test_a_bad_exclude_is_refused_before_anything_runs(world, value):
     spec = json.loads(world.case.read_text())
     spec["exclude"] = value
     world.case.write_text(json.dumps(spec))
     r = run(world, keep=False)
     assert r.returncode == 2 and "exclude" in r.stderr and calls(world) == [] and not world.ledger.exists() and _left_in_tmp(world) == []
+
+
+@pytest.mark.parametrize("mode,fields", [("ignore-checkout", {"keep_history": True, "checkout": 0}), ("stray", {"keep_history": True}),
+                                         ("stray", {"keep_history": True, "checkout": 2}), ("symlink", {"keep_history": True}),
+                                         ("symlink", {}), ("answerkey", {}), ("answerkey", {"keep_history": True}), ("claude", {})])
+def test_a_generator_that_misbehaves_is_refused(world, mode, fields):
+    case = _generated_world(world, mode, **fields)
+    r = run(world, case=case, config="baseline", keep=False)
+    assert r.returncode == 2 and "generat" in r.stderr and calls(world) == [] and not world.ledger.exists() and _left_in_tmp(world) == []
+
+
+def test_the_documentation_states_the_copy_history_rule_once_with_its_exception():
+    text = HARNESS.read_text(encoding="utf-8")
+    assert "newly generated one-commit git history, places" not in text          # the opening paragraph names keep_history
+    assert max(len(line) for line in text.splitlines()[:12]) <= 140

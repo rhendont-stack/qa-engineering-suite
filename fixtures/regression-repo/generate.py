@@ -10,7 +10,7 @@ the repository this file belongs to: each ``templates/cN`` directory holds the f
     C1  a feature commit that changes an existing function and weakens one of its tests
     C2  a response field renamed in code, tests and ``openapi.yaml``
     C3  a fix, with the test that shows it
-    C4  a second fix, for a tier boundary
+    C4  a second fix, for the top tier
     C5  a test configuration change that keeps the suite green
 
 The history is deterministic: one fixed author and committer, fixed dates, no configuration read from the machine. The result is
@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -39,7 +40,7 @@ COMMITS = (
                                            "Simplify apply_discount while here."),
     ("Rename payable_cents to amount_due_cents in the order summary", "The name matches what the billing team calls it."),
     ("Fix rounding of the discount on odd totals", "A 10 percent discount on 999 cents must leave 900 payable."),
-    ("Fix the top tier for exactly 20 units", ""),
+    ("Fix the top tier for 22 units", ""),
     ("Keep CI green while loyalty points land", ""),
 )
 
@@ -82,9 +83,11 @@ def generate(directory: Path) -> List[str]:
     return sorted(path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file())
 
 
-def _environment(index: Optional[int]) -> Dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME=AUTHOR, GIT_AUTHOR_EMAIL=EMAIL,
+def _environment(index: Optional[int], home: str) -> Dict[str, str]:
+    """Nothing from the machine: no ``GIT_*`` variable, no user or system configuration (an empty ``HOME`` covers a git that
+    does not read ``GIT_CONFIG_GLOBAL``)."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_") and key not in ("HOME", "XDG_CONFIG_HOME")}
+    env.update(HOME=home, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME=AUTHOR, GIT_AUTHOR_EMAIL=EMAIL,
                GIT_COMMITTER_NAME=AUTHOR, GIT_COMMITTER_EMAIL=EMAIL)
     if index is not None:
         stamp = "2026-03-%02dT10:00:00 +0000" % (2 + index)
@@ -92,9 +95,10 @@ def _environment(index: Optional[int]) -> Dict[str, str]:
     return env
 
 
-def _git(directory: Path, index: Optional[int], *args: str) -> None:
-    subprocess.run(["git", "-C", str(directory), "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"] + list(args), check=True,
-                   env=_environment(index), capture_output=True, timeout=120)
+def _git(directory: Path, index: Optional[int], home: str, *args: str) -> None:
+    subprocess.run(["git", "-C", str(directory), "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "core.autocrlf=false",
+                    "-c", "core.hooksPath=" + os.devnull] + list(args), check=True, env=_environment(index, home), capture_output=True,
+                   timeout=120)
 
 
 def generate_history(directory: Path, checkout: Optional[int] = None) -> List[str]:
@@ -106,13 +110,14 @@ def generate_history(directory: Path, checkout: Optional[int] = None) -> List[st
         raise SystemExit("--checkout is a commit index from 0 to %d" % (len(COMMITS) - 1))
     _check_directory(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    _git(directory, None, "init", "-q")
-    _git(directory, None, "symbolic-ref", "HEAD", "refs/heads/" + BRANCH)
-    for index in range(last + 1):
-        write_stage(directory, index)
-        _git(directory, index, "add", "-A")
-        subject, body = COMMITS[index]
-        _git(directory, index, "commit", "-q", "-m", subject, *(["-m", body] if body else []))
+    with tempfile.TemporaryDirectory(prefix="regression-repo-home-") as home:
+        _git(directory, None, home, "init", "-q")
+        _git(directory, None, home, "symbolic-ref", "HEAD", "refs/heads/" + BRANCH)
+        for index in range(last + 1):
+            write_stage(directory, index)
+            _git(directory, index, home, "add", "-A")
+            subject, body = COMMITS[index]
+            _git(directory, index, home, "commit", "-q", "-m", subject, *(["-m", body] if body else []))
     return [subject for subject, _body in COMMITS[: last + 1]]
 
 

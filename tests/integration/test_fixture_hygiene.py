@@ -57,8 +57,29 @@ def readable(path):
     return None if path.suffix == ".jar" else path.read_bytes().decode("utf-8", errors="replace")
 
 
+def git_text(directory, *args):
+    done = subprocess.run(["git", "-C", str(directory)] + list(args), capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, "git %s failed: %s" % (" ".join(args), done.stderr)
+    return done.stdout
+
+
+def history_texts(directory):
+    """``(label, text)`` for every commit of the repository in ``directory``: its author fields and message, its file names and the
+    content of every file in its tree. A copy made with ``checkout: N`` holds the tree of commit N, so every tree counts."""
+    found = []
+    for number, commit in enumerate(git_text(directory, "rev-list", "--reverse", "--all").split()):
+        label = "commit %d" % number
+        found.append((label, git_text(directory, "log", "-1", "--format=%an %ae %cn %ce%n%B", commit)))
+        for name in git_text(directory, "ls-tree", "-r", "--name-only", commit).splitlines():
+            found.append((label + " " + name, name))
+            if not name.endswith(".jar"):
+                found.append((label + " " + name, git_text(directory, "show", "%s:%s" % (commit, name))))
+    found.append(("refs", git_text(directory, "for-each-ref")))
+    return found
+
+
 def generated(name, tmp_path):
-    """What a generator makes, as ``(relative path, text)`` pairs, plus every commit message and diff it wrote."""
+    """What a generator makes, as ``(label, text)`` pairs: the files it writes and, when it makes a history, every commit."""
     directory = tmp_path / name
     done = subprocess.run([sys.executable, str(FIXTURES / name / "generate.py"), str(directory)], capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr
@@ -68,11 +89,7 @@ def generated(name, tmp_path):
         if ".git" not in relative.parts:
             found.append((relative.as_posix(), readable(path)))
     if (directory / ".git").exists():
-        log = subprocess.run(["git", "-C", str(directory), "log", "--all", "-p", "--name-only", "--format=%an %ae %cn %ce%n%B"],
-                             capture_output=True, text=True, timeout=60)
-        found.append(("the history of " + name, log.stdout))
-        found.append(("the branches of " + name, subprocess.run(["git", "-C", str(directory), "for-each-ref"], capture_output=True,
-                                                                text=True, timeout=60).stdout))
+        found += history_texts(directory)
     return found
 
 
@@ -104,10 +121,28 @@ def test_the_scan_sees_a_seed_word_and_leaves_ordinary_ones_alone():
     assert len(SEED_WORDS) == 13
 
 
+def test_the_history_scan_reads_files_that_later_commits_replace(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("tool missing: git")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+    for number, text in enumerate(("a planted word\n", "a clean line\n")):
+        (repo / "notes.txt").write_text(text)
+        if number == 0:
+            git_text(repo, "init", "-q")
+        git_text(repo, "add", "-A")
+        git_text(repo, *env, "commit", "-q", "-m", "change %d" % number)
+    everything = "\n".join(text for _label, text in history_texts(repo))
+    assert hits("x", everything) == ["x: 'planted'"]            # found in a version the tip tree no longer holds
+    with pytest.raises(AssertionError, match="failed"):
+        history_texts(tmp_path)                                    # not a repository: a failing git fails the scan, never an empty one
+
+
 def test_fixtures_hold_no_answer_key_or_skill_md(repo_root):
     for path in files_under(FIXTURES):
         relative = path.relative_to(FIXTURES)
-        assert path.name.lower() != "skill.md", relative
+        assert not path.name.lower().startswith("skill.md"), relative       # nor a template that becomes one
         assert "answer" not in path.name.lower() and "expected" not in path.name.lower(), relative
         assert "answer-keys" not in path.read_bytes().decode("utf-8", errors="replace"), relative
     for kind in KINDS:
