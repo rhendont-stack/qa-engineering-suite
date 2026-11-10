@@ -16,18 +16,11 @@ from qa.errors import QaError
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 FAKE_LFS = """#!/bin/sh
-export GIT_TERMINAL_PROMPT=0
 # Stands for git-lfs: runs every lfs.extension.<name>.clean that git's configuration gives, then passes the content on.
 for key in $(git config --name-only --get-regexp '^lfs\\.extension\\..*\\.clean$' | sort -u); do
   cmd=$(git config --get "$key")
   if [ -n "$cmd" ]; then sh -c "$cmd" </dev/null; fi
 done
-# the download step: what git-lfs (or a lazy fetch) would start to reach a server
-for key in core.sshcommand core.askpass core.gitproxy remote.origin.uploadpack remote.origin.receivepack remote.origin.vcs; do
-  cmd=$(git config --get "$key")
-  if [ -n "$cmd" ]; then sh -c "$cmd" </dev/null; fi
-done
-printf 'protocol=https\nhost=example.invalid\n\n' | git credential fill >/dev/null 2>&1 || true
 agent=$(git config --get lfs.standalonetransferagent)
 if [ -n "$agent" ]; then
   program=$(git config --get "lfs.customtransfer.$agent.path")
@@ -131,34 +124,114 @@ def test_repository_transfer_agent_runs_nothing(lfs_repo, actor, tmp_path):
     assert not marker.exists()
 
 
-TRANSPORT_KEYS = {  # a repository-scope key naming a transport or authentication program -> how its value runs a marker
-    "core.sshcommand": touching, "core.askpass": touching, "core.gitproxy": touching, "remote.origin.uploadpack": touching,
-    "remote.origin.receivepack": touching, "remote.origin.vcs": touching,
-    "credential.helper": lambda marker: "!touch %s" % shlex.quote(str(marker)),
-    "credential.https://example.invalid.helper": lambda marker: "!touch %s" % shlex.quote(str(marker)),
+def _marker_command(marker):
+    return "sh -c %s" % shlex.quote("touch %s; exit 1" % shlex.quote(str(marker)))
+
+
+def _helper_command(marker):
+    return "!touch %s" % shlex.quote(str(marker))
+
+
+def _askpass_script(marker):
+    script = marker.parent / (marker.name + ".sh")
+    script.write_text("#!/bin/sh\ntouch %s\necho x\n" % shlex.quote(str(marker)))
+    script.chmod(0o755)
+    return str(script)
+
+
+CREDENTIAL_INPUT = b"protocol=https\nhost=example.invalid\n\n"
+# Keys git resolves with the last value, so a command-scope blank replaces the repository's. Each runs through real git:
+# name -> (key, value that runs the marker, git arguments that make git start the program, stdin).
+OVERRIDABLE = {
+    "ssh command": ("core.sshcommand", _marker_command, ["ls-remote", "ssh://127.0.0.1:1/x"], None),
+    "remote helper": ("remote.origin.vcs", lambda marker: "qaprobe", ["ls-remote", "origin"], None),
+    "askpass": ("core.askpass", _askpass_script, ["credential", "fill"], CREDENTIAL_INPUT),
+    "credential helper": ("credential.helper", _helper_command, ["credential", "fill"], CREDENTIAL_INPUT),
+    "url credential helper": ("credential.https://example.invalid.helper", _helper_command, ["credential", "fill"], CREDENTIAL_INPUT),
 }
 
 
-def test_repository_transport_programs_run_nothing(lfs_repo, actor, tmp_path):
-    root = lfs_repo.root
-    markers = {key: tmp_path / ("ran-" + str(n)) for n, key in enumerate(TRANSPORT_KEYS)}
-    for key, how in TRANSPORT_KEYS.items():
-        set_in(root / ".git" / "config", key, how(markers[key]))
-    git(root, "worktree", "add", "-q", "--detach", str(tmp_path / "control"), head(root))
-    assert all(marker.exists() for marker in markers.values()), [k for k, m in markers.items() if not m.exists()]  # the control
-    for marker in markers.values():
-        marker.unlink()
-    gitinfo.git_info(root)
-    worktree.add(lfs_repo.ws, actor, head(root))
-    assert not any(marker.exists() for marker in markers.values()), [k for k, m in markers.items() if m.exists()]
+@pytest.fixture
+def transport(repo, tmp_path, user_level, monkeypatch):
+    """The workspace repository with a remote ``origin`` and a ``git-remote-qaprobe`` that touches a marker when git runs it."""
+    root = repo.root
+    git(root, "remote", "add", "origin", "file://" + str(tmp_path / "nowhere"))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    helper = bindir / "git-remote-qaprobe"
+    helper.write_text("#!/bin/sh\ntouch %s\nexit 1\n" % shlex.quote(str(tmp_path / "ran-remote helper")))
+    helper.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+    return SimpleNamespace(ws=repo, root=root)
 
 
-def test_user_level_transport_programs_still_apply(lfs_repo, user_level, tmp_path):
-    markers = {key: tmp_path / ("user-" + str(n)) for n, key in enumerate(TRANSPORT_KEYS)}
-    for key, how in TRANSPORT_KEYS.items():
-        set_in(user_level, key, how(markers[key]))
-    gitinfo.git_info(lfs_repo.root)
-    assert all(marker.exists() for marker in markers.values()), [k for k, m in markers.items() if not m.exists()]
+def _plain(root, args, stdin):
+    return subprocess.run(["git", "-C", str(root), *args], input=stdin, capture_output=True, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+
+
+@pytest.mark.parametrize("name", sorted(OVERRIDABLE))
+def test_repository_transport_program_runs_nothing(transport, tmp_path, name):
+    key, value, args, stdin = OVERRIDABLE[name]
+    marker = tmp_path / ("ran-" + name)
+    set_in(transport.root / ".git" / "config", key, value(marker))
+    _plain(transport.root, args, stdin)
+    assert marker.exists()  # the control: unprotected, git starts the program the repository names
+    marker.unlink()
+    gitinfo.session(transport.root).run(args, input=stdin)
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("name", sorted(OVERRIDABLE))
+def test_user_level_transport_program_still_applies(transport, user_level, tmp_path, name):
+    key, value, args, stdin = OVERRIDABLE[name]
+    marker = tmp_path / ("ran-" + name)
+    set_in(user_level, key, value(marker))
+    gitinfo.session(transport.root).run(args, input=stdin)
+    assert marker.exists()
+
+
+def test_a_repository_credential_helper_does_not_drop_the_users(transport, user_level, tmp_path):
+    kept = tmp_path / "ran-generic-user-helper"
+    set_in(user_level, "credential.helper", _helper_command(kept))
+    set_in(transport.root / ".git" / "config", "credential.https://example.invalid.helper", _helper_command(tmp_path / "ran-repo"))
+    gitinfo.session(transport.root).run(["credential", "fill"], input=CREDENTIAL_INPUT)
+    assert kept.exists() and not (tmp_path / "ran-repo").exists()
+
+
+# Keys git resolves with the FIRST value it reads, and the repository's scope comes before the command line's, so no
+# command-scope blank can replace a repository's value. The kernel refuses to run git while the repository sets one.
+FIRST_VALUE = {
+    "upload-pack": ("remote.origin.uploadpack", ["ls-remote", "origin"]),
+    "receive-pack": ("remote.origin.receivepack", ["push", "origin", "HEAD:refs/heads/z"]),
+    "proxy": ("core.gitproxy", ["ls-remote", "git://127.0.0.1:1/x"]),
+}
+
+
+@pytest.mark.parametrize("name", sorted(FIRST_VALUE))
+def test_a_repository_key_git_cannot_override_makes_the_kernel_refuse(transport, actor, tmp_path, name):
+    key, args = FIRST_VALUE[name]
+    marker = tmp_path / ("ran-" + name)
+    script = tmp_path / (name + ".sh")
+    script.write_text("#!/bin/sh\ntouch %s\nexit 1\n" % shlex.quote(str(marker)))
+    script.chmod(0o755)
+    set_in(transport.root / ".git" / "config", key, "sh " + str(script) if name != "proxy" else str(script))
+    _plain(transport.root, ["-c", key + "="] + args, None)
+    assert marker.exists()  # the control: even with a command-scope blank, git still starts the repository's program
+    marker.unlink()
+    with pytest.raises(gitinfo.Unavailable):
+        gitinfo.session(transport.root)
+    assert gitinfo.git_info(transport.root) == (None, "git_unavailable")
+    with pytest.raises(QaError) as caught:
+        worktree.add(transport.ws, actor, head(transport.root))
+    assert caught.value.code == "git_config_refused" and key in caught.value.details["keys"]
+    assert not marker.exists() and not any(e["type"].startswith("worktree.") for e in ledger.iter_all_events(transport.ws))
+    assert os.listdir(str(transport.ws.path("work"))) == []
+
+
+def test_the_same_keys_set_by_the_user_do_not_refuse(transport, user_level, tmp_path):
+    set_in(user_level, "remote.origin.uploadpack", "git-upload-pack")
+    set_in(user_level, "core.gitproxy", "none")
+    assert gitinfo.session(transport.root) is not None
 
 
 def test_user_level_transfer_agent_still_applies(lfs_repo, user_level, tmp_path):
@@ -342,9 +415,9 @@ def test_a_container_run_inside_a_worktree_is_refused(repo, actor, fake_engine):
     assert len(state.load(repo)["executions"]) == before and fake_engine.calls == []
 
 
-def make_partial_clone(root, origin, tmp_path, tag):
-    """``root`` (an existing repository) as a partial clone of ``origin``: its blobs are missing, so a checkout must fetch them,
-    and its own configuration names a program for the fetch (``remote.origin.uploadpack``). Returns (marker, commit)."""
+def make_partial_clone(root, origin, tmp_path, tag, program=True):
+    """``root`` (an existing repository) as a partial clone of ``origin``: its blobs are missing, so a checkout must fetch them.
+    With ``program`` its own configuration also names a program for the fetch. Returns (marker, commit)."""
     marker = tmp_path / ("fetch-program-ran-" + tag)
     script = tmp_path / ("upload-pack-%s.sh" % tag)
     script.write_text("#!/bin/sh\ntouch %s\nexec git upload-pack \"$@\"\n" % shlex.quote(str(marker)))
@@ -352,9 +425,11 @@ def make_partial_clone(root, origin, tmp_path, tag):
     git(root, "config", "remote.origin.promisor", "true")
     git(root, "config", "remote.origin.partialclonefilter", "blob:none")
     git(root, "config", "extensions.partialClone", "origin")
-    git(root, "config", "remote.origin.uploadpack", "sh " + str(script))
+    if program:
+        git(root, "config", "remote.origin.uploadpack", "sh " + str(script))
     git(root, "fetch", "-q", "--filter=blob:none", "origin", "main")
-    marker.unlink()
+    if marker.exists():
+        marker.unlink()
     return marker, git(root, "rev-parse", "FETCH_HEAD").stdout.strip()
 
 
@@ -371,7 +446,20 @@ def origin(tmp_path):
     return path
 
 
-def test_worktree_add_starts_no_repository_fetch_program(repo, actor, origin, tmp_path):
+@pytest.fixture
+def old_git(monkeypatch):
+    """A git that cannot switch lazy fetch off: the kernel's environment variable does nothing and the probe says so."""
+    def environment():
+        env = dict(os.environ)
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return env
+
+    monkeypatch.setattr(gitinfo, "_env", environment)
+    monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: False)
+
+
+def test_partial_clone_with_a_repository_fetch_program_is_refused(repo, actor, origin, tmp_path):
     control = tmp_path / "control-repo"  # its own partial clone: the control's fetch must not fill the workspace's object store
     control.mkdir()
     git(control, "init", "-q", "-b", "main")
@@ -379,11 +467,34 @@ def test_worktree_add_starts_no_repository_fetch_program(repo, actor, origin, tm
     git(control, "worktree", "add", "-q", "--detach", str(tmp_path / "control-tree"), control_commit)
     assert control_marker.exists()  # the control: unprotected, the checkout fetches through the repository's own program
     marker, commit = make_partial_clone(repo.root, origin, tmp_path, "ws")
-    try:
+    with pytest.raises(QaError) as caught:
         worktree.add(repo, actor, commit)
-    except QaError as refused:
-        assert refused.code == "worktree_failed"  # lazy fetch is off where git supports that: the missing blob cannot be had
-    assert not marker.exists()
+    assert caught.value.code == "git_config_refused" and "remote.origin.uploadpack" in caught.value.details["keys"]
+    assert not marker.exists() and gitinfo.git_info(repo.root) == (None, "git_unavailable")
+
+
+def test_lazy_fetch_is_off_for_a_worktree_checkout_in_a_partial_clone(repo, actor, origin, tmp_path):
+    if not gitinfo.lazy_fetch_blocked():
+        pytest.skip("this git cannot switch lazy fetch off; test_old_git_is_refused_in_a_partial_clone covers it")
+    _marker, commit = make_partial_clone(repo.root, origin, tmp_path, "ws", program=False)
+    with pytest.raises(QaError) as caught:
+        worktree.add(repo, actor, commit)
+    assert caught.value.code == "worktree_failed"  # the missing blob was not fetched; without the switch the checkout succeeds
+    assert gitinfo.git_info(repo.root)[1] != "git_unavailable"
+
+
+def test_old_git_is_refused_in_a_partial_clone(repo, actor, origin, tmp_path, old_git):
+    _marker, commit = make_partial_clone(repo.root, origin, tmp_path, "ws", program=False)
+    with pytest.raises(QaError) as caught:
+        worktree.add(repo, actor, commit)
+    assert caught.value.code == "git_config_refused" and "partial" in caught.value.message
+    assert gitinfo.git_info(repo.root) == (None, "git_unavailable")
+    assert os.listdir(str(repo.path("work"))) == []
+
+
+def test_old_git_still_works_outside_a_partial_clone(repo, actor, old_git):
+    assert gitinfo.git_info(repo.root)[1] is None
+    assert worktree.add(repo, actor, head(repo.root))["commit"] == head(repo.root)
 
 
 def test_git_calls_never_prompt_and_lazy_fetch_support_is_detected():

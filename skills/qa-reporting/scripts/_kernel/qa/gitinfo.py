@@ -40,6 +40,9 @@ _LFS_SELECTORS = ("standalonetransferagent",)  # lfs.<key>: picks a transfer age
 # Keys that name a transport or authentication program, which a fetch (a lazy one included) would start.
 _CORE_PROGRAMS = ("sshcommand", "askpass", "gitproxy")  # core.<key>
 _REMOTE_PROGRAMS = ("uploadpack", "receivepack", "vcs")  # remote.<name>.<key>
+# These three are resolved with the first value git reads, and a repository's scope comes before the command line's, so a
+# command-scope blank cannot replace a repository value: while the repository sets one, git does not run.
+_FIRST_VALUE_REMOTE = ("uploadpack", "receivepack")  # remote.<name>.<key>
 _MULTI_VALUED = "credential"  # credential.helper lists helpers; an empty value resets the list, so it is reset and then refilled
 _TRUSTED_SCOPES = ("system", "global", "command")  # the user's own configuration and environment, not the repository's
 _CHUNK = 1 << 20
@@ -47,6 +50,14 @@ _CHUNK = 1 << 20
 
 class _Unavailable(Exception):
     """git is missing, cannot start, timed out, or its configuration could not be listed or neutralised."""
+
+
+class UnsafeConfiguration(_Unavailable):
+    """The repository's configuration cannot be neutralised, so git does not run. ``keys`` names the settings (never values)."""
+
+    def __init__(self, reason: str, keys: Tuple[str, ...] = ()) -> None:
+        super().__init__("%s: %s" % (reason, ", ".join(keys)) if keys else reason)
+        self.reason, self.keys = reason, keys
 
 
 def _env() -> Dict[str, str]:
@@ -75,10 +86,10 @@ def lazy_fetch_blocked() -> bool:
 
 
 def _spawn(git: str, root: Path, opts: List[str], args: List[str], stdout=subprocess.PIPE,
-           timeout_s: int = _TIMEOUT_S) -> "subprocess.CompletedProcess[bytes]":
+           timeout_s: int = _TIMEOUT_S, stdin: Optional[bytes] = None) -> "subprocess.CompletedProcess[bytes]":
     try:
         return subprocess.run([git, "-C", str(root), *_BASE_OPTS, *opts, *args], stdout=stdout, stderr=subprocess.PIPE,
-                              timeout=timeout_s, env=_env())
+                              timeout=timeout_s, env=_env(), input=stdin)
     except (OSError, subprocess.SubprocessError) as exc:
         raise _Unavailable() from exc
 
@@ -98,10 +109,26 @@ def _names_a_program(key: str) -> bool:
     return len(parts) >= 3 and parts[-1] in _PROGRAM_KEYS.get(parts[0], ())
 
 
+def _first_value_key(key: str) -> bool:
+    parts = key.lower().split(".")
+    return (parts[0] == "core" and parts[1:] == ["gitproxy"]) or (
+        parts[0] == "remote" and len(parts) >= 3 and parts[-1] in _FIRST_VALUE_REMOTE)
+
+
+def _partial_clone_setting(key: str, value: bytes) -> bool:
+    parts = key.lower().split(".")
+    if parts == ["extensions", "partialclone"]:
+        return True
+    return parts[0] == "remote" and parts[-1] == "promisor" and len(parts) >= 3 and value.strip().lower() in (
+        b"true", b"yes", b"on", b"1")
+
+
 def _program_overrides(git: str, root: Path) -> List[str]:
     """``-c`` options that put the user's own value (or nothing) in place of every program-naming key the repository sets.
 
-    Raises ``_Unavailable`` when the configuration cannot be listed or a key cannot be written as ``-c key=value``."""
+    Raises ``_Unavailable`` when the configuration cannot be listed or a key cannot be written as ``-c key=value``, and
+    ``UnsafeConfiguration`` when the repository sets a key a ``-c`` option cannot override, or is a partial clone and this git
+    cannot switch lazy fetch off (a missing object would then be fetched through the repository's own remote)."""
     listed = _spawn(git, root, [], ["config", "--list", "--null", "--show-scope"])
     if listed.returncode != 0:
         raise _Unavailable()
@@ -112,28 +139,41 @@ def _program_overrides(git: str, root: Path) -> List[str]:
         raise _Unavailable()
     trusted: Dict[str, List[str]] = {}
     repository: List[str] = []
+    refused: List[str] = []
+    partial = False
     for scope_raw, entry in zip(items[0::2], items[1::2]):
         key_raw, _, value_raw = entry.partition(b"\n")
         key = key_raw.decode("utf-8", "surrogateescape")
+        partial = partial or _partial_clone_setting(key, value_raw)
         if not _names_a_program(key):
             continue
         if scope_raw.decode("ascii", "replace") in _TRUSTED_SCOPES:
             trusted.setdefault(key, []).append(value_raw.decode("utf-8", "surrogateescape"))
+        elif _first_value_key(key):
+            refused.append(key)
         else:
             repository.append(key)
+    if refused:
+        raise UnsafeConfiguration("the repository sets a transport program that cannot be neutralised", tuple(dict.fromkeys(refused)))
+    if partial and not lazy_fetch_blocked():
+        raise UnsafeConfiguration("a partial clone, and this git cannot switch off the fetch of missing objects")
     opts: List[str] = []
     drivers = set()
+    credentials = False
     for key in dict.fromkeys(repository):
         if "=" in key:
             raise _Unavailable()  # "-c" would split the key there
         if key.split(".")[0].lower() == _MULTI_VALUED:
-            opts += ["-c", key + "="]  # forget the repository's helpers, then give back the user's own, in order
-            for value in trusted.get(key, []):
-                opts += ["-c", "%s=%s" % (key, value)]
+            opts += ["-c", key + "="]  # a reset drops the user's helpers of other keys too, so they all come back below
+            credentials = True
         else:
             opts += ["-c", "%s=%s" % (key, (trusted.get(key) or [""])[-1])]
         if key.split(".")[0].lower() == "filter":
             drivers.add(key.rsplit(".", 1)[0])
+    if credentials:
+        for name in (name for name in trusted if name.split(".")[0].lower() == _MULTI_VALUED):
+            for value in trusted[name]:
+                opts += ["-c", "%s=%s" % (name, value)]
     for driver in sorted(drivers):
         if not any((trusted.get("%s.%s" % (driver, name)) or [""])[-1] for name in _PROGRAM_KEYS["filter"]):
             opts += ["-c", driver + ".required=false"]  # a blanked driver must not turn into a failed read
@@ -147,8 +187,9 @@ class _Git:
         self.git, self.root = git, root
         self.opts = _program_overrides(git, root)
 
-    def run(self, args: List[str], stdout=subprocess.PIPE, timeout_s: int = _TIMEOUT_S) -> "subprocess.CompletedProcess[bytes]":
-        return _spawn(self.git, self.root, self.opts, args, stdout=stdout, timeout_s=timeout_s)
+    def run(self, args: List[str], stdout=subprocess.PIPE, timeout_s: int = _TIMEOUT_S,
+            input: Optional[bytes] = None) -> "subprocess.CompletedProcess[bytes]":
+        return _spawn(self.git, self.root, self.opts, args, stdout=stdout, timeout_s=timeout_s, stdin=input)
 
 
 Unavailable = _Unavailable  # for the callers that change the tree (worktree.py) and so need the same neutralised session

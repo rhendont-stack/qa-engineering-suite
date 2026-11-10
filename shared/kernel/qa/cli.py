@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, gitinfo, guard, ids, ingest, integrity, ledger, plan, redact, report, schema, state, workspace, worktree
+from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, redact, report, schema, state, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -467,8 +467,6 @@ def cmd_plan_update(args: argparse.Namespace, ctx: Context) -> int:
 
 def cmd_worktree_add(args: argparse.Namespace, ctx: Context) -> int:
     done = worktree.add(ctx.ws, ctx.actor, args.commit)
-    if not gitinfo.lazy_fetch_blocked():
-        ctx.limitations.append("lazy_fetch_not_disabled: this git cannot switch off the fetch of missing objects in a partial clone")
     ctx.reply(path=done["path"], commit=done["commit"], event=done["event"])
     return 0
 

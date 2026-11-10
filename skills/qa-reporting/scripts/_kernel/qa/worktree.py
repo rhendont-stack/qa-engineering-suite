@@ -31,6 +31,8 @@ _FULL = re.compile(r"[0-9a-f]{40}")
 def _session(ws: Workspace) -> "gitinfo._Git":
     try:
         session = gitinfo.session(ws.root)
+    except gitinfo.UnsafeConfiguration as refused:
+        raise QaError("git_config_refused", "git does not run here: %s" % refused.reason, keys=list(refused.keys))
     except gitinfo.Unavailable:
         raise QaError("git_unavailable", "git cannot run safely here: its configuration cannot be listed or neutralised")
     if session is None:

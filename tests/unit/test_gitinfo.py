@@ -364,10 +364,29 @@ def test_repository_transport_keys_are_blanked_and_the_users_credential_helpers_
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     git(repo, "config", "core.sshCommand", "x")
-    git(repo, "config", "credential.helper", "!x")
-    git(repo, "config", "remote.origin.uploadpack", "y")
+    git(repo, "config", "credential.https://example.invalid.helper", "!x")
+    git(repo, "config", "remote.origin.vcs", "z")
     subprocess.run(["git", "config", "-f", str(user), "--add", "credential.helper", "one"], check=True)
     subprocess.run(["git", "config", "-f", str(user), "--add", "credential.helper", "two"], check=True)
-    assert gitinfo._program_overrides("git", repo) == ["-c", "core.sshcommand=", "-c", "credential.helper=",
-                                                       "-c", "credential.helper=one", "-c", "credential.helper=two",
-                                                       "-c", "remote.origin.uploadpack="]
+    assert gitinfo._program_overrides("git", repo) == [
+        "-c", "core.sshcommand=", "-c", "credential.https://example.invalid.helper=", "-c", "remote.origin.vcs=",
+        "-c", "credential.helper=one", "-c", "credential.helper=two"]  # after the resets: every helper the user configured
+
+
+@pytest.mark.parametrize("key", ["remote.origin.uploadpack", "remote.a.b.receivepack", "core.gitProxy"])
+def test_a_repository_key_that_cannot_be_overridden_is_refused(repo, key):
+    git(repo, "config", key, "x")
+    with pytest.raises(gitinfo.Unavailable) as caught:
+        gitinfo._program_overrides("git", repo)
+    assert key.lower() in str(caught.value)
+    assert gitinfo.git_info(repo) == (None, "git_unavailable")
+
+
+def test_a_partial_clone_is_refused_only_where_lazy_fetch_cannot_be_switched_off(repo, monkeypatch):
+    git(repo, "config", "extensions.partialClone", "origin")
+    git(repo, "config", "remote.origin.promisor", "true")
+    monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: True)
+    assert gitinfo._program_overrides("git", repo) == []
+    monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: False)
+    with pytest.raises(gitinfo.Unavailable, match="partial"):
+        gitinfo._program_overrides("git", repo)
