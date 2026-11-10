@@ -1004,6 +1004,8 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     redactor = redact.load_redactor(ws)
     clean = redactor.bytes_(original)[0]
     digest = sha256_bytes(clean)
+    if ingest.is_measurement(fmt):  # what the event records derives from the redacted copy, as a run's does: a path is a dict key
+        summary = ingest.parse_bytes(fmt, clean)
     total = {"tests": len(summary.cases), "alerts": len(summary.alerts), "coverage": len(summary.files),
              "mutants": len(summary.mutants)}[summary.kind]
     measured: dict = {}

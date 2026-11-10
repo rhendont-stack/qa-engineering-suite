@@ -59,7 +59,7 @@ def _thresholds(value: object) -> None:
 def _line(mutant: dict) -> int:
     start = _object(_object(mutant.get("location"), "location").get("start"), "location.start")
     line = start.get("line")
-    if isinstance(line, bool) or not isinstance(line, int) or line < 0:
+    if isinstance(line, bool) or not isinstance(line, int) or line < 1:  # lines are 1-based
         raise ReportInvalid("invalid_count", what="line")
     return line
 

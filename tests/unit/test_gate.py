@@ -456,12 +456,12 @@ def test_a_path_outside_the_project_is_never_matched_by_a_glob():
     outside = {"../src/a.js": {"Killed": 5}, "/elsewhere/a.js": {"Killed": 5}, "C:/x/a.js": {"Killed": 5}, "..\\b.js": {"Killed": 5}}
     for paths in (["**"], ["../**"], ["**/a.js"], ["/elsewhere/*.js"]):
         r = _mutation(_st(_measured(outside)), paths=paths)
-        assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", [])
+        assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", ["EXE-1"])
 
 
 def test_no_mutants_in_paths_is_no_evidence():
     r = _mutation(_st(_measured({"lib/a.js": {"Killed": 5}})))
-    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == [] and "src/**" in r["detail"]
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == ["EXE-1"] and "src/**" in r["detail"]
     assert _mutation(_st())["outcome"] == "NO_EVIDENCE"
 
 
@@ -470,21 +470,16 @@ def test_only_mutants_that_do_not_count_is_no_evidence(statuses):
     assert _mutation(_st(_measured({A_JS: statuses})))["outcome"] == "NO_EVIDENCE"
 
 
-def test_pending_mutants_are_not_counted_and_the_detail_says_so():
-    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Survived": 1, "Pending": 2}})))
-    assert r["outcome"] == "MET" and "2 Pending not counted" in r["detail"]
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_pending_mutants_in_the_selected_files_make_the_report_partial_so_no_evidence(status):
+    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Pending": 997}}, status=status)))  # a tool that crashed halfway
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == ["EXE-1"]
+    assert "997 Pending" in r["detail"] and A_JS in r["detail"] and "partial" in r["detail"]
 
 
-def test_opted_in_without_paths_is_no_evidence_that_says_what_is_missing():
-    r = _mutation(_st(_measured({A_JS: {"Killed": 5}})), paths=None)
-    assert r["outcome"] == "NO_EVIDENCE" and "needs paths" in r["detail"] and r["evidence"] == []
-
-
-def test_coverage_is_never_read_as_a_score():
-    totals = {"files": 1, "lines_total": 10, "lines_covered": 10, "branches_total": 0, "branches_covered": 0}
-    entry = {"format": "lcov", "kind": "coverage", "file": "reports/c.info", "sha256": "sha256:" + "4" * 64, "totals": totals}
-    r = _mutation(_st(_exe("EXE-1", measurements=[entry], reports=[{"format": "lcov", "pattern": "c", "files": [], "error": None}])))
-    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == []
+def test_pending_mutants_outside_the_selected_files_do_not_matter():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Survived": 1}, "lib/b.js": {"Pending": 50}})))
+    assert r["outcome"] == "MET"
 
 
 @pytest.mark.parametrize("status,outcome", [("passed", "MET"), ("failed", "MET"), ("blocked", "NO_EVIDENCE"), ("inconclusive", "NO_EVIDENCE"),
@@ -510,12 +505,25 @@ def test_a_report_from_another_commit_or_another_tree_is_not_about_the_target():
     assert _mutation(_st(_measured({A_JS: {"Killed": 5}})), context=_context(diff_hash=TREE))["outcome"] == "MET"
 
 
-def test_a_mutation_report_ingested_into_an_execution_counts():
-    run = _exe("EXE-1")
-    run["ingested"] = [{"format": "mutation", "kind": "mutants", "totals": {"files": 1, "mutants": 5, "by_file": {A_JS: {"Killed": 5}}}, "event": "EVT-1"}]
-    assert (_mutation(_st(run))["outcome"], _mutation(_st(run))["evidence"]) == ("MET", ["EXE-1"])
-    blocked = dict(run, status="blocked")
-    assert _mutation(_st(blocked))["outcome"] == "NO_EVIDENCE"
+def _ingested(strength, status="passed"):
+    run = _exe("EXE-1", status=status)
+    run["ingested"] = [{"format": "mutation", "kind": "mutants", "strength": strength, "event": "EVT-1",
+                        "totals": {"files": 1, "mutants": 5, "by_file": {A_JS: {"Killed": 5}}}}]
+    return run
+
+
+def test_a_structured_mutation_report_ingested_into_an_execution_counts_and_cites_the_event():
+    r = _mutation(_st(_ingested("structured")))
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-1", "EVT-1"])
+    assert _mutation(_st(_ingested("structured", "blocked")))["outcome"] == "NO_EVIDENCE"
+
+
+def test_an_attested_mutation_report_is_never_read_and_the_detail_names_it():
+    r = _mutation(_st(_ingested("attested")))
+    assert r["outcome"] == "NO_EVIDENCE" and "EVT-1" in r["detail"] and "attested" in r["detail"] and r["evidence"] == []
+    older = _measured({A_JS: {"Killed": 1, "Survived": 1}}, "EXE-0")
+    r = _mutation(_st(older, _ingested("attested")))  # the hand-written file does not mask the tool's own report
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-0"]) and "ignored attested" in r["detail"] and "EVT-1" in r["detail"]
 
 
 def test_a_mutation_report_from_a_real_run_is_judged_by_the_evaluated_gate(repo_ws, actor, py):

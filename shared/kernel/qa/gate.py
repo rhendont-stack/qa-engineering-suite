@@ -430,28 +430,39 @@ def _percent(value: float, minimum: Optional[float] = None) -> str:
     return text.rstrip("0").rstrip(".")
 
 
-def _latest_mutation_report(st: dict, ctx: GateContext) -> Optional[Tuple[dict, dict]]:
-    """The run and the totals of the last mutation report recorded on the target commit, for this tree.
+def _latest_mutation_report(st: dict, ctx: GateContext) -> Tuple[Optional[Tuple[dict, dict, Optional[str]]], List[str]]:
+    """The run, the totals and (for an ingested file) the ingest event of the last mutation report recorded on the target
+    commit for this tree, and the ingest events that were set aside.
 
     A report counts only from a run that passed or failed (a mutation tool's exit code says nothing about the code under test,
-    but a blocked or inconclusive run measured under conditions nobody can vouch for). Within a run, a report attached later with
-    ``qa ingest`` is later than the ones the run recorded itself.
+    but a blocked or inconclusive run measured under conditions nobody can vouch for). A report the run recorded itself came from
+    the tool; one attached with ``qa ingest`` counts only when it is ``structured`` (the file is in the run's intact manifest): an
+    attested file is a person's JSON, and scores come only from tool reports. Within a run, a report attached later is later.
     """
     latest = None
+    ignored: List[str] = []
     for record in st["executions"].values():
         if not (_on_target(record, ctx.target_commit) and _on_this_tree(record, ctx)):
             continue
-        for item in execution.readable_measurements(record) + execution.readable_ingested(record):
+        for item in execution.readable_measurements(record):
             if item.get("kind") == "mutants":
-                latest = (record, item["totals"])
-    return latest
+                latest = (record, item["totals"], None)
+        for item in execution.readable_ingested(record):
+            if item.get("kind") != "mutants":
+                continue
+            if item.get("strength") == "structured":
+                latest = (record, item["totals"], item.get("event"))
+            else:
+                ignored.append("%s in %s" % (item.get("event"), record["id"]))
+    return latest, ignored
 
 
 def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     """§11.1: the mutation score of the files in ``paths``, from the last mutation report on the target commit.
 
     Scores come only from a mutation tool's report. Line coverage is never read as one, and ``paths`` is required: a project
-    chooses which files must withstand mutation (``qa-mutation`` proposes them from the critical components).
+    chooses which files must withstand mutation (``qa-mutation`` proposes them from the critical components). A report with
+    Pending mutants in those files is partial, and a partial measurement is not evidence.
     """
     params = c["params"]
     paths = params.get("paths")
@@ -459,13 +470,20 @@ def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
         return _NO_EVIDENCE, "mutation_score_min needs paths: the globs of the files whose mutants are scored (an accepted override sets them)", []
     if ctx.target_commit is None:
         return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
-    found = _latest_mutation_report(st, ctx)
+    found, ignored = _latest_mutation_report(st, ctx)
+    skipped = "; ignored attested ingest %s: scores come only from a tool's report" % ", ".join(ignored) if ignored else ""
     if found is None:
-        return _NO_EVIDENCE, "no mutation report on commit %s" % ctx.target_commit, []
-    record, totals = found
+        return _NO_EVIDENCE, "no mutation report on commit %s%s" % (ctx.target_commit, skipped), []
+    record, totals, event = found
+    cited = [record["id"]] + ([event] if event else [])
     minimum = params.get("min_score", _DEFAULT_MIN_SCORE)
     patterns = [_glob(pattern) for pattern in paths]
     scored = {path: counts for path, counts in totals["by_file"].items() if _selected(path, patterns)}
+    pending = {path: counts["Pending"] for path, counts in sorted(scored.items()) if counts.get("Pending")}
+    if pending:
+        where = ", ".join(sorted(pending)[:_MUTATION_FILES_SHOWN])
+        return (_NO_EVIDENCE, "%d Pending in %s: the report is partial (a tool that stopped early leaves mutants unrun)%s"
+                % (sum(pending.values()), where, skipped), cited)
     overall: Dict[str, int] = {}
     per_file = []
     for path in sorted(scored):
@@ -476,14 +494,12 @@ def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
             per_file.append("%s (%s)" % (path, _percent(value, minimum)))
     value = mutation.score_of_counts(overall)
     if value is None:
-        return _NO_EVIDENCE, "%s has no mutant that counts in %s" % (record["id"], ", ".join(paths)), []
+        return _NO_EVIDENCE, "%s has no mutant that counts in %s%s" % (record["id"], ", ".join(paths), skipped), cited
     met = value >= minimum
     shown = ", ".join(per_file[:_MUTATION_FILES_SHOWN]) + (" and %d more" % (len(per_file) - _MUTATION_FILES_SHOWN)
                                                           if len(per_file) > _MUTATION_FILES_SHOWN else "")
-    detail = "%s %s %s over %s" % (_percent(value, minimum), ">=" if met else "<", _percent(minimum), shown)
-    if overall.get("Pending"):
-        detail += "; %d Pending not counted" % overall["Pending"]
-    return (_MET if met else _NOT_MET), detail, [record["id"]]
+    detail = "%s %s %s over %s%s" % (_percent(value, minimum), ">=" if met else "<", _percent(minimum), shown, skipped)
+    return (_MET if met else _NOT_MET), detail, cited
 
 
 _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {

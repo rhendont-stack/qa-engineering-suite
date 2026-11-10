@@ -121,6 +121,7 @@ def hostile():
         "unknown_status": report({"a.js": {"mutants": [mutant(status="Exploded")]}}),
         "status_in_the_wrong_case": report({"a.js": {"mutants": [mutant(status="killed")]}}),
         "status_not_a_string": report({"a.js": {"mutants": [mutant(status=1)]}}),
+        "line_zero": report({"a.js": {"mutants": [mutant(line=0)]}}),
         "negative_line": report({"a.js": {"mutants": [mutant(line=-1)]}}),
         "fractional_line": report({"a.js": {"mutants": [mutant(line=1.5)]}}),
         "boolean_line": report({"a.js": {"mutants": [mutant(line=True)]}}),
@@ -287,3 +288,27 @@ def test_cli_run_takes_a_mutation_report(trusted, qa_cli):
 def test_a_mutation_only_run_is_not_a_suite_run(trusted, actor, py):
     r = run(trusted, actor, py, (("{evidence}/m.json", TEXT),), 0, (("mutation", "{evidence}/m.json"),))
     assert gate._is_suite_run(record(trusted, r)) is False
+
+
+# --------------------------------------------------------------------------- no secret-shaped path reaches the ledger
+
+KEY = "AKIA" + "ABCDEFGHIJKLMNOP"
+
+
+def ledger_text(ws):
+    return b"".join(p.read_bytes() for p in ws.path("ledger").iterdir()).decode("utf-8", "replace")
+
+
+def test_a_secret_shaped_path_never_reaches_the_ledger_through_ingest_or_run(trusted, actor, py, tmp_path):
+    doc = json.dumps(report({"src/%s/a.js" % KEY: {"language": "javascript", "source": "", "mutants": [mutant()]}}))
+    lcov = "SF:src/%s/a.js\nDA:1,1\nend_of_record\n" % KEY
+    r = execution.execute(trusted, actor, execution.RunRequest(command=py.argv("pass")))
+    for fmt, text in (("mutation", doc), ("lcov", lcov)):
+        path = tmp_path / fmt
+        path.write_text(text)
+        execution.ingest_file(trusted, actor, fmt, path, from_execution=r["execution"], category="functional")
+    run(trusted, actor, py, (("{evidence}/m.json", doc), ("{evidence}/c.info", lcov)), 0,
+        (("mutation", "{evidence}/m.json"), ("lcov", "{evidence}/c.info")))
+    assert KEY not in ledger_text(trusted)
+    item = record(trusted, r)["ingested"][0]
+    assert item["totals"]["mutants"] == 1 and len(item["totals"]["by_file"]) == 1
