@@ -49,7 +49,7 @@ _MIB = 2 ** 20
 _CATEGORY = {"$ref": "defs.schema.json#/$defs/category"}
 _UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production": a real environment may hold that id
 _MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json", "lcov": "text/plain",
-                "cobertura": "application/xml", "jacoco": "application/xml"}
+                "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
 _BEFORE_INSTALL = ("volume_create", "copy_in", None)  # where a failed pipeline stopped when no install had started; None: no step
@@ -725,14 +725,14 @@ def _store_reports(run: _Run, directory: Path, snapshot: _Snapshot) -> _Reports:
 def _flags(run_root: Path, summary: ingest.ReportSummary) -> List[str]:
     """The summary's anomalies, plus ``path_outside_project`` for an absolute path that is not under the workspace."""
     found = list(summary.anomalies)
-    if any(ingest.outside_project(f.path, str(run_root)) for f in summary.files):
+    if any(ingest.outside_project(path, str(run_root)) for path in summary.paths):
         ingest.add_anomaly(found, "path_outside_project")
     return found
 
 
 def _measurement(run: _Run, summary: ingest.ReportSummary, file: str, manifest: Dict[str, dict]) -> dict:
     entry = {"format": summary.format, "kind": summary.kind, "file": file, "sha256": manifest[file]["sha256"],
-             "totals": summary.coverage_totals()}
+             "totals": summary.measurement_totals()}
     flags = _flags(run.ws.root, summary)
     return dict(entry, anomalies=flags) if flags else entry
 
@@ -741,6 +741,11 @@ def readable_measurements(record: dict) -> List[dict]:
     """The measurements a reader may show: those of a run that passed or failed. A blocked or inconclusive run
     parsed them (or not) under conditions nobody can vouch for, and a not_run run measured nothing."""
     return list(record.get("measurements", [])) if record.get("status") in ("passed", "failed") else []
+
+
+def readable_ingested(record: dict) -> List[dict]:
+    """The reports attached to a run with ``qa ingest``, read under the same rule as ``readable_measurements``."""
+    return list(record.get("ingested", [])) if record.get("status") in ("passed", "failed") else []
 
 
 def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
@@ -999,10 +1004,11 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     redactor = redact.load_redactor(ws)
     clean = redactor.bytes_(original)[0]
     digest = sha256_bytes(clean)
-    total = {"tests": len(summary.cases), "alerts": len(summary.alerts), "coverage": len(summary.files)}[summary.kind]
+    total = {"tests": len(summary.cases), "alerts": len(summary.alerts), "coverage": len(summary.files),
+             "mutants": len(summary.mutants)}[summary.kind]
     measured: dict = {}
-    if summary.kind == "coverage":  # the numbers are on the event, so a reader need not parse the file again
-        measured["totals"] = summary.coverage_totals()
+    if ingest.is_measurement(fmt):  # the numbers are on the event, so a reader need not parse the file again
+        measured["totals"] = summary.measurement_totals()
         flags = _flags(ws.root, summary)
         if flags:
             measured["anomalies"] = flags

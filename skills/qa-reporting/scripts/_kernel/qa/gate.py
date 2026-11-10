@@ -15,10 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from . import KERNEL_VERSION, config, gitinfo, ids, ingest, integrity, ledger, resource_dir, schema, state, trace, vocab
+from . import KERNEL_VERSION, config, execution, gitinfo, ids, ingest, integrity, ledger, resource_dir, schema, state, trace, vocab
 from .canonical import hash_obj, loads
 from .errors import QaError
 from .findings import SEVERITIES
+from .ingest import mutation
 from .workspace import Workspace, read_config, write_atomic
 
 # QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, unknown_criterion,
@@ -41,11 +42,15 @@ _INDEPENDENCE = ("I0", "I1", "I2", "I3")
 _SUITE_ACTIVITY = "test-execution-local"
 _UNRESOLVED_STATES = ("open", "reopened", "fix_submitted")
 _NEEDS = {
-    "mutation_score_min": ("mutation ingestion", 3),
     "security_scans_executed": ("scan and performance skills", 4),
     "performance_objectives_met": ("scan and performance skills", 4),
     "migrations_validated": ("database skills", 4), "rollback_validated": ("database skills", 4),
 }
+
+# Parameters a criterion reads that no policy file lists: an accepted override sets them (the policy files stay as the profile table).
+_OPTIONAL_PARAMS = {"mutation_score_min": ("paths",)}
+_DEFAULT_MIN_SCORE = 70
+_MUTATION_FILES_SHOWN = 20
 
 _PRIORITIES = ("must", "should", "could", "wont")  # a requirement's priority, most binding first
 _Outcome = Tuple[str, str, List[str]]  # outcome, detail, evidence
@@ -80,7 +85,8 @@ def _off_justification(criterion: dict, override: dict) -> Optional[str]:
 def _effective_criterion(criterion: dict, override: dict) -> dict:
     """``criterion`` with ``override`` applied. A config accepted as it stands can hold what ``propose`` refuses."""
     params = {**criterion["params"], **override.get("params", {})}
-    errors = schema.errors({name: params[name] for name in criterion["params"]}, _PARAMS)
+    read = list(criterion["params"]) + [name for name in _OPTIONAL_PARAMS.get(criterion["type"], ()) if name in params]
+    errors = schema.errors({name: params[name] for name in read}, _PARAMS)
     if "not_applicable" in override and _blank(override["not_applicable"]):
         errors.append("not_applicable is blank: §11.2 requires a recorded justification")
     if errors:
@@ -390,10 +396,101 @@ def _no_blocked_critical(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     return _MET, "%d critical test cases passed on commit %s" % (len(critical), ctx.target_commit), evidence
 
 
+def _glob(pattern: str) -> "re.Pattern[str]":
+    """``*`` and ``?`` stay inside one path segment, ``**`` crosses segments (``**/`` may also match nothing); all else is literal."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        else:
+            out.append("[^/]*" if pattern[i] == "*" else "[^/]" if pattern[i] == "?" else re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _selected(path: str, patterns: List["re.Pattern[str]"]) -> bool:
+    """A recorded path leaving the project (``..``, absolute) is a name the tool gave, not a file of this project: no glob selects it."""
+    while path.startswith("./"):
+        path = path[2:]
+    if ingest.outside_project(path) or ingest.is_absolute(path):
+        return False
+    return any(pattern.fullmatch(path) for pattern in patterns)
+
+
+def _percent(value: float, minimum: Optional[float] = None) -> str:
+    """Two decimals, but never rounded across the minimum: 69.999 under a minimum of 70 must not read as 70."""
+    text = "%.2f" % value
+    if minimum is not None and (float(text) >= minimum) != (value >= minimum):
+        text = "%.6f" % value
+    return text.rstrip("0").rstrip(".")
+
+
+def _latest_mutation_report(st: dict, ctx: GateContext) -> Optional[Tuple[dict, dict]]:
+    """The run and the totals of the last mutation report recorded on the target commit, for this tree.
+
+    A report counts only from a run that passed or failed (a mutation tool's exit code says nothing about the code under test,
+    but a blocked or inconclusive run measured under conditions nobody can vouch for). Within a run, a report attached later with
+    ``qa ingest`` is later than the ones the run recorded itself.
+    """
+    latest = None
+    for record in st["executions"].values():
+        if not (_on_target(record, ctx.target_commit) and _on_this_tree(record, ctx)):
+            continue
+        for item in execution.readable_measurements(record) + execution.readable_ingested(record):
+            if item.get("kind") == "mutants":
+                latest = (record, item["totals"])
+    return latest
+
+
+def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.1: the mutation score of the files in ``paths``, from the last mutation report on the target commit.
+
+    Scores come only from a mutation tool's report. Line coverage is never read as one, and ``paths`` is required: a project
+    chooses which files must withstand mutation (``qa-mutation`` proposes them from the critical components).
+    """
+    params = c["params"]
+    paths = params.get("paths")
+    if not paths:
+        return _NO_EVIDENCE, "mutation_score_min needs paths: the globs of the files whose mutants are scored (an accepted override sets them)", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    found = _latest_mutation_report(st, ctx)
+    if found is None:
+        return _NO_EVIDENCE, "no mutation report on commit %s" % ctx.target_commit, []
+    record, totals = found
+    minimum = params.get("min_score", _DEFAULT_MIN_SCORE)
+    patterns = [_glob(pattern) for pattern in paths]
+    scored = {path: counts for path, counts in totals["by_file"].items() if _selected(path, patterns)}
+    overall: Dict[str, int] = {}
+    per_file = []
+    for path in sorted(scored):
+        for status, number in scored[path].items():
+            overall[status] = overall.get(status, 0) + number
+        value = mutation.score_of_counts(scored[path])
+        if value is not None:
+            per_file.append("%s (%s)" % (path, _percent(value, minimum)))
+    value = mutation.score_of_counts(overall)
+    if value is None:
+        return _NO_EVIDENCE, "%s has no mutant that counts in %s" % (record["id"], ", ".join(paths)), []
+    met = value >= minimum
+    shown = ", ".join(per_file[:_MUTATION_FILES_SHOWN]) + (" and %d more" % (len(per_file) - _MUTATION_FILES_SHOWN)
+                                                          if len(per_file) > _MUTATION_FILES_SHOWN else "")
+    detail = "%s %s %s over %s" % (_percent(value, minimum), ">=" if met else "<", _percent(minimum), shown)
+    if overall.get("Pending"):
+        detail += "; %d Pending not counted" % overall["Pending"]
+    return (_MET if met else _NOT_MET), detail, [record["id"]]
+
+
 _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
     "no_unresolved_findings": _no_unresolved_findings, "suite_executed": _suite_executed, "flaky_rate_max": _flaky_rate_max,
     "test_integrity": _test_integrity, "independence_min": _independence_min,
     "requirements_verified": _requirements_verified, "no_blocked_critical": _no_blocked_critical,
+    "mutation_score_min": _mutation_score_min,
 }
 
 
@@ -504,10 +601,10 @@ def evaluate(ws: Workspace, actor: ledger.Actor, *, profile: Optional[str] = Non
 
 def _declared_params(criterion_id: object) -> Set[str]:
     """The parameters the criterion declares in any profile; refuses an ID in no profile."""
-    found = [c["params"] for profile in vocab.PROFILES for c in _read_policy(profile)["criteria"] if c["id"] == criterion_id]
+    found = [c for profile in vocab.PROFILES for c in _read_policy(profile)["criteria"] if c["id"] == criterion_id]
     if not found:
         raise QaError("unknown_criterion", "no profile has such a criterion", criterion=criterion_id)
-    return set().union(*found)
+    return set().union(*(c["params"] for c in found), *(_OPTIONAL_PARAMS.get(c["type"], ()) for c in found))
 
 
 def propose(ws: Workspace, actor: ledger.Actor, criterion_id: str, override: dict, rationale: str) -> dict:

@@ -18,6 +18,9 @@ def test_corpus_matches_tool_console(entry):
     if s.kind == "coverage":
         check_coverage(s, entry)
         return
+    if s.kind == "mutants":
+        check_mutants(s, entry)
+        return
     got = {"total": s.total, "passed": s.passed, "failed": s.failed, "errors": s.errors, "skipped": s.skipped} if s.kind == "tests" else {"alerts": len(s.alerts), "runs": s.runs}
     assert got == entry["expected"]
 
@@ -42,12 +45,33 @@ def check_coverage(s, entry):
     assert s.anomalies == ()  # a sample project has no path outside itself
 
 
-@pytest.mark.parametrize("entry", [e for e in ENTRIES if e["kind"] == "coverage"], ids=lambda e: e["file"])
-def test_coverage_corpus_files_are_normalized_and_name_their_tool(entry):
+def check_mutants(s, entry):
+    """The counts the mutation tool printed for itself are the counts the parser finds, and the score is the tool's own.
+
+    Stryker's table lists killed, timeout, survived, no coverage and errors per file, and two percentages: the score over
+    every mutant that counts, and the score over the covered ones. Ours is computed from the same file, never taken from the tool.
+    """
+    expected = dict(entry["expected"])
+    percent = expected.pop("percent", {})
+    status = {name: sum(1 for m in s.mutants if m.status == name) for name in ingest.mutation.STATUSES}
+    ours = {"files": len({m.file for m in s.mutants}), "mutants": len(s.mutants), "killed": status["Killed"], "timeout": status["Timeout"],
+            "survived": status["Survived"], "no_coverage": status["NoCoverage"], "errors": status["CompileError"] + status["RuntimeError"]}
+    assert {key: ours[key] for key in expected} == expected
+    assert entry["console"] and (expected or percent)
+    covered = ingest.mutation.score([m for m in s.mutants if m.status != "NoCoverage"])
+    computed = {"total": ingest.mutation.score(s.mutants), "covered": covered}
+    for name, printed in percent.items():
+        places = len(repr(printed).split(".")[1]) if isinstance(printed, float) else 0
+        assert round(computed[name], places) == printed, name
+    assert s.anomalies == ()  # a sample project has no path outside itself
+
+
+@pytest.mark.parametrize("entry", [e for e in ENTRIES if e["kind"] in ("coverage", "mutants")], ids=lambda e: e["file"])
+def test_measurement_corpus_files_are_normalized_and_name_their_tool(entry):
     normalize = load_producer_module("normalize.py")
     text = (CORPUS / entry["file"]).read_text(encoding="utf-8")
     assert normalize.normalize_text(text) == text
-    assert entry["format"] in ("lcov", "cobertura", "jacoco") and entry["producer"] and entry["version"]
+    assert entry["format"] in ("lcov", "cobertura", "jacoco", "mutation") and entry["producer"] and entry["version"]
 
 
 def corpus_files():

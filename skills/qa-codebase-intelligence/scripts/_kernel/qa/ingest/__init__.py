@@ -1,5 +1,5 @@
 """Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0) into counted results and alerts, and coverage
-reports (LCOV, Cobertura, JaCoCo) into measurements."""
+reports (LCOV, Cobertura, JaCoCo) and mutation reports (mutation-testing-report-schema JSON) into measurements."""
 from __future__ import annotations
 
 import json
@@ -57,14 +57,26 @@ class FileCoverage:
 
 
 @dataclass(frozen=True)
+class Mutant:
+    """One mutant as the mutation report wrote it: ``file`` is its path (normalised to ``/``), ``status`` one of the schema's."""
+    file: str
+    mutant_id: str
+    mutator: str
+    line: int
+    status: str
+    killed_by: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ReportSummary:
     format: str
-    kind: str  # tests | alerts | coverage
+    kind: str  # tests | alerts | coverage | mutants
     cases: Tuple[CaseResult, ...]
     alerts: Tuple[Alert, ...]
     runs: int
     anomalies: Tuple[str, ...]
     files: Tuple[FileCoverage, ...] = ()
+    mutants: Tuple[Mutant, ...] = ()
 
     @property
     def lines_total(self) -> int:
@@ -85,6 +97,22 @@ class ReportSummary:
     def coverage_totals(self) -> Dict[str, int]:
         return {"files": len(self.files), "lines_total": self.lines_total, "lines_covered": self.lines_covered,
                 "branches_total": self.branches_total, "branches_covered": self.branches_covered}
+
+    def mutation_totals(self) -> dict:
+        """The mutants per file and status (only statuses that occur), which is all the gate needs to score any set of paths."""
+        by_file: Dict[str, Dict[str, int]] = {}
+        for m in self.mutants:
+            counts = by_file.setdefault(m.file, {})
+            counts[m.status] = counts.get(m.status, 0) + 1
+        return {"files": len(by_file), "mutants": len(self.mutants), "by_file": by_file}
+
+    def measurement_totals(self) -> dict:
+        return self.mutation_totals() if self.kind == "mutants" else self.coverage_totals()
+
+    @property
+    def paths(self) -> Tuple[str, ...]:
+        """The source paths the report names, as it wrote them."""
+        return tuple(f.path for f in self.files) if self.kind == "coverage" else tuple(dict.fromkeys(m.file for m in self.mutants))
 
     @property
     def passed(self) -> int:
@@ -115,13 +143,19 @@ def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def is_absolute(path: str) -> bool:
+    """A path as a report wrote it that starts at a root: ``/`` or a drive letter."""
+    norm = normalize_path(path)
+    return norm.startswith("/") or bool(_DRIVE.match(norm))
+
+
 def outside_project(path: str, root: Optional[str] = None) -> bool:
     """Does a recorded path leave the project? It does when it climbs (a ``..`` part) or, once ``root`` is known, is absolute
     and not under it. Such a path is recorded as given and flagged, and is never matched against a ``paths`` glob."""
     norm = normalize_path(path)
     if ".." in norm.split("/"):
         return True
-    if root is not None and (norm.startswith("/") or _DRIVE.match(norm)):
+    if root is not None and is_absolute(norm):
         base = normalize_path(root).rstrip("/")
         return not (norm == base or norm.startswith(base + "/"))
     return False
@@ -180,6 +214,7 @@ def merge(summaries: List[ReportSummary]) -> ReportSummary:
         runs=sum(s.runs for s in summaries),
         anomalies=tuple(anomalies),
         files=tuple(f for s in summaries for f in s.files),
+        mutants=tuple(m for s in summaries for m in s.mutants),
     )
 
 
@@ -211,21 +246,29 @@ def coverage_summary(fmt: str, files: List[FileCoverage], anomalies: Optional[Li
     return ReportSummary(fmt, "coverage", (), (), 1, tuple(found), tuple(files))
 
 
+def mutation_summary(mutants: List[Mutant], anomalies: Optional[List[str]] = None) -> ReportSummary:
+    found = list(anomalies or [])
+    if any(outside_project(m.file) for m in mutants):
+        add_anomaly(found, "path_outside_project")
+    return ReportSummary("mutation", "mutants", (), (), 1, tuple(found), (), tuple(mutants))
+
+
 # The parsers import the models and helpers above, so they come last.
 from qa.ingest import ctrf as _ctrf  # noqa: E402  (after the models they import)
 from qa.ingest import cobertura as _cobertura  # noqa: E402
 from qa.ingest import jacoco as _jacoco  # noqa: E402
 from qa.ingest import junit as _junit  # noqa: E402
 from qa.ingest import lcov as _lcov  # noqa: E402
+from qa.ingest import mutation as _mutation  # noqa: E402
 from qa.ingest import sarif as _sarif  # noqa: E402
 
 _PARSERS = {"junit": _junit.parse, "ctrf": _ctrf.parse, "sarif": _sarif.parse, "lcov": _lcov.parse,
-            "cobertura": _cobertura.parse, "jacoco": _jacoco.parse}
+            "cobertura": _cobertura.parse, "jacoco": _jacoco.parse, "mutation": _mutation.parse}
 # What each format counts, so a request mixing kinds is refused before anything runs.
 FORMAT_KINDS = {"junit": "tests", "ctrf": "tests", "sarif": "alerts", "lcov": "coverage", "cobertura": "coverage",
-                "jacoco": "coverage"}
+                "jacoco": "coverage", "mutation": "mutants"}
 # Measurement reports are numbers a tool measured. They are recorded beside a run and never decide its status.
-MEASUREMENT_KINDS = ("coverage",)
+MEASUREMENT_KINDS = ("coverage", "mutants")
 
 
 def is_measurement(fmt: str) -> bool:

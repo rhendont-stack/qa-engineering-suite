@@ -1,0 +1,11 @@
+{
+  "name": "stryker-mutation-producer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "devDependencies": {
+    "@stryker-mutator/core": "10.1.1",
+    "@stryker-mutator/vitest-runner": "10.1.1",
+    "vitest": "3.2.7"
+  }
+}

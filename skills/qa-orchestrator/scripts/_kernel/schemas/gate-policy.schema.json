@@ -42,6 +42,8 @@
         "max_ratio": {"type": "number", "minimum": 0, "maximum": 1},
         "min": {"$ref": "defs.schema.json#/$defs/independence"},
         "min_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "paths": {"type": "array", "items": {"type": "string", "pattern": "\\S"}, "minItems": 1,
+                  "description": "mutation_score_min only: globs, relative to the project, of the files whose mutants are scored (* within a segment, ** across segments). Not in the policy files: an accepted override sets it."},
         "min_priority": {"enum": ["must", "should", "could", "wont"]}
       },
       "additionalProperties": false

@@ -314,7 +314,7 @@ def test_report_format_without_a_parser_is_refused(trusted, actor, py, tmp_path)
 def test_format_kinds_name_every_parser():
     assert set(ingest.FORMAT_KINDS) == set(ingest._PARSERS)
     assert ingest.FORMAT_KINDS == {"junit": "tests", "ctrf": "tests", "sarif": "alerts", "lcov": "coverage", "cobertura": "coverage",
-                                   "jacoco": "coverage"}
+                                   "jacoco": "coverage", "mutation": "mutants"}
 
 
 def test_string_without_the_shell_flag_goes_to_the_guard(trusted, actor):

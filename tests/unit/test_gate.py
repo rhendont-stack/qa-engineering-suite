@@ -322,7 +322,7 @@ def test_enabled_false_wins_over_a_not_applicable_text_and_blocking():
 
 
 def test_enabled_true_turns_an_opt_in_criterion_on():
-    on = _crit("release", "mutation_score_min", mutation_score_min={"enabled": True})
+    on = _crit("release", "mutation_score_min", mutation_score_min={"enabled": True, "params": {"paths": ["src/**"]}})
     r = gate.evaluate_criterion(on, _st(), _context())
     assert (r["outcome"], r["blocking"]) == ("NO_EVIDENCE", True) and "justification" not in r
 
@@ -374,7 +374,6 @@ def test_every_detail_is_a_string_and_only_not_applicable_is_justified(trusted, 
 
 
 @pytest.mark.parametrize("ctype,capability,milestone", [
-    ("mutation_score_min", "mutation ingestion", 3),
     ("security_scans_executed", "scan and performance skills", 4),
     ("performance_objectives_met", "scan and performance skills", 4),
     ("migrations_validated", "database skills", 4),
@@ -385,6 +384,172 @@ def test_an_unevaluable_type_names_what_it_needs(ctype, capability, milestone):
     r = gate.evaluate_criterion(criterion, _st(), _context())
     assert (r["outcome"], r["detail"], r["evidence"]) == (
         "NO_EVIDENCE", "not evaluable by kernel %s (needs %s, milestone %d)" % (KERNEL_VERSION, capability, milestone), [])
+
+
+# --------------------------------------------------------------------------- mutation_score_min (milestone 3)
+
+def _measured(by_file, execution_id="EXE-1", status="passed", **changes):
+    """An execution whose run recorded one mutation report with these per-file status counts."""
+    totals = {"files": len(by_file), "mutants": sum(sum(c.values()) for c in by_file.values()), "by_file": by_file}
+    entry = {"format": "mutation", "kind": "mutants", "file": "reports/mutation.json", "sha256": "sha256:" + "3" * 64, "totals": totals}
+    return _exe(execution_id, status=status, measurements=[entry], reports=[{"format": "mutation", "pattern": "m", "files": [], "error": None}],
+                **changes)
+
+
+def _mutation(st, paths=("src/**",), context=None, **params):
+    override = {"enabled": True, "params": dict({"paths": list(paths)} if paths is not None else {}, **params)}
+    return gate.evaluate_criterion(_crit("release", "mutation_score_min", mutation_score_min=override), st, context or _context())
+
+
+A_JS = "src/a.js"
+
+
+@pytest.mark.parametrize("killed,survived,outcome,detail", [
+    (699, 301, "NOT_MET", "69.9 < 70 over src/a.js (69.9)"), (700, 300, "MET", "70 >= 70 over src/a.js (70)"),
+    (1000, 0, "MET", "100 >= 70 over src/a.js (100)"), (0, 1, "NOT_MET", "0 < 70 over src/a.js (0)")])
+def test_mutation_score_min_truth_table(killed, survived, outcome, detail):
+    r = _mutation(_st(_measured({A_JS: {"Killed": killed, "Survived": survived}})))
+    assert (r["outcome"], r["detail"], r["evidence"]) == (outcome, detail, ["EXE-1"])
+
+
+def test_a_missed_score_names_the_score_the_minimum_and_the_files_in_paths_only():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 1, "Survived": 2}, "src/b.js": {"Killed": 3}, "docs/c.js": {"Survived": 9}})))
+    assert (r["outcome"], r["detail"]) == ("NOT_MET", "66.67 < 70 over src/a.js (33.33), src/b.js (100)")
+
+
+def test_a_score_a_hair_under_the_minimum_is_not_rounded_up_in_the_detail():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 6999, "Survived": 3001}})))
+    assert r["outcome"] == "NOT_MET" and r["detail"].startswith("69.99 < 70")
+    r = _mutation(_st(_measured({A_JS: {"Killed": 699999, "Survived": 300001}})))
+    assert r["outcome"] == "NOT_MET" and "69.9999" in r["detail"] and not r["detail"].startswith("70 ")
+
+
+def test_a_met_score_names_the_score_and_the_files_too():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Survived": 1}})))
+    assert r["outcome"] == "MET" and r["detail"] == "75 >= 70 over src/a.js (75)"
+
+
+def test_the_minimum_is_a_parameter_and_defaults_to_seventy():
+    st = _st(_measured({A_JS: {"Killed": 3, "Survived": 1}}))
+    assert _mutation(st)["outcome"] == "MET" and _mutation(st, min_score=80)["outcome"] == "NOT_MET"
+    assert _crit("release", "mutation_score_min")["params"] == {"min_score": 70}
+
+
+def test_only_the_files_in_paths_count():
+    st = _st(_measured({A_JS: {"Killed": 4}, "src/b.js": {"Survived": 4}, "lib/c.js": {"Survived": 4}}))
+    assert _mutation(st, paths=[A_JS])["outcome"] == "MET"
+    assert _mutation(st, paths=["src/**"])["outcome"] == "NOT_MET"
+    assert _mutation(st, paths=["lib/*.js", A_JS])["outcome"] == "NOT_MET"
+
+
+@pytest.mark.parametrize("pattern,path,matches", [
+    ("src/*.js", "src/a.js", True), ("src/*.js", "src/x/a.js", False), ("src/**", "src/x/y/a.js", True),
+    ("**/a.js", "a.js", True), ("**/a.js", "src/x/a.js", True), ("src/a?.js", "src/ab.js", True), ("src/a?.js", "src/a/.js", False),
+    ("src/a.js", "src/a.js", True), ("src/a.js", "src/ab.js", False), ("src/**/a.js", "src/a.js", True), ("src", "src/a.js", False),
+    ("src/[ab].js", "src/[ab].js", True), ("src/[ab].js", "src/a.js", False)])
+def test_paths_are_globs_with_star_inside_a_segment_and_double_star_across(pattern, path, matches):
+    r = _mutation(_st(_measured({path: {"Killed": 1}})), paths=[pattern])
+    assert (r["outcome"] == "MET") is matches, r["detail"]
+
+
+def test_a_path_outside_the_project_is_never_matched_by_a_glob():
+    outside = {"../src/a.js": {"Killed": 5}, "/elsewhere/a.js": {"Killed": 5}, "C:/x/a.js": {"Killed": 5}, "..\\b.js": {"Killed": 5}}
+    for paths in (["**"], ["../**"], ["**/a.js"], ["/elsewhere/*.js"]):
+        r = _mutation(_st(_measured(outside)), paths=paths)
+        assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", [])
+
+
+def test_no_mutants_in_paths_is_no_evidence():
+    r = _mutation(_st(_measured({"lib/a.js": {"Killed": 5}})))
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == [] and "src/**" in r["detail"]
+    assert _mutation(_st())["outcome"] == "NO_EVIDENCE"
+
+
+@pytest.mark.parametrize("statuses", [{"CompileError": 2}, {"Ignored": 1, "Pending": 1, "RuntimeError": 1}])
+def test_only_mutants_that_do_not_count_is_no_evidence(statuses):
+    assert _mutation(_st(_measured({A_JS: statuses})))["outcome"] == "NO_EVIDENCE"
+
+
+def test_pending_mutants_are_not_counted_and_the_detail_says_so():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Survived": 1, "Pending": 2}})))
+    assert r["outcome"] == "MET" and "2 Pending not counted" in r["detail"]
+
+
+def test_opted_in_without_paths_is_no_evidence_that_says_what_is_missing():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 5}})), paths=None)
+    assert r["outcome"] == "NO_EVIDENCE" and "needs paths" in r["detail"] and r["evidence"] == []
+
+
+def test_coverage_is_never_read_as_a_score():
+    totals = {"files": 1, "lines_total": 10, "lines_covered": 10, "branches_total": 0, "branches_covered": 0}
+    entry = {"format": "lcov", "kind": "coverage", "file": "reports/c.info", "sha256": "sha256:" + "4" * 64, "totals": totals}
+    r = _mutation(_st(_exe("EXE-1", measurements=[entry], reports=[{"format": "lcov", "pattern": "c", "files": [], "error": None}])))
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == []
+
+
+@pytest.mark.parametrize("status,outcome", [("passed", "MET"), ("failed", "MET"), ("blocked", "NO_EVIDENCE"), ("inconclusive", "NO_EVIDENCE"),
+                                           ("not_run", "NO_EVIDENCE")])
+def test_a_mutation_report_is_read_only_from_a_passed_or_failed_run(status, outcome):
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}}, status=status)))["outcome"] == outcome
+
+
+def test_the_latest_mutation_report_on_the_target_commit_decides():
+    good, bad = {A_JS: {"Killed": 9}}, {A_JS: {"Killed": 1, "Survived": 9}}
+    assert _mutation(_st(_measured(good, "EXE-1"), _measured(bad, "EXE-2")))["outcome"] == "NOT_MET"
+    r = _mutation(_st(_measured(bad, "EXE-1"), _measured(good, "EXE-2")))
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-2"])
+    # a later run with no mutation report does not take the place of the last one that had it
+    assert _mutation(_st(_measured(good, "EXE-1"), _exe("EXE-2")))["evidence"] == ["EXE-1"]
+
+
+def test_a_report_from_another_commit_or_another_tree_is_not_about_the_target():
+    elsewhere = _measured({A_JS: {"Killed": 5}}, git=dict(GIT, commit=OTHER_COMMIT))
+    assert _mutation(_st(elsewhere))["outcome"] == "NO_EVIDENCE"
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}})), context=_context(target_commit=None, git_limitation="no git"))["outcome"] == "NO_EVIDENCE"
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}})), context=_context(diff_hash=OTHER_TREE))["outcome"] == "NO_EVIDENCE"
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}})), context=_context(diff_hash=TREE))["outcome"] == "MET"
+
+
+def test_a_mutation_report_ingested_into_an_execution_counts():
+    run = _exe("EXE-1")
+    run["ingested"] = [{"format": "mutation", "kind": "mutants", "totals": {"files": 1, "mutants": 5, "by_file": {A_JS: {"Killed": 5}}}, "event": "EVT-1"}]
+    assert (_mutation(_st(run))["outcome"], _mutation(_st(run))["evidence"]) == ("MET", ["EXE-1"])
+    blocked = dict(run, status="blocked")
+    assert _mutation(_st(blocked))["outcome"] == "NO_EVIDENCE"
+
+
+def test_a_mutation_report_from_a_real_run_is_judged_by_the_evaluated_gate(repo_ws, actor, py):
+    doc = json.dumps({"schemaVersion": "1.0", "files": {A_JS: {"language": "javascript", "source": "", "mutants": [
+        {"id": str(i), "mutatorName": "m", "status": s, "location": {"start": {"line": 1, "column": 1}}} for i, s in enumerate(["Killed", "Survived"])]}}})
+    _accept(repo_ws, actor, "mutation_score_min", {"enabled": True, "params": {"paths": ["src/**"]}})
+    write = "import sys, pathlib; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
+    run = execution.execute(repo_ws, actor, execution.RunRequest(command=py.argv(write, "{evidence}/m.json", doc),
+                                                                 reports=(("mutation", "{evidence}/m.json"),)))
+    c = _criterion(gate.evaluate(repo_ws, actor, profile="release"), "mutation_score_min")
+    assert (c["outcome"], c["blocking"], c["evidence"], c["detail"]) == ("NOT_MET", True, [run["execution"]], "50 < 70 over src/a.js (50)")
+
+
+@pytest.mark.parametrize("paths", ["src/**", [], [""], [1], ["src", None], {"a": 1}, ["a", " "]])
+def test_an_accepted_override_with_unreadable_paths_is_refused_not_applied(paths):
+    with pytest.raises(QaError) as caught:
+        gate.load_policy("release", _config(mutation_score_min={"enabled": True, "params": {"paths": paths}}))
+    assert caught.value.code == "config_invalid"
+
+
+def test_paths_are_proposed_and_accepted_like_any_parameter(trusted, actor):
+    _accept(trusted, actor, "mutation_score_min", {"enabled": True, "params": {"paths": ["src/core/**"], "min_score": 80}})
+    policy, _hash = gate.load_policy("release", config.load_config(trusted))
+    c = _from(policy, "mutation_score_min")
+    assert c["params"] == {"min_score": 80, "paths": ["src/core/**"]} and "not_applicable" not in c
+    for criterion, override in (("mutation_score_min", {"params": {"paths": []}}), ("suite_executed", {"params": {"paths": ["a"]}})):
+        with pytest.raises(QaError) as caught:  # only the mutation criterion reads paths, and it needs at least one
+            gate.propose(trusted, actor, criterion, override, "r")
+        assert caught.value.code == "invalid_override"
+
+
+def test_the_policy_hash_covers_the_paths():
+    one, two = (_config(mutation_score_min={"enabled": True, "params": {"paths": p}}) for p in (["src/**"], ["lib/**"]))
+    assert gate.load_policy("release", one)[1] != gate.load_policy("release", two)[1]
 
 
 # --------------------------------------------------------------------------- T16-R3, T16-R14: findings

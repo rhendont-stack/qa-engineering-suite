@@ -203,7 +203,7 @@ def _add_execution_commands(groups: Dict[str, Any]) -> None:
     run.add_argument("--container", metavar="IMAGE@DIGEST", help="run in a container from this image, which is never pulled")
     run.add_argument("--install", metavar="SHELL", help="with --container: install dependencies first, with a network; needs install-dependencies")
     attach = _command(groups, "ingest", "attach a report file to a recorded execution, or import an evidence bundle")
-    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "bundle"), metavar="FORMAT")
+    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "bundle"), metavar="FORMAT")
     attach.add_argument("file", metavar="FILE")
     attach.add_argument("--from", dest="from_execution", metavar="EXE", help="the execution the report belongs to (not for a bundle)")
     attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, else functional)")
