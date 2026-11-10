@@ -5,7 +5,8 @@
     "qa-orchestrator",
     "qa-reporting",
     "qa-requirements",
-    "qa-test-execution"
+    "qa-test-execution",
+    "qa-test-strategy"
   ],
   "responsibilities": [
     {
@@ -27,6 +28,10 @@
     {
       "key": "derive-requirements-and-acceptance-criteria",
       "owner": "qa-requirements"
+    },
+    {
+      "key": "design-risk-based-test-strategy",
+      "owner": "qa-test-strategy"
     }
   ]
 }
