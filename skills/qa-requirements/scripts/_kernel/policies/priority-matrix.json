@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "criticalities": [
+    "critical",
+    "high",
+    "normal",
+    "low"
+  ],
+  "rows": {
+    "CRITICAL": [
+      "P0",
+      "P0",
+      "P0",
+      "P0"
+    ],
+    "HIGH": [
+      "P0",
+      "P1",
+      "P1",
+      "P2"
+    ],
+    "MEDIUM": [
+      "P1",
+      "P2",
+      "P2",
+      "P3"
+    ],
+    "LOW": [
+      "P2",
+      "P3",
+      "P3",
+      "P3"
+    ],
+    "INFORMATIONAL": [
+      "none",
+      "none",
+      "none",
+      "none"
+    ]
+  },
+  "adjustments": {
+    "outside_release_scope": -1,
+    "public_exploit": 1
+  }
+}

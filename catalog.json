@@ -4,6 +4,7 @@
     "qa-codebase-intelligence",
     "qa-orchestrator",
     "qa-reporting",
+    "qa-requirements",
     "qa-test-execution"
   ],
   "responsibilities": [
@@ -22,6 +23,10 @@
     {
       "key": "evaluate-evidence-and-report",
       "owner": "qa-reporting"
+    },
+    {
+      "key": "derive-requirements-and-acceptance-criteria",
+      "owner": "qa-requirements"
     }
   ]
 }
