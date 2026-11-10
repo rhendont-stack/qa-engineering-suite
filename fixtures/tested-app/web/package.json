@@ -1,0 +1,13 @@
+{
+  "name": "tested-app-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The JavaScript side of the tested-app fixture: a small library and its Vitest suite.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
+  }
+}

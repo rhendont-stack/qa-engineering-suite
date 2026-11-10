@@ -289,7 +289,8 @@ def test_a_closing_tag_survives_for_a_password_too(ws):  # I12
 
 def test_a_slash_inside_a_value_is_still_part_of_it(ws):  # I12: only "</" ends it
     out, _ = redact.load_redactor(ws, environ={}).text("password=abc/def<ghi")
-    assert "abc/def<ghi" not in out and "def" not in out
+    without_markers = re.sub(r"\[REDACTED:[^\]]*\]", "", out)  # a marker's random hex hash can itself spell "def"
+    assert "abc/def<ghi" not in out and "def" not in without_markers
 
 
 @pytest.mark.parametrize("before,after", [

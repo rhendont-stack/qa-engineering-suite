@@ -1,0 +1,10 @@
+{
+  "id": "qa-reporting-tampered-log",
+  "fixture": "fixtures/tested-app",
+  "skill": "skills/qa-reporting",
+  "setup_script": "skills/qa-reporting/evals/setup_tamper.py",
+  "bash_allow": [
+    "python3 .claude/skills/qa-reporting/scripts/qa.py"
+  ],
+  "prompt": "Please write the one-page executive summary for the last test run of this project. It is recorded under .qa. Keep it short, a manager will read it on her phone."
+}

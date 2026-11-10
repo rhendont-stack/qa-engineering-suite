@@ -19,7 +19,7 @@ import math
 import os
 import posixpath
 import re
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import unquote, urlsplit
 
 from . import ids, ledger, resource_dir, schema, state
@@ -402,6 +402,152 @@ def change_state(ws: Workspace, actor: ledger.Actor, fid: str, new_state: str, *
         data = {"id": fid, "from": current["state"], "to": new_state}
         data.update({name: given[name] if name in needs else None for name in given})
         return ledger.append(ws, actor, "finding.state_changed", data)
+
+
+# --------------------------------------------------------------------------- deduplication
+
+MAX_PROPOSALS = 200  # a crowded file cannot make the proposal list, or the time to build it, grow without bound
+_DEDUPABLE = ("open", "accepted_risk", "wont_fix")  # states that can take part in a pair: the duplicate side must also be open
+
+
+def _order(fid: str) -> Tuple[int, str]:
+    return (len(fid), fid)
+
+
+def _span(finding: dict) -> Optional[Tuple[int, int]]:
+    source = finding.get("source")
+    if not isinstance(source, dict):
+        return None
+    start, end = source.get("start_line"), source.get("end_line")
+    if not isinstance(start, int) or isinstance(start, bool):
+        return None
+    if not isinstance(end, int) or isinstance(end, bool) or end < start:
+        end = start
+    return (start, end)
+
+
+def _cwes(finding: dict) -> List[str]:
+    refs = finding.get("refs")
+    cwe = refs.get("cwe") if isinstance(refs, dict) else None
+    return sorted({c for c in cwe if isinstance(c, str)}) if isinstance(cwe, list) else []
+
+
+def _can_duplicate(finding: dict) -> bool:
+    """Whether the lifecycle lets this finding become a duplicate (the fold's own test, so the two cannot disagree)."""
+    return "duplicate" in TRANSITIONS.get(finding.get("state"), {})
+
+
+def propose_duplicates(st: dict) -> List[dict]:
+    """Pairs of findings with the same file, the same CWE and overlapping lines (§10.7), lower ID first.
+
+    One bucket per (file, CWE), swept in line order: the work is the sort plus the pairs it reports, and the pairs are capped.
+    """
+    buckets: Dict[Tuple[str, str], List[Tuple[int, int, str]]] = {}
+    for fid, f in st["findings"].items():
+        component = f.get("component")
+        path = component.get("path") if isinstance(component, dict) else None
+        span = _span(f)
+        if f.get("state") not in _DEDUPABLE or not isinstance(path, str) or not path or span is None:
+            continue
+        for cwe in _cwes(f):
+            buckets.setdefault((path, cwe), []).append((span[0], span[1], fid))
+    found: Dict[Tuple[str, str], dict] = {}
+    for (path, cwe), items in sorted(buckets.items()):
+        items.sort()
+        for i, (start, end, fid) in enumerate(items):
+            for other_start, other_end, other in items[i + 1:]:
+                if other_start > end:
+                    break
+                if fid == other:
+                    continue
+                keep, dup = sorted((fid, other), key=_order)
+                if not _can_duplicate(st["findings"][dup]):  # only an open finding can become a duplicate: the fold refuses the rest
+                    if not _can_duplicate(st["findings"][keep]):
+                        continue
+                    keep, dup = dup, keep
+                pair = tuple(sorted((keep, dup), key=_order))
+                if pair not in found:
+                    if len(found) >= MAX_PROPOSALS:
+                        break
+                    shared = sorted(set(_cwes(st["findings"][keep])) & set(_cwes(st["findings"][dup])))
+                    spans = (_span(st["findings"][keep]), _span(st["findings"][dup]))
+                    found[pair] = {"keep": keep, "duplicate": dup,
+                                   "basis": {"path": path, "cwe": shared, "lines": [min(x[0] for x in spans), max(x[1] for x in spans)]}}
+            if len(found) >= MAX_PROPOSALS:
+                break
+        if len(found) >= MAX_PROPOSALS:
+            break
+    return sorted(found.values(), key=lambda p: (_order(p["keep"]), _order(p["duplicate"])))
+
+
+def _source_label(finding: dict) -> str:
+    source = finding.get("source") if isinstance(finding.get("source"), dict) else {}
+    return str(source.get("tool") or source.get("method") or "unknown")
+
+
+def _chain_reason(st: dict, keep: str, dup: str, keeps: Iterable[str], dups: Iterable[str]) -> Optional[str]:
+    """Why this pair cannot be linked now, or None. ``keeps`` and ``dups`` are the pairs already planned in this batch.
+
+    A chain (a duplicate that keeps another, or a keep that is itself a duplicate) would leave the root without the evidence
+    of the end of the chain, so it is refused; so is a duplicate that is not open, which the fold cannot accept."""
+    keeps, dups = set(keeps), set(dups)
+    if not _can_duplicate(st["findings"][dup]):
+        return "%s is %s: only an open finding can become a duplicate" % (dup, st["findings"][dup].get("state"))
+    if st["findings"][keep].get("state") == "duplicate":
+        return "chain: %s is itself a duplicate of %s; keep the root finding instead" % (keep, st["findings"][keep].get("duplicate_of"))
+    if st["findings"][dup].get("links", {}).get("duplicates"):
+        return "chain: %s already keeps duplicates; link %s to %s's own keep, or keep %s" % (dup, keep, dup, dup)
+    if keep in dups:
+        return "chain: %s becomes a duplicate in this batch; confirm the pair against its keep" % keep
+    if dup in keeps:
+        return "chain: %s keeps a duplicate in this batch; confirm the pairs in one level" % dup
+    if dup in dups:
+        return "%s is already linked as a duplicate in this batch" % dup
+    return None
+
+
+def dedupe(ws: Workspace, actor: ledger.Actor, confirm: Iterable[Tuple[str, str]] = ()) -> dict:
+    """Propose duplicates and record the pairs ``confirm`` names (``keep``, ``duplicate``); nothing else is recorded.
+
+    Every named pair has one outcome: ``linked``, ``already_linked`` or ``refused`` with a reason (a chain, or a duplicate that
+    is not open); a refused pair records nothing. A pair that is not proposed now and not already linked raises
+    ``not_a_duplicate`` before anything is recorded."""
+    pairs = list(confirm)
+    with ws.lock():
+        st = state.load(ws)
+        proposals = propose_duplicates(st)
+        by_pair = {tuple(sorted((p["keep"], p["duplicate"]), key=_order)): p for p in proposals}
+        plan: List[Tuple[str, str, dict]] = []
+        already: List[dict] = []
+        refused: List[dict] = []
+        for keep, dup in pairs:
+            linked = st["findings"].get(dup, {})
+            if linked.get("state") == "duplicate" and linked.get("duplicate_of") == keep:
+                if {"keep": keep, "duplicate": dup} not in already:
+                    already.append({"keep": keep, "duplicate": dup})
+                continue
+            if (keep, dup) in [(k, d) for k, d, _ in plan]:
+                already.append({"keep": keep, "duplicate": dup})
+                continue
+            reason = None
+            if keep in st["findings"] and dup in st["findings"] and keep != dup:
+                reason = _chain_reason(st, keep, dup, [k for k, _, _ in plan], [d for _, d, _ in plan])
+            if reason is not None:
+                refused.append({"keep": keep, "duplicate": dup, "reason": reason})
+            elif tuple(sorted((keep, dup), key=_order)) not in by_pair:
+                raise QaError("not_a_duplicate", "this pair is not proposed: it needs the same file, the same CWE and overlapping lines",
+                              keep=keep, duplicate=dup)
+            else:
+                plan.append((keep, dup, by_pair[tuple(sorted((keep, dup), key=_order))]))
+        linked_now: List[dict] = []
+        for keep, dup, proposal in plan:
+            added = [e for e in st["findings"][dup]["evidence"] if e not in st["findings"][keep]["evidence"]]
+            event = ledger.append(ws, actor, "finding.deduplicated", {
+                "id": dup, "duplicate_of": keep, "basis": proposal["basis"], "evidence_added": added,
+                "source_label": _source_label(st["findings"][dup])})
+            linked_now.append({"keep": keep, "duplicate": dup, "event": event["id"]})
+        left = propose_duplicates(state.load(ws)) if plan else proposals
+    return {"proposals": left, "linked": linked_now, "already_linked": already, "refused": refused}
 
 
 # --------------------------------------------------------------------------- alerts

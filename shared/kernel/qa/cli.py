@@ -28,15 +28,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, redact, report, schema, state, workspace
+from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, redact, report, schema, state, workspace
 from .canonical import loads
+from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
 from .workspace import Workspace, write_atomic
 
 # Commands that record events or write under .qa/. They refuse a workspace a newer schema wrote (§15.7).
 WRITE_COMMANDS = (
     "authorize", "auth revoke", "config set", "config accept", "gate policy propose", "gate policy accept", "gate evaluate",
-    "run", "ingest", "result reclassify", "finding add", "finding update", "finding state", "state rebuild", "report render",
+    "run", "ingest", "result reclassify", "finding add", "finding update", "finding state", "finding dedupe", "state rebuild", "report render", "report bundle", "plan create", "plan update",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -44,7 +45,8 @@ _GATE_EXIT = {"READY": 0, "NOT_READY": 1, "INSUFFICIENT_EVIDENCE": 3, "READY_WIT
 _GUARD_REFUSED = 3
 _INPUT_ERROR = 2
 _INTERNAL_ERROR = 70
-_REPORT_FORMATS = ("md", "json")
+_REPORT_FORMATS = ("md", "json", "sarif", "executive")
+_DEFAULT_REPORT_FORMATS = ("md", "json")
 
 
 class _HelpRequested(Exception):
@@ -195,10 +197,12 @@ def _add_execution_commands(groups: Dict[str, Any]) -> None:
     run.add_argument("--scope", choices=("targeted", "full"), default=execution.RunRequest.scope)
     run.add_argument("--category", default=execution.RunRequest.category, metavar="C")
     run.add_argument("--allow-empty", action="store_true", help="a report with no tests is not inconclusive")
-    attach = _command(groups, "ingest", "attach a report file to a recorded execution")
-    attach.add_argument("format", choices=("junit", "ctrf", "sarif"), metavar="FORMAT")
+    run.add_argument("--container", metavar="IMAGE@DIGEST", help="run in a container from this image, which is never pulled")
+    run.add_argument("--install", metavar="SHELL", help="with --container: install dependencies first, with a network; needs install-dependencies")
+    attach = _command(groups, "ingest", "attach a report file to a recorded execution, or import an evidence bundle")
+    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "bundle"), metavar="FORMAT")
     attach.add_argument("file", metavar="FILE")
-    attach.add_argument("--from", dest="from_execution", required=True, metavar="EXE")
+    attach.add_argument("--from", dest="from_execution", metavar="EXE", help="the execution the report belongs to (not for a bundle)")
     attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, else functional)")
     _group(groups, "result", "change recorded results")
     reclassify = _command(groups, "result reclassify", "change a result's status within the limits, citing evidence")
@@ -222,6 +226,9 @@ def _add_finding_commands(groups: Dict[str, Any]) -> None:
     change.add_argument("--accepted-by", metavar="WHO", help="for accepted_risk: who accepted it")
     change.add_argument("--expires-at", metavar="TS", help="for accepted_risk: YYYY-MM-DDTHH:MM:SS.mmmZ")
     change.add_argument("--duplicate-of", metavar="FND", help="for duplicate: the finding this one repeats")
+    dedupe = _command(groups, "finding dedupe", "propose cross-tool duplicates and link the pairs you confirm")
+    dedupe.add_argument("--confirm", action="append", default=[], metavar="KEEP:DUPLICATE",
+                        help="a proposed pair: KEEP stays, DUPLICATE becomes its duplicate with its evidence and source kept on KEEP")
     _command(groups, "finding list", "print the findings")
     _group(groups, "rubric", "print the shared rubrics")
     _command(groups, "rubric severity", "print the severity rubric")
@@ -240,9 +247,40 @@ def _add_integrity_commands(groups: Dict[str, Any]) -> None:
     show.add_argument("key", nargs="?", metavar="KEY")
     _group(groups, "report", "render reports and check their claims")
     render = _command(groups, "report render", "write the report files for the state as it is now")
-    render.add_argument("--format", action="append", choices=_REPORT_FORMATS, metavar="FORMAT", help="md or json (default: both)")
+    render.add_argument("--format", action="append", choices=_REPORT_FORMATS, metavar="FORMAT", help="md, json, sarif or executive (default: md and json)")
+    packed = _command(groups, "report bundle", "write the ledger, evidence and reports as one portable archive")
+    packed.add_argument("--output", required=True, metavar="PATH", help="the archive to create; it must not exist")
     check = _command(groups, "report check", "check that every claim in a report cites a recorded run")
     check.add_argument("file", metavar="FILE")
+    check.add_argument("--ledger", action="append", metavar="[ALIAS=]PATH", default=[],
+                       help="another ledger the report may cite: a .qa directory or its ledger directory, optionally named so the "
+                            "report can cite ALIAS:GATE-001; read-only, verified, repeatable")
+
+
+def _add_detect_commands(groups: Dict[str, Any]) -> None:
+    _group(groups, "detect", "read the project without running anything of it")
+    _command(groups, "detect stack", "list the languages, manifests, lockfiles and CI files, each with its path")
+    _command(groups, "detect tests", "list the test commands found, ranked: CI, then documented, then inferred")
+
+
+def _add_plan_commands(groups: Dict[str, Any]) -> None:
+    _group(groups, "plan", "record plans whose steps complete only through recorded outputs")
+    create = _command(groups, "plan create", "record a plan from a template, freezing the target commit")
+    create.add_argument("--template", required=True, metavar="PATH")
+    show = _command(groups, "plan status", "evaluate a plan's steps against the ledger (default: the latest plan)")
+    show.add_argument("plan", nargs="?", metavar="PLAN")
+    show.add_argument("--skills-dir", metavar="PATH", help="where the suite's skills are installed (default: next to this skill)")
+    change = _command(groups, "plan update", "hold a step as blocked or not_run with a reason, or release it to pending")
+    change.add_argument("plan", metavar="PLAN")
+    change.add_argument("step", metavar="STEP")
+    change.add_argument("--status", required=True, metavar="STATUS", help="blocked, not_run or pending; done comes only from outputs")
+    change.add_argument("--reason", required=True, metavar="R")
+    diff = _command(groups, "compare", "compare two recorded runs test by test: new failures, fixes, appeared, disappeared, flaky")
+    diff.add_argument("base", metavar="BASE", help="the earlier execution ID")
+    diff.add_argument("head", metavar="HEAD", help="the later execution ID")
+    _group(groups, "catalog", "list the skills installed beside this one")
+    listing = _command(groups, "catalog list", "list the suite skills with their roles and artifact types")
+    listing.add_argument("--skills-dir", metavar="PATH", help="the directory holding the skills (default: next to this skill)")
 
 
 def build_parser() -> _Parser:
@@ -262,6 +300,8 @@ def build_parser() -> _Parser:
     _add_execution_commands(groups)
     _add_finding_commands(groups)
     _add_integrity_commands(groups)
+    _add_detect_commands(groups)
+    _add_plan_commands(groups)
     return parser
 
 
@@ -365,6 +405,60 @@ def cmd_doctor(args: argparse.Namespace, ctx: Context) -> int:
     return 0
 
 
+def cmd_detect_stack(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(stack=detect_stack.detect(ctx.ws.root))
+    return 0
+
+
+def cmd_detect_tests(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(candidates=detect_tests.detect(ctx.ws.root))
+    return 0
+
+
+def _skills_directory(args: argparse.Namespace, ctx: Context) -> Optional[Path]:
+    """--skills-dir, else the directory next to the running skill; None (and a limitation) when that is unknown."""
+    if args.skills_dir is not None:
+        return Path(args.skills_dir)
+    found = catalog.default_skills_dir()
+    if found is None:
+        ctx.limitations.append("skills_dir_unknown")
+    return found
+
+
+def cmd_catalog_list(args: argparse.Namespace, ctx: Context) -> int:
+    directory = _skills_directory(args, ctx)
+    ctx.reply(skills=[] if directory is None else catalog.list_skills(directory))
+    return 0
+
+
+def cmd_compare(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**compare.compare(state.load(ctx.ws), args.base, args.head))
+    return 0
+
+
+def cmd_plan_create(args: argparse.Namespace, ctx: Context) -> int:
+    event = plan.create(ctx.ws, ctx.actor, _json_object(_read_file(args.template)))
+    data = event["data"]
+    ctx.reply(target=data["target"], steps=[step["id"] for step in data["steps"]], **_recorded(event))
+    return 0
+
+
+def cmd_plan_status(args: argparse.Namespace, ctx: Context) -> int:
+    directory = _skills_directory(args, ctx)  # unknown is not missing: with no directory nothing is blocked for want of a skill
+    installed = None if directory is None else [skill["name"] for skill in catalog.list_skills(directory)]
+    summary = plan.status(ctx.ws, args.plan, installed_skills=installed)
+    if summary["id"] is None:
+        ctx.limitations.append("no_plan")
+    ctx.reply(**summary)
+    return 0
+
+
+def cmd_plan_update(args: argparse.Namespace, ctx: Context) -> int:
+    event = plan.update(ctx.ws, ctx.actor, args.plan, args.step, args.status, args.reason)
+    ctx.reply(plan=args.plan, step=args.step, status=args.status, event=event["id"])
+    return 0
+
+
 def cmd_guard_check(args: argparse.Namespace, ctx: Context) -> int:
     # A newer major may hold fields this kernel's schema refuses; a read still answers, flagged schema_newer (§15.7).
     cfg = loads(workspace.read_config(ctx.ws)) if "schema_newer" in ctx.limitations else config.load_config(ctx.ws)
@@ -437,13 +531,20 @@ def cmd_run(args: argparse.Namespace, ctx: Context) -> int:
         command=_command_words(args), shell=args.shell, cwd=_working_directory(ctx.ws),
         reports=tuple(_report_pair(text) for text in args.report),
         timeout_s=args.timeout, attempt_of=args.attempt_of, activity=args.activity, environment=args.environment,
-        scope=args.scope, allow_empty=args.allow_empty, category=args.category)
+        scope=args.scope, allow_empty=args.allow_empty, category=args.category, container=args.container, install=args.install)
     result = execution.execute(ctx.ws, ctx.actor, request)
     ctx.reply(**result)
     return _RUN_EXIT[result["status"]]
 
 
 def cmd_ingest(args: argparse.Namespace, ctx: Context) -> int:
+    if args.format == "bundle":
+        if args.from_execution is not None:
+            raise QaError("usage", "a bundle carries its own executions; --from is for a report file")
+        ctx.reply(**bundle.ingest(ctx.ws, ctx.actor, Path(args.file)))
+        return 0
+    if args.from_execution is None:
+        raise QaError("usage", "--from is required: the execution the report belongs to")
     _refuse_irregular(args.file)
     category = args.category if args.category is not None else "security" if args.format == "sarif" else "functional"
     ctx.reply(**execution.ingest_file(ctx.ws, ctx.actor, args.format, Path(args.file), from_execution=args.from_execution,
@@ -471,6 +572,18 @@ def cmd_finding_state(args: argparse.Namespace, ctx: Context) -> int:
     event = findings.change_state(ctx.ws, ctx.actor, args.finding, args.state, reason=args.reason, accepted_by=args.accepted_by,
                                   expires_at=args.expires_at, duplicate_of=args.duplicate_of)
     ctx.reply(state=event["data"]["to"], **_recorded(event))
+    return 0
+
+
+def _confirmed_pair(text: str) -> Tuple[str, str]:
+    keep, _, duplicate = text.partition(":")
+    if not keep or not duplicate:
+        raise QaError("usage", "--confirm takes KEEP:DUPLICATE, two finding IDs", confirm=text)
+    return keep, duplicate
+
+
+def cmd_finding_dedupe(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**findings.dedupe(ctx.ws, ctx.actor, [_confirmed_pair(text) for text in args.confirm]))
     return 0
 
 
@@ -517,8 +630,13 @@ def cmd_state_show(args: argparse.Namespace, ctx: Context) -> int:
 
 
 def cmd_report_render(args: argparse.Namespace, ctx: Context) -> int:
-    event = report.render(ctx.ws, ctx.actor, formats=tuple(args.format or _REPORT_FORMATS))
+    event = report.render(ctx.ws, ctx.actor, formats=tuple(args.format or _DEFAULT_REPORT_FORMATS))
     ctx.reply(files=event["data"]["files"], **_recorded(event))
+    return 0
+
+
+def cmd_report_bundle(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**bundle.create(ctx.ws, ctx.actor, Path(args.output)))
     return 0
 
 
@@ -527,7 +645,7 @@ def cmd_report_check(args: argparse.Namespace, ctx: Context) -> int:
         text = _read_file(args.file).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise QaError("file_unreadable", "the file is not UTF-8", path=args.file, error=str(exc))
-    problems = [problem._asdict() for problem in report.check_markdown(text, state.load(ctx.ws))]
+    problems = [problem._asdict() for problem in report.check(ctx.ws, text, ledgers=args.ledger)]
     ctx.reply(problems=problems)
     return 1 if problems else 0
 

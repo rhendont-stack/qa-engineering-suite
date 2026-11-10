@@ -1,0 +1,42 @@
+{
+  "mode": "change",
+  "steps": [
+    {
+      "id": "S01",
+      "skill": "qa-codebase-intelligence",
+      "requires_authorization": ["static-analysis"],
+      "expected_outputs": [
+        {"kind": "artifact", "path": "map/codebase-map.json", "schema": "codebase-map.schema.json", "min_count": 1}
+      ]
+    },
+    {
+      "id": "S02",
+      "skill": "qa-regression-guard",
+      "depends_on": ["S01"],
+      "requires_authorization": ["test-execution-local"],
+      "expected_outputs": [
+        {"kind": "execution", "skill": "qa-regression-guard", "min_count": 1},
+        {"kind": "result_set", "skill": "qa-regression-guard", "min_count": 1, "status_not_in": ["unknown"]}
+      ]
+    },
+    {
+      "id": "S03",
+      "skill": "qa-test-execution",
+      "depends_on": ["S01"],
+      "requires_authorization": ["test-execution-local"],
+      "expected_outputs": [
+        {"kind": "execution", "skill": "qa-test-execution", "min_count": 1},
+        {"kind": "result_set", "skill": "qa-test-execution", "min_count": 1, "status_not_in": ["unknown"]}
+      ]
+    },
+    {
+      "id": "S04",
+      "skill": "qa-reporting",
+      "depends_on": ["S02", "S03"],
+      "expected_outputs": [
+        {"kind": "gate", "profile": "change", "min_count": 1},
+        {"kind": "report", "format": "md", "min_count": 1}
+      ]
+    }
+  ]
+}

@@ -9,7 +9,7 @@
     "gate": {"anyOf": [{"$ref": "defs.schema.json#/$defs/gate_id"}, {"type": "null"}]},
     "files": {
       "type": "object",
-      "propertyNames": {"enum": ["report.md", "report.json"]},
+      "propertyNames": {"enum": ["report.md", "report.json", "report.sarif", "executive.md"]},
       "additionalProperties": {"$ref": "defs.schema.json#/$defs/sha256"},
       "minProperties": 1
     }

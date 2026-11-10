@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "resolved_at": "2026-11-09",
+  "images": [
+    {
+      "id": "python-3.9",
+      "tag": "python:3.9-slim",
+      "image": "python@sha256:2d97f6910b16bd338d3060f261f53f144965f755599aab1acda1e13cf1731b1b",
+      "platforms": ["linux/amd64", "linux/arm64"]
+    },
+    {
+      "id": "python-newest",
+      "tag": "python:3-slim",
+      "image": "python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928",
+      "platforms": ["linux/amd64", "linux/arm64"]
+    },
+    {
+      "id": "node-lts",
+      "tag": "node:lts-slim",
+      "image": "node@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072",
+      "platforms": ["linux/amd64", "linux/arm64"]
+    },
+    {
+      "id": "temurin-lts",
+      "tag": "eclipse-temurin:25-jdk",
+      "image": "eclipse-temurin@sha256:83f4a7fc27df94dcc7b8de04d14cbbba8da14406f921e966969c3b09000aa507",
+      "platforms": ["linux/amd64", "linux/arm64"]
+    }
+  ]
+}

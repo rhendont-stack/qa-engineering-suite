@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
+import test_compare
 from helpers import LAUNCHER, WRITE_JUNIT, base
-from qa import canonical, cli, config, schema, workspace
+from qa import canonical, cli, config, ledger, schema, workspace
 
 
 # --------------------------------------------------------------------------- the brief's tests
@@ -539,8 +540,12 @@ WRITE_ARGV = {
     "finding add": ("finding", "add", "--json", "missing.json"),
     "finding update": ("finding", "update", "FND-001", "--json", "missing.json"),
     "finding state": ("finding", "state", "FND-001", "wont_fix", "--reason", "r"),
+    "finding dedupe": ("finding", "dedupe"),
     "state rebuild": ("state", "rebuild"),
     "report render": ("report", "render"),
+    "report bundle": ("report", "bundle", "--output", "x.tar.gz"),
+    "plan create": ("plan", "create", "--template", "missing.json"),
+    "plan update": ("plan", "update", "PLAN-0001", "S01", "--status", "blocked", "--reason", "r"),
 }
 READ_ARGV = {
     "doctor": ("doctor",),
@@ -554,6 +559,11 @@ READ_ARGV = {
     "ledger show": ("ledger", "show"),
     "state show": ("state", "show"),
     "report check": ("report", "check", "FILE"),
+    "detect stack": ("detect", "stack"),
+    "detect tests": ("detect", "tests"),
+    "plan status": ("plan", "status"),
+    "catalog list": ("catalog", "list"),
+    "compare": ("compare", "EXE-" + "0" * 25 + "A", "EXE-" + "0" * 25 + "B"),  # the test below records both
 }
 READ_COMMANDS = set(READ_ARGV) | {"init"}  # init writes, but runs without find_workspace and rewrites nothing
 
@@ -587,7 +597,10 @@ def test_every_write_command_refuses_a_newer_schema(ws, qa_cli, command):  # T18
 
 
 @pytest.mark.parametrize("command", sorted(READ_ARGV))
-def test_every_read_command_answers_and_flags_a_newer_schema(ws, qa_cli, tmp_path, command):  # T18-R10
+def test_every_read_command_answers_and_flags_a_newer_schema(ws, actor, qa_cli, tmp_path, command):  # T18-R10
+    if command == "compare":  # a run to compare must exist, or the answer is a refusal
+        for suffix in "AB":
+            ledger.append(ws, actor, "execution.recorded", test_compare._execution("EXE-" + "0" * 25 + suffix))
     _from_a_newer_schema(ws)
     (tmp_path / "empty.md").write_text("")
     argv = (str(tmp_path / "empty.md") if word == "FILE" else word for word in READ_ARGV[command])

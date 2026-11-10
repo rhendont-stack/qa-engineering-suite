@@ -4,16 +4,17 @@ import os
 import re
 import stat
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple
 
-from . import ids, redact, resource_dir, schema
+from . import authority, ids, redact, resource_dir, schema
 from .canonical import dumps, hash_obj, loads
 from .errors import QaError
 from .workspace import Workspace, read_limited
 
 # QaError codes raised here: invalid_session, unknown_event_type, ledger_partial_line,
-# ledger_corrupt, ledger_write_failed; schema_invalid comes from schema.validate.
+# ledger_corrupt, ledger_write_failed; schema_invalid comes from schema.validate, authority_key_invalid from authority.sign.
 
 _SESSION_RE = re.compile(r"S-[0-9A-HJKMNP-TV-Z]{26}")
 _TYPE_RE = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+")
@@ -102,6 +103,46 @@ def _last_line(path: Path) -> Optional[bytes]:
     return data[:-1].rsplit(b"\n", 1)[-1]
 
 
+def _ts_after(ts: str) -> Optional[str]:
+    """The earliest timestamp later than ``ts``; None when ``ts``, which only a hand edit could write, has no successor."""
+    try:
+        return ids.format_ts(ids.parse_ts(ts) + timedelta(milliseconds=1))
+    except (QaError, OverflowError):
+        return None
+
+
+def _floor_from(path: Path) -> Optional[str]:
+    """The earliest timestamp later than this session's last event, the one ``heads`` reports; None when it has none.
+
+    A healthy session costs one tail read. Only a damaged tail pays for the whole-file read that finds the last valid
+    event, and a file that cannot be read at all is ``ledger_corrupt``, as it is for ``heads`` and the fold.
+    """
+    try:
+        raw = _last_line(path)
+        head = None if raw is None else _parse_envelope(raw)
+    except QaError:
+        head = None
+    floor = None if head is None else _ts_after(head["ts"])
+    if floor is not None:
+        return floor
+    for _, env in reversed(_read_lines(path)):
+        floor = None if env is None else _ts_after(env["ts"])
+        if floor is not None:
+            return floor
+    return None
+
+
+def _append_ts(ws: Workspace) -> str:
+    """The wall clock, unless that would not fold after every event already in the ledger. Call with the lock held.
+
+    Ties are not enough: the fold breaks them by session ID, which says nothing about append order. So the new event is
+    strictly later than the latest one in any session. Limit: after a forward clock jump, ``ts`` leads the wall clock
+    until the clock catches up, because order is what the fold depends on. Plain string comparison is the fold's order.
+    """
+    floors = (_floor_from(path) for _session, path in _session_files(ws)[0])
+    return max([ids.format_ts(ids.now_utc())] + [floor for floor in floors if floor is not None])
+
+
 def append(ws: Workspace, actor: Actor, type: str, data: dict) -> dict:
     session = validate_session_id(actor.session)
     if not isinstance(type, str) or not _TYPE_RE.fullmatch(type) or not _event_schema_exists(type):
@@ -111,6 +152,8 @@ def append(ws: Workspace, actor: Actor, type: str, data: dict) -> dict:
     path = _session_file(ws, session)
     with ws.lock():
         _ledger_dir(ws).mkdir(parents=True, exist_ok=True)
+        if type in authority.EVENTS:  # over the redacted data: the MAC must verify what is stored
+            clean = dict(clean, **{authority.MAC_FIELD: authority.sign(ws, type, clean)})
         last = _last_line(path)
         if last is None:
             seq, prev = 1, None
@@ -123,7 +166,7 @@ def append(ws: Workspace, actor: Actor, type: str, data: dict) -> dict:
             "v": 1,
             "seq": seq,
             "id": ids.new_id("EVT"),
-            "ts": ids.format_ts(ids.now_utc()),
+            "ts": _append_ts(ws),
             "type": type,
             "actor": {"role": actor.role, "skill": actor.skill, "session": session},
             "data": clean,

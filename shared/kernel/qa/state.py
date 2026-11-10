@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Callable, Dict, Iterable, Optional, Set
 
-from . import ledger, schema
+from . import authority, ledger, schema
 from .canonical import hash_obj
 from .errors import QaError
 from .status import can_reclassify
@@ -12,10 +12,10 @@ from .workspace import Workspace, config_bytes, write_atomic
 
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
 _KEYS = ("executions", "results", "tests", "findings", "authorizations", "config",
-         "blocked_commands", "gates", "reports", "violations", "heads")
+         "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads")
 _LISTS = ("blocked_commands", "violations")
-# Derived from evaluation or rendering, so excluded from state_hash.
-_UNHASHED = ("gates", "reports", "heads")
+# Derived from evaluation or rendering, or about the work rather than the evidence, so excluded from state_hash.
+_UNHASHED = ("gates", "reports", "plans", "heads")
 
 
 def empty_state() -> dict:
@@ -32,9 +32,13 @@ def _workspace_initialized(state: dict, event: dict) -> None:
 
 def _config_approved(kind: str) -> Callable[[dict, dict], None]:
     def reduce(state: dict, event: dict) -> None:
-        config_hash = event["data"]["hash"]
+        data = event["data"]
+        config_hash = data["hash"]
         state["config"]["accepted_hash"] = config_hash
-        state["config"]["history"].append({"event": event["id"], "kind": kind, "hash": config_hash})
+        entry = {"event": event["id"], "kind": kind, "hash": config_hash}
+        if data.get("key") == "container.engine":  # the only record that can back the engine: config.container_engine
+            entry["container_engine"] = data["new"]
+        state["config"]["history"].append(entry)
     return reduce
 
 
@@ -64,6 +68,7 @@ def _authorization_granted(state: dict, event: dict) -> None:
         state["violations"].append({"event": event["id"], "kind": "duplicate_id"})
         return
     grant = grants[data["id"]] = dict(copy.deepcopy(data), revoked_at=None, revoke_reason=None)
+    grant.pop(authority.MAC_FIELD, None)  # a statement about the event, not part of the grant
     for revocation, violation in state.get(_EARLY_REVOCATIONS, {}).pop(data["id"], []):
         state["violations"].remove(violation)  # the ledger holds a grant of this id after all
         _revoke(grant, revocation)
@@ -173,6 +178,22 @@ def _settle_finding_state_changed(state: dict, event: dict) -> None:
                        expires_at=data["expires_at"], duplicate_of=data["duplicate_of"])
 
 
+def _settle_finding_deduplicated(state: dict, event: dict) -> None:
+    data = event["data"]
+    dup, keep = state["findings"].get(data["id"]), state["findings"].get(data["duplicate_of"])
+    if dup is None or keep is None or data["id"] == data["duplicate_of"]:
+        _violation(state, event, "unknown_finding")
+    elif "duplicate" not in TRANSITIONS.get(dup["state"], {}) or "duplicate" in (keep["state"],):
+        _violation(state, event, "invalid_transition")
+    else:
+        dup.update(state="duplicate", state_reason="same file, same CWE and overlapping lines as " + data["duplicate_of"],
+                   accepted_by=None, expires_at=None, duplicate_of=data["duplicate_of"])
+        keep["evidence"] = list(keep["evidence"]) + [e for e in data["evidence_added"] if e not in keep["evidence"]]
+        links = keep.setdefault("links", {})
+        for name, value in (("duplicates", data["id"]), ("duplicate_sources", data["source_label"])):
+            links[name] = list(links.get(name, [])) + [value]
+
+
 def _gate_evaluated(state: dict, event: dict) -> None:
     data = event["data"]
     if data["id"] in state["gates"]:  # the first record stays
@@ -187,6 +208,52 @@ def _report_rendered(state: dict, event: dict) -> None:
         _violation(state, event, "duplicate_id")
         return
     state["reports"][data["id"]] = copy.deepcopy(data)
+
+
+def _plan_created(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["plans"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    plan = state["plans"][data["id"]] = copy.deepcopy(data)
+    for step in plan["steps"]:
+        step["hold"] = None  # {"status", "reason", "event"} while the step is blocked or not_run; done is never stored
+
+
+def _settle_plan_step_updated(state: dict, event: dict) -> None:
+    data = event["data"]
+    plan = state["plans"].get(data["plan"])
+    if plan is None:
+        _violation(state, event, "unknown_plan")
+        return
+    step = next((s for s in plan["steps"] if s["id"] == data["step"]), None)
+    if step is None:
+        _violation(state, event, "unknown_step")
+    elif data["status"] == "pending":
+        step["hold"] = None
+    else:
+        step["hold"] = {"status": data["status"], "reason": data["reason"], "event": event["id"]}
+
+
+def _bundle_ingested(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["bundles"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    state["bundles"][data["id"]] = dict(copy.deepcopy(data), comparisons=[])
+
+
+def _settle_bundle_compared(state: dict, event: dict) -> None:
+    data = event["data"]
+    bundle = state["bundles"].get(data["bundle"])
+    if bundle is None:
+        _violation(state, event, "unknown_bundle")
+    elif data["local"] not in state["executions"] or data["remote"] not in bundle["executions"]:
+        _violation(state, event, "unknown_execution")
+    else:
+        bundle["comparisons"].append({"event": event["id"], "local": data["local"], "remote": data["remote"],
+                                      "commit": data["commit"], "matching": data["matching"],
+                                      "differences": copy.deepcopy(data["differences"])})
 
 
 def _gate_policy_proposed(state: dict, event: dict) -> None:
@@ -217,7 +284,9 @@ def _settle_gate_policy_accepted(state: dict, event: dict) -> None:
 _SETTLERS = {"result.recorded": _settle_result, "result.reclassified": _settle_reclassification,
              "report.ingested": _settle_ingest, "finding.updated": _settle_finding_updated,
              "finding.state_changed": _settle_finding_state_changed,
-             "gate.policy_accepted": _settle_gate_policy_accepted}
+             "finding.deduplicated": _settle_finding_deduplicated,
+             "gate.policy_accepted": _settle_gate_policy_accepted, "plan.step_updated": _settle_plan_step_updated,
+             "bundle.compared": _settle_bundle_compared}
 
 
 def known_references(st: dict) -> Set[str]:
@@ -304,15 +373,33 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "finding.opened": _finding_opened,
     "finding.updated": _queue,
     "finding.state_changed": _queue,
+    "finding.deduplicated": _queue,
     "gate.evaluated": _gate_evaluated,
     "report.rendered": _report_rendered,
     "gate.policy_proposed": _gate_policy_proposed,
     "gate.policy_accepted": _gate_policy_accepted,
+    "plan.created": _plan_created,
+    "plan.step_updated": _queue,
+    "bundle.ingested": _bundle_ingested,
+    "bundle.compared": _queue,
 }
 
 
-def fold(events: Iterable[dict]) -> dict:
+def _forget_revocations(state: dict, grant_ids: Set[str]) -> None:
+    """A revocation of a grant the fold withheld names a real grant, so it is no ``unknown_authorization``."""
+    for grant_id in grant_ids:
+        for _revocation, violation in state.get(_EARLY_REVOCATIONS, {}).pop(grant_id, []):
+            state["violations"].remove(violation)
+
+
+def fold(events: Iterable[dict], backed: Optional[Callable[[dict], bool]] = None) -> dict:
+    """Reduce ``events`` to the state. ``backed`` (see ``authority``) decides which approvals count.
+
+    With it, as in ``load``, an event that would confer authority and is not ``backed`` does nothing. Without it, as for an
+    imported bundle, every event counts, so the result and its hash do not depend on this machine's key.
+    """
     state = empty_state()
+    withheld_grants: Set[str] = set()
     for event in events:
         reducer = REDUCERS.get(event["type"])
         if reducer is None:
@@ -325,14 +412,19 @@ def fold(events: Iterable[dict]) -> dict:
                 raise
             state["violations"].append({"event": event["id"], "kind": "invalid_data"})
             continue
+        if backed is not None and event["type"] in authority.CONFERRING and not backed(event):
+            if event["type"] == "authorization.granted":
+                withheld_grants.add(event["data"]["id"])
+            continue
         reducer(state, event)
+    _forget_revocations(state, withheld_grants)
     state.pop(_EARLY_REVOCATIONS, None)  # its violations stay: no grant in the ledger holds those ids
     _settle(state)
     return state
 
 
 def load(ws: Workspace) -> dict:
-    state = fold(ledger.iter_all_events(ws))
+    state = fold(ledger.iter_all_events(ws), backed=authority.event_verifier(ws))
     state["heads"] = ledger.heads(ws)
     return state
 

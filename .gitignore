@@ -7,8 +7,14 @@ tests/corpus/producers/**/node_modules/
 tests/corpus/producers/**/build/
 tests/corpus/producers/**/.gradle/
 tests/corpus/producers/**/target/
+fixtures/**/node_modules/
+fixtures/**/build/
+fixtures/**/.gradle/
+fixtures/**/.pytest_cache/
 .superpowers/
 # Internal design documents: kept on disk, not published
 docs/proposal/
 docs/requirements/
 docs/superpowers/
+# Local list of strings that must never be published (read by tools/check_repo.py)
+.private-terms

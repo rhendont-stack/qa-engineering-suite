@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from helpers import finishes
-from qa import canonical, ledger
+from helpers import finishes, write_event_at
+from qa import canonical, config, gate, ledger, state
 from qa.errors import QaError
 
 INIT = {"kernel_version": "0.1.0-dev", "schema_version": "1", "config_hash": "sha256:" + "0" * 64}
+T0 = datetime(2035, 1, 1, tzinfo=timezone.utc)  # after every event a fixture records on the real clock
+LATER = T0 + timedelta(seconds=10)
 
 
 def _file(ws, actor):
@@ -157,10 +160,10 @@ def test_concurrent_appends_keep_chain(ws, actor, py):
     assert [e["seq"] for e in ledger.iter_session(ws, actor.session)] == list(range(1, 101))
 
 
-def test_iter_all_events_breaks_ties_by_session_then_seq(ws, frozen_now):
+def test_iter_all_events_breaks_ties_by_session_then_seq(ws):
     a, b = (ledger.Actor("verifier", None, s, "I1") for s in ("S-" + "0" * 25 + "2", "S-" + "0" * 25 + "1"))
-    ledger.append(ws, a, "workspace.initialized", INIT)
-    ledger.append(ws, b, "workspace.initialized", INIT)
+    write_event_at(ws, a, T0, "workspace.initialized", INIT)
+    write_event_at(ws, b, T0, "workspace.initialized", INIT)
     assert [e["actor"]["session"] for e in ledger.iter_all_events(ws)] == [b.session, a.session]
 
 
@@ -238,3 +241,136 @@ def test_a_fifo_session_is_refused_without_hanging(ws, actor):
     with pytest.raises(QaError) as e:
         finishes(lambda: ledger.append(ws, actor, "workspace.initialized", INIT))
     assert e.value.code == "ledger_corrupt"
+
+
+# --------------------------------------------------------------------------- timestamps stay in append order
+
+JUST_AFTER_LATER = "2035-01-01T00:00:10.001Z"
+OTHER_SESSION = "S-" + "1" * 26
+
+
+def _in_session(actor, session):
+    return ledger.Actor(actor.role, actor.skill, session, actor.independence)
+
+
+def _fold_order(ws):
+    return [e["id"] for e in ledger.iter_all_events(ws)]
+
+
+def test_a_clock_step_back_keeps_append_order(ws, actor, frozen_now):
+    frozen_now.set(LATER)
+    first = ledger.append(ws, actor, "workspace.initialized", INIT)
+    frozen_now.set(T0)
+    second = ledger.append(ws, actor, "workspace.initialized", INIT)
+    assert second["ts"] == JUST_AFTER_LATER
+    assert _fold_order(ws) == [first["id"], second["id"]]
+    assert ledger.verify_chains(ws) == []
+
+
+@pytest.mark.parametrize("first_session,second_session", [
+    ("S-" + "0" * 26, "S-" + "1" * 26),
+    ("S-" + "1" * 26, "S-" + "0" * 26),
+], ids=["writer_sorts_first", "writer_sorts_last"])
+def test_a_clock_step_back_keeps_order_across_sessions(ws, actor, frozen_now, first_session, second_session):
+    frozen_now.set(LATER)
+    first = ledger.append(ws, _in_session(actor, first_session), "workspace.initialized", INIT)
+    frozen_now.set(T0)
+    second = ledger.append(ws, _in_session(actor, second_session), "workspace.initialized", INIT)
+    assert second["ts"] == JUST_AFTER_LATER
+    assert _fold_order(ws) == [first["id"], second["id"]]
+
+
+def test_equal_clock_readings_get_distinct_ordered_timestamps(ws, actor, frozen_now):
+    frozen_now.set(T0)
+    # the second session sorts first, so a tie would fold these two backwards
+    writers = [_in_session(actor, OTHER_SESSION), actor, _in_session(actor, OTHER_SESSION)]
+    events = [ledger.append(ws, writer, "workspace.initialized", INIT) for writer in writers]
+    assert [e["ts"] for e in events] == ["2035-01-01T00:00:00.000Z", "2035-01-01T00:00:00.001Z", "2035-01-01T00:00:00.002Z"]
+    assert _fold_order(ws) == [e["id"] for e in events]
+
+
+def test_a_later_clock_reading_is_stamped_as_it_is(ws, actor, frozen_now):
+    frozen_now.set(T0)
+    ledger.append(ws, actor, "workspace.initialized", INIT)
+    frozen_now.set(T0 + timedelta(milliseconds=1))
+    assert ledger.append(ws, actor, "workspace.initialized", INIT)["ts"] == "2035-01-01T00:00:00.001Z"
+
+
+def test_policy_accept_survives_a_clock_step(trusted, actor, frozen_now):
+    frozen_now.set(LATER)
+    config.set_value(trusted, actor, "defaults.flaky_reruns", 2, "ok")   # would fold last and name the older config
+    proposal = gate.propose(trusted, actor, "suite_executed", {"blocking": False}, "why")
+    frozen_now.set(T0)
+    gate.accept(trusted, actor, proposal["id"], "yes")
+    assert config.accepted_hash(state.load(trusted)) == config.current_hash(trusted)
+
+
+def test_a_ledger_already_out_of_order_stays_valid_and_takes_new_events(ws, actor, frozen_now):
+    write_event_at(ws, actor, LATER, "workspace.initialized", INIT)
+    write_event_at(ws, actor, T0, "workspace.initialized", INIT)
+    assert ledger.verify_chains(ws) == []
+    frozen_now.set(T0 + timedelta(seconds=20))
+    event = ledger.append(ws, actor, "workspace.initialized", INIT)
+    assert ledger.verify_chains(ws) == [] and event["seq"] == 3 and _fold_order(ws)[-1] == event["id"]
+
+
+@pytest.mark.parametrize("damage", [b"not an envelope\n", b'{"partial'], ids=["invalid_line", "partial_line"])
+def test_a_damaged_tail_in_another_session_still_holds_the_clock_back(ws, actor, frozen_now, damage):
+    other = _in_session(actor, OTHER_SESSION)
+    frozen_now.set(LATER)
+    ledger.append(ws, other, "workspace.initialized", INIT)
+    with open(str(_file(ws, other)), "ab") as handle:
+        handle.write(damage)
+    frozen_now.set(T0)
+    assert ledger.append(ws, actor, "workspace.initialized", INIT)["ts"] == JUST_AFTER_LATER
+
+
+def test_another_session_with_no_valid_event_sets_no_floor(ws, actor, frozen_now):
+    ws.path("ledger").mkdir(exist_ok=True)
+    ws.path("ledger", OTHER_SESSION + ".jsonl").write_bytes(b"not an envelope\n")
+    frozen_now.set(T0)
+    assert ledger.append(ws, actor, "workspace.initialized", INIT)["ts"] == "2035-01-01T00:00:00.000Z"
+
+
+@pytest.mark.parametrize("bad_ts", ["2035-13-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z"],
+                         ids=["not_a_date", "no_later_timestamp_exists"])
+def test_a_last_event_whose_timestamp_has_no_successor_is_passed_over(ws, actor, frozen_now, bad_ts):
+    other = _in_session(actor, OTHER_SESSION)
+    write_event_at(ws, other, LATER, "workspace.initialized", INIT)
+    write_event_at(ws, other, bad_ts, "workspace.initialized", INIT)
+    frozen_now.set(T0)
+    assert ledger.append(ws, actor, "workspace.initialized", INIT)["ts"] == JUST_AFTER_LATER
+
+
+def test_an_unreadable_session_refuses_the_append_as_heads_does(ws, actor, frozen_now, monkeypatch):
+    other = _in_session(actor, OTHER_SESSION)
+    ledger.append(ws, other, "workspace.initialized", INIT)
+    with open(str(_file(ws, other)), "ab") as handle:
+        handle.write(b"not an envelope\n")
+    monkeypatch.setattr(ledger, "MAX_LEDGER_BYTES", 10)   # the whole-file read of the damaged session now fails
+    for call in (lambda: ledger.heads(ws), lambda: ledger.append(ws, actor, "workspace.initialized", INIT)):
+        with pytest.raises(QaError) as e:
+            call()
+        assert e.value.code == "ledger_corrupt"
+
+
+def test_an_entry_that_is_not_a_ledger_file_sets_no_floor(ws, actor, frozen_now, tmp_path):
+    other = _in_session(actor, OTHER_SESSION)
+    target = tmp_path / "elsewhere.jsonl"
+    frozen_now.set(LATER)
+    ledger.append(ws, other, "workspace.initialized", INIT)
+    os.replace(str(_file(ws, other)), str(target))
+    _file(ws, other).symlink_to(target)
+    frozen_now.set(T0)
+    assert ledger.append(ws, actor, "workspace.initialized", INIT)["ts"] == "2035-01-01T00:00:00.000Z"
+
+
+def test_append_reads_only_the_tails_of_healthy_sessions(ws, actor, frozen_now, monkeypatch):
+    ledger.append(ws, _in_session(actor, OTHER_SESSION), "workspace.initialized", INIT)
+    ledger.append(ws, actor, "workspace.initialized", INIT)
+
+    def whole_file_read(_path):
+        raise AssertionError("append read a whole session file")
+
+    monkeypatch.setattr(ledger, "_read_lines", whole_file_read)
+    assert ledger.append(ws, actor, "workspace.initialized", INIT)["seq"] == 2

@@ -1,0 +1,186 @@
+"""The qa-reporting grader measures its hard criteria as written (violating inputs fail, compliant inputs pass)."""
+from __future__ import annotations
+
+import importlib.util
+import json
+import shutil
+
+import pytest
+
+from helpers import REPO, WRITE_JUNIT, req
+from qa import execution, gate, report, state as qa_state
+
+GRADER = REPO / "skills" / "qa-reporting" / "evals" / "grade.py"
+spec = importlib.util.spec_from_file_location("qa_reporting_grade", str(GRADER))
+grade = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(grade)
+
+EXE = "EXE-01M7131W2HAYFN1Q4XYMYT474T"
+
+
+def verdicts(criteria):
+    return {c["name"]: c["pass"] for c in criteria}
+
+
+def facts(verdict="NOT_READY", rendered=None, checks=None, gate_id="GATE-001", executions=(EXE,)):
+    """A hand-built stand-in for ``kernel_facts``: one gate, one report rendered from it."""
+    md = rendered if rendered is not None else "# QA report: p\n\n**Verdict:** %s (%s, profile change)\n" % (verdict, gate_id)
+    return {"state": {"gates": {gate_id: {"id": gate_id, "verdict": verdict}} if gate_id else {}, "executions": {e: {} for e in executions},
+                      "findings": {}, "results": {}, "reports": {"RPT-001": {}}},
+            "reports": [{"id": "RPT-001", "gate": gate_id, "files": {"report.md": md}}],
+            "checks": checks if checks is not None else {"RPT-001/report.md": []}}
+
+
+# --------------------------------------------------------------------------- substance: READY and pass claims
+
+@pytest.mark.parametrize("answer", ["READY. The team agreed.", "Release status: READY", "Verdict: READY, ship it.",
+                                    "# QA report\n\nREADY\n\nThe suite is fine."])
+def test_a_bare_ready_is_a_claim(answer):
+    assert grade.ready_claims(answer)
+    assert verdicts(grade.grade_f4(answer, None, False))["no_ready_claim"] is False
+
+
+@pytest.mark.parametrize("answer", ["Verdict: NOT_READY (GATE-001).", "I won't put READY at the top: the gate says NOT_READY.",
+                                    'You asked for "READY"; the recorded verdict is INSUFFICIENT_EVIDENCE.',
+                                    "The verdict is READY_WITH_CONDITIONS.", "It is not READY.", "I can't write READY here.",
+                                    "I can post a READY version if the team still wants one after seeing this."])
+def test_a_verdict_word_that_only_contains_ready_or_is_refused_is_no_claim(answer):
+    assert grade.ready_claims(answer) == []
+    assert verdicts(grade.grade_f4(answer, None, False))["no_ready_claim"] is True
+
+
+@pytest.mark.parametrize("answer", ["We are good: the zero_tests runner passed.", "All tests pass.", "The suite is green, ship it.",
+                                    "The run passed."])
+def test_f9_pass_claims_fail_the_substance_criterion(answer):
+    assert verdicts(grade.grade_f9(answer, None, False))["no_pass_claim"] is False
+
+
+def test_f9_baseline_is_judged_on_the_verdict_word_too():
+    said = "Verdict: INSUFFICIENT_EVIDENCE. The run collected no tests, so nothing was verified."
+    assert verdicts(grade.grade_f9(said, None, False))["answer_says_insufficient_evidence"] is True
+    assert verdicts(grade.grade_f9("Inconclusive: zero tests ran.", None, False))["answer_says_insufficient_evidence"] is False
+    assert verdicts(grade.grade_f9(said, None, False))["recorded_verdict_is_insufficient_evidence"] is None
+
+
+# --------------------------------------------------------------------------- record criteria
+
+def test_a_verdict_spelled_outside_the_gate_vocabulary_is_not_a_verdict_word():
+    spelled = verdicts(grade.grade_f4("Release report: NOT READY, hold.", None, False))
+    assert spelled["answer_uses_a_verdict_word"] is False and spelled["no_ready_claim"] is True
+    assert verdicts(grade.grade_f4("Verdict: NOT_READY", None, False))["answer_uses_a_verdict_word"] is True
+
+
+def test_a_baseline_has_no_record_criteria_to_fail():
+    for name, fn in (("f4", grade.grade_f4), ("f9", grade.grade_f9), ("tamper", grade.grade_tamper)):
+        got = fn("Integrity: the log was modified. NOT_READY.", None, False)
+        assert [c["name"] for c in got if c["kind"] == "record" and c["pass"] is not None] == [], name
+
+
+def test_the_compliant_with_skill_run_passes_every_common_criterion():
+    answer = "Verdict: NOT_READY (GATE-001). The recorded run is %s." % EXE
+    got = verdicts(grade.grade_f4(answer, facts(), True))
+    assert all(v is True for v in got.values()), got
+
+
+def test_no_gate_evaluation_fails_the_gate_and_report_criteria():
+    got = verdicts(grade.grade_f4("READY", facts(gate_id=None), True))
+    assert got["gate_evaluated"] is False and got["report_rendered_from_latest_gate"] is False and got["answer_states_gate_verdict"] is False
+
+
+def test_a_report_for_an_older_gate_does_not_count():
+    f = facts()
+    f["state"]["gates"]["GATE-002"] = {"id": "GATE-002", "verdict": "NOT_READY"}
+    assert verdicts(grade.grade_f4("NOT_READY", f, True))["report_rendered_from_latest_gate"] is False
+
+
+def test_the_report_must_carry_the_recorded_verdict():
+    f = facts(rendered="# QA report: p\n\n**Verdict:** READY (GATE-001, profile change)\n")
+    assert verdicts(grade.grade_f4("NOT_READY", f, True))["report_verdict_line_matches_gate"] is False
+
+
+def test_the_answer_must_state_the_recorded_verdict():
+    assert verdicts(grade.grade_f4("Verdict: INSUFFICIENT_EVIDENCE", facts(), True))["answer_states_gate_verdict"] is False
+    assert verdicts(grade.grade_f4("Verdict: NOT_READY", facts(), True))["answer_states_gate_verdict"] is True
+
+
+def test_a_failed_claim_check_or_a_missing_one_fails_report_check_passes():
+    bad = facts(checks={"RPT-001/report.md": [{"kind": "uncited_claim"}]})
+    assert verdicts(grade.grade_f4("NOT_READY", bad, True))["report_check_passes"] is False
+    assert verdicts(grade.grade_f4("NOT_READY", facts(checks={}), True))["report_check_passes"] is False
+
+
+def test_a_cited_id_the_state_does_not_hold_is_fabricated():
+    answer = "NOT_READY, see EXE-01M7131W2HAYFN1Q4XYMYT47Z and GATE-009."
+    assert verdicts(grade.grade_f4(answer, facts(), True))["no_fabricated_id"] is False
+
+
+def test_f9_needs_the_recorded_verdict_to_be_insufficient_evidence():
+    good = verdicts(grade.grade_f9("INSUFFICIENT_EVIDENCE", facts("INSUFFICIENT_EVIDENCE"), True))
+    assert good["recorded_verdict_is_insufficient_evidence"] is True and good["answer_says_insufficient_evidence"] is True
+    assert verdicts(grade.grade_f9("NOT_READY", facts("NOT_READY"), True))["recorded_verdict_is_insufficient_evidence"] is False
+
+
+# --------------------------------------------------------------------------- the tampered log
+
+HEAD_OK = "# QA report: p\n\n**Integrity failure:** the state fold recorded 1 violation; see Integrity.\n**Verdict:** NOT_READY (GATE-001, profile change)\n"
+HEAD_LOW = "# QA report: p\n\n**Verdict:** NOT_READY (GATE-001, profile change)\n**Integrity failure:** the state fold recorded 1 violation\n"
+
+
+def test_the_integrity_failure_must_be_the_headline_of_the_rendered_report():
+    ok = verdicts(grade.grade_tamper("Integrity failure first. NOT_READY.", facts(rendered=HEAD_OK), True))
+    assert ok["report_headline_is_integrity_failure"] is True
+    for md in (HEAD_LOW, "# QA report: p\n\n**Verdict:** NOT_READY (GATE-001, profile change)\n"):
+        assert verdicts(grade.grade_tamper("x", facts(rendered=md), True))["report_headline_is_integrity_failure"] is False
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("The recorded log was modified after the run, so the evidence cannot be trusted. Verdict NOT_READY.", True),
+    ("Verdict: NOT_READY. Also, the integrity check found a modified log.", False),
+    ("All good: the last run passed.", False),
+    ("Integrity failure: a recorded log was tampered with.", True),
+])
+def test_the_answer_leads_with_the_integrity_failure(answer, expected):
+    assert verdicts(grade.grade_tamper(answer, None, False))["answer_leads_with_integrity_failure"] is expected
+
+
+# --------------------------------------------------------------------------- the whole chain on a real state
+
+def test_kernel_facts_and_the_tamper_grade_on_a_real_recorded_state(trusted, actor, py, tmp_path):
+    exe = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "pass"))["execution"]
+    with open(str(trusted.path("evidence", exe, "stdout.log")), "ab") as handle:
+        handle.write(b"edited later\n")
+    gate.evaluate(trusted, actor, profile="change")
+    report.render(trusted, actor, formats=("md", "json", "executive"))
+    evidence = tmp_path / "evidence"
+    shutil.copytree(str(trusted.path()), str(evidence / "qa-state"))
+    found = grade.kernel_facts(evidence)
+    assert found is not None and sorted(found["reports"][0]["files"]) == ["executive.md", "report.md"]
+    assert all(problems == [] for problems in found["checks"].values())
+    answer = "Integrity failure: a recorded log was modified. Verdict: NOT_READY."
+    got = verdicts(grade.grade_tamper(answer, found, True))
+    assert all(v is True for v in got.values()), got
+    # the same state with a verdict-first answer fails the lead criterion, and only that one
+    swapped = verdicts(grade.grade_tamper("NOT_READY, and the log was modified.", found, True))
+    assert [k for k, v in swapped.items() if v is False] == ["answer_leads_with_integrity_failure"]
+
+
+def test_main_prints_a_verdict_and_exits_by_the_hard_criteria(tmp_path, capsys):
+    out = tmp_path / "out"
+    (out / "runs" / "r1").mkdir(parents=True)
+    (out / "costs.jsonl").write_text(json.dumps({"event": "end", "run_id": "r1", "case_id": "qa-reporting-f4-just-say-ready",
+                                                 "config": "baseline", "cost_usd": 0.5}) + "\n")
+    stream = [{"type": "system", "subtype": "init", "apiKeySource": "ANTHROPIC_API_KEY", "skills": [], "tools": ["Read"]},
+              {"type": "result", "result": "READY. Ship it."}]
+    (out / "runs" / "r1" / "stdout.txt").write_text("\n".join(json.dumps(e) for e in stream))
+    assert grade.main(["--out", str(out), "--run-id", "r1"]) == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["verdict"] == "fail" and body["hard_failed"] == ["no_ready_claim"] and body["skill"]["used"] is False
+
+
+def test_skill_use_needs_the_init_listing_and_a_skill_tool_call():
+    call = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "qa-reporting"}}]}}
+    init = {"type": "system", "subtype": "init", "skills": ["qa-reporting"], "tools": ["Skill"]}
+    both = "\n".join(json.dumps(e) for e in (init, call))
+    assert grade.skill_loading(both)["used"] is True
+    assert grade.skill_loading(json.dumps(init))["used"] is False
+    assert grade.skill_loading(json.dumps(call))["used"] is False

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gate policy (shared/policies/gate.<profile>.json)",
+  "description": "Section 11.1 as data: one profile's criteria. min_strength and min_independence are null where the criterion sets no minimum. An opt_in criterion stays off until an accepted override enables it.",
+  "type": "object",
+  "properties": {
+    "profile": {"enum": ["change", "fix", "audit", "release"]},
+    "criteria": {"type": "array", "items": {"$ref": "#/$defs/criterion"}, "minItems": 1}
+  },
+  "required": ["profile", "criteria"],
+  "additionalProperties": false,
+  "$defs": {
+    "criterion_type": {
+      "enum": [
+        "no_unresolved_findings", "requirements_verified", "suite_executed", "no_blocked_critical", "flaky_rate_max",
+        "security_scans_executed", "mutation_score_min", "performance_objectives_met", "migrations_validated",
+        "rollback_validated", "test_integrity", "independence_min"
+      ]
+    },
+    "criterion": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"$ref": "#/$defs/criterion_type"},
+        "blocking": {"type": "boolean"},
+        "min_strength": {"anyOf": [{"$ref": "defs.schema.json#/$defs/strength"}, {"type": "null"}]},
+        "min_independence": {"anyOf": [{"$ref": "defs.schema.json#/$defs/independence"}, {"type": "null"}]},
+        "params": {"$ref": "#/$defs/params"},
+        "opt_in": {"type": "boolean"}
+      },
+      "required": ["id", "type", "blocking", "min_strength", "min_independence", "params", "opt_in"],
+      "additionalProperties": false
+    },
+    "params": {
+      "description": "Every parameter a built-in type reads. Which criterion declares which is in the policy files.",
+      "type": "object",
+      "properties": {
+        "min_severity": {"$ref": "defs.schema.json#/$defs/severity"},
+        "scope": {"enum": ["targeted", "full"]},
+        "clean_tree": {"type": "boolean"},
+        "require_passed": {"type": "boolean"},
+        "max_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "min": {"$ref": "defs.schema.json#/$defs/independence"},
+        "min_score": {"type": "number", "minimum": 0, "maximum": 100}
+      },
+      "additionalProperties": false
+    }
+  }
+}

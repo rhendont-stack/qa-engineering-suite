@@ -179,7 +179,7 @@ def test_supported_keywords_contents():
 
 def test_defs_vocabularies():
     d = schema.load_schema("defs.schema.json")["$defs"]
-    assert len(d["reason"]["enum"]) == 17 and "skipped" in d["reason"]["enum"]
+    assert len(d["reason"]["enum"]) == 18 and "skipped" in d["reason"]["enum"]
     assert len(d["activity"]["enum"]) == 17
     assert len(d["category"]["enum"]) == 12
     assert len(d["finding_state"]["enum"]) == 7

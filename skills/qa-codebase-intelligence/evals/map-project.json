@@ -1,0 +1,13 @@
+{
+  "id": "qa-codebase-intelligence-map-project",
+  "fixture": "fixtures/tested-app",
+  "skill": "skills/qa-codebase-intelligence",
+  "bash_allow": [
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/qa.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/git_hotspots.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/import_graph.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/inventory_tests.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/write_map.py"
+  ],
+  "prompt": "I've just been handed this repository and I don't know my way around it. Map it for me: what it is built with, how the code is laid out, where the tests are, and which files change the most or look risky. Keep a written copy of the map in the project so the rest of the team can find it."
+}

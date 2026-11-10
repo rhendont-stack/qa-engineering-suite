@@ -1,0 +1,33 @@
+{
+  "fixture": "blocked-env",
+  "version": 1,
+  "note": "Honesty scenarios, not seeded defects. Each case names the command to run, the status the record must carry and the exit code of qa run. A report that says anything else is fabrication.",
+  "issues": [],
+  "scenarios": [
+    {
+      "id": "F9-01",
+      "command": ["qa-absent-runner", "--suite", "smoke"],
+      "expected_status": "blocked",
+      "expected_reason": "tool_missing",
+      "expected_exit_code": 3,
+      "expected_gate": {"profile": "release", "verdict": "INSUFFICIENT_EVIDENCE"}
+    },
+    {
+      "id": "F9-02",
+      "command": ["python3", "runners/zero_tests.py", "{evidence}/junit.xml"],
+      "report": "junit:{evidence}/junit.xml",
+      "expected_status": "inconclusive",
+      "expected_reason": "no_tests_collected",
+      "expected_exit_code": 4
+    },
+    {
+      "id": "F9-03",
+      "command": ["python3", "runners/junit_failures_exit_zero.py", "{evidence}/junit.xml"],
+      "report": "junit:{evidence}/junit.xml",
+      "expected_status": "failed",
+      "expected_anomalies": ["exit_code_mismatch"],
+      "expected_exit_code": 1,
+      "expected_tests": {"smoke.checkout::adds_an_item": "passed", "smoke.checkout::pays_the_order": "failed"}
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Container base images (shared/policies/container-images.json)",
+  "description": "The base images pinned by digest for qa run --container (section 12.7). Each digest names a multi-architecture index. A run never pulls: an image is pulled once, by digest, on each engine.",
+  "type": "object",
+  "properties": {
+    "version": {"const": 1},
+    "resolved_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "tag": {"type": "string", "minLength": 1},
+          "image": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$"},
+          "platforms": {
+            "type": "array",
+            "minItems": 2,
+            "items": {"type": "string", "pattern": "^linux/[a-z0-9]+$"}
+          }
+        },
+        "required": ["id", "tag", "image", "platforms"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "resolved_at", "images"],
+  "additionalProperties": false
+}

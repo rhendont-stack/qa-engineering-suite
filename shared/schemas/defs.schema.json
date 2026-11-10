@@ -5,6 +5,7 @@
   "description": "Identifiers, hashes and closed vocabularies referenced by the other schemas.",
   "$defs": {
     "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "authority_mac": {"type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$"},
     "timestamp": {
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
@@ -26,7 +27,7 @@
       "enum": [
         "policy_denied", "not_authorized", "config_drift",
         "tool_missing", "not_executable", "dependency_unavailable",
-        "timeout", "report_missing", "report_invalid", "no_tests_collected",
+        "timeout", "report_missing", "report_invalid", "no_tests_collected", "network_not_isolated",
         "assertion", "error", "all_skipped", "exit_code_mismatch",
         "nonzero_exit", "environment_error", "skipped"
       ]
@@ -65,7 +66,7 @@
     "anomaly": {
       "enum": [
         "exit_code_mismatch", "no_tests_collected", "retried_in_framework",
-        "partial", "untested_tool_version"
+        "partial", "untested_tool_version", "network_not_isolated"
       ]
     },
     "actor": {

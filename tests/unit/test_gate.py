@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from helpers import WRITE_JUNIT, WRITE_SARIF, base, req
+from helpers import WRITE_JUNIT, WRITE_SARIF, base, req, without_mac, write_event_at
 from qa import KERNEL_VERSION, config, execution, findings, gate, gitinfo, ids, integrity, ledger, resource_dir, schema, state, vocab
 from qa.errors import QaError
 from qa.ledger import Problem
@@ -1125,7 +1125,7 @@ def test_accept_writes_the_override_and_records_the_hash(trusted, actor):
     p = gate.propose(trusted, actor, "suite_executed", {"blocking": False}, "why")
     e = gate.accept(trusted, actor, p["id"], "yes, advisory")
     assert e["type"] == "gate.policy_accepted"
-    assert e["data"] == {"proposal": p["id"], "approval": "yes, advisory", "config_hash": config.current_hash(trusted)}
+    assert without_mac(e["data"]) == {"proposal": p["id"], "approval": "yes, advisory", "config_hash": config.current_hash(trusted)}
     assert config.load_config(trusted)["gate"]["overrides"] == {"suite_executed": {"blocking": False, "accepted_in": p["id"]}}
     st = state.load(trusted)
     assert config.accepted_hash(st) == config.current_hash(trusted)
@@ -1253,8 +1253,9 @@ def test_an_acceptance_naming_an_event_that_is_no_proposal_is_a_violation(truste
 def test_an_acceptance_folded_before_its_proposal_still_applies(trusted, actor, frozen_now):
     frozen_now.set(T0 + timedelta(seconds=10))
     p = gate.propose(trusted, actor, "suite_executed", {"blocking": False}, "why")
-    frozen_now.set(T0)  # the clock stepped back between the proposal and its acceptance
-    e = _accepted_event(trusted, actor, p["id"])
+    # the clock stepped back between the proposal and its acceptance, in a ledger written before append clamped
+    e = write_event_at(trusted, actor, T0, "gate.policy_accepted", {"proposal": p["id"], "approval": "yes", "config_hash": OTHER_TREE})
+    assert [ev["type"] for ev in ledger.iter_all_events(trusted)][-2:] == ["gate.policy_accepted", "gate.policy_proposed"]
     st = state.load(trusted)
     assert st["violations"] == [] and config.accepted_hash(st) == OTHER_TREE
     assert {"event": e["id"], "kind": "gate_policy_accepted", "proposal": p["id"], "hash": OTHER_TREE} in st["config"]["history"]

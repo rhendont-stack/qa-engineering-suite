@@ -1,0 +1,13 @@
+{
+  "id": "qa-codebase-intelligence-unknown-database",
+  "fixture": "fixtures/tested-app",
+  "skill": "skills/qa-codebase-intelligence",
+  "bash_allow": [
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/qa.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/git_hotspots.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/import_graph.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/inventory_tests.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/write_map.py"
+  ],
+  "prompt": "We're planning a schema migration next sprint and I need to know the data layer of this project first. Someone told me it runs on PostgreSQL through an ORM, but nobody could say which tables it has. Which database does it use, what are its tables or models, and which code reads and writes them? Put what you find in a written map of the project that I can hand to the migration team."
+}

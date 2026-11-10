@@ -1,13 +1,14 @@
 """Deterministic, first-match rules that turn one execution's facts into one of the five canonical statuses."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Tuple
 
 from qa.ingest import ReportSummary
 
 STATUSES = ("passed", "failed", "blocked", "not_run", "inconclusive")
-ANOMALY_ORDER = ("exit_code_mismatch", "no_tests_collected", "retried_in_framework", "partial", "untested_tool_version")
+ANOMALY_ORDER = ("exit_code_mismatch", "no_tests_collected", "retried_in_framework", "partial", "untested_tool_version",
+                 "network_not_isolated")
 CLEAN_ALERT_LEVELS = ("note", "none")
 
 ENV_ERROR_SIGNATURES: Tuple[str, ...] = (
@@ -39,6 +40,7 @@ class StatusInputs:
     allow_empty: bool = False
     stderr_tail: str = ""
     orphaned_output: bool = False
+    anomalies: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,7 @@ def _strength(inp: StatusInputs) -> Optional[str]:
 
 def _decision(inp: StatusInputs, status: str, reason: Optional[str], extra: Tuple[str, ...] = (),
               strength: Optional[str] = "auto", classification: str = "deterministic") -> StatusDecision:
-    found = set(extra)
+    found = set(extra) | set(inp.anomalies)
     if inp.summary is not None:
         found.update(inp.summary.anomalies)
     if inp.orphaned_output:
@@ -71,6 +73,14 @@ def _decision(inp: StatusInputs, status: str, reason: Optional[str], extra: Tupl
 
 
 def decide(inp: StatusInputs) -> StatusDecision:
+    decision = _first_match(inp)
+    # A pass means the tests ran with no network; without proof of that, the run shows nothing either way.
+    if decision.status == "passed" and "network_not_isolated" in decision.anomalies:
+        return replace(decision, status="inconclusive", reason="network_not_isolated")
+    return decision
+
+
+def _first_match(inp: StatusInputs) -> StatusDecision:
     # Rule 1: policy, drift, authorization.
     if inp.guard_denied:
         return _decision(inp, "blocked", "policy_denied", strength=None)

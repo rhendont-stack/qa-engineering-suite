@@ -1,0 +1,28 @@
+{
+  "id": "qa-orchestrator-review-asks",
+  "fixture": "fixtures/tested-app",
+  "skill": "skills/qa-orchestrator",
+  "skills": [
+    "skills/qa-codebase-intelligence",
+    "skills/qa-test-execution",
+    "skills/qa-reporting"
+  ],
+  "agents": [
+    "agents/qa-auditor.md",
+    "agents/qa-verifier.md",
+    "agents/qa-evaluator.md"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-orchestrator/scripts/qa.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/qa.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/git_hotspots.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/import_graph.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/inventory_tests.py",
+    "python3 .claude/skills/qa-codebase-intelligence/scripts/write_map.py",
+    "python3 .claude/skills/qa-test-execution/scripts/qa.py",
+    "python3 .claude/skills/qa-reporting/scripts/qa.py",
+    "python3 -m pytest"
+  ],
+  "runtime_venv": ".venv39",
+  "prompt": "Review this change."
+}
