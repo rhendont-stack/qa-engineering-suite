@@ -15,6 +15,17 @@ from helpers import REPO
 
 HARNESS = REPO / "tools" / "run_skill_eval.py"
 SECRET = "sk-test-0123456789-not-a-real-key"
+# What the fake CLI reports as ``apiKeySource`` for a key taken from the helper, and what the tests tell the harness to accept.
+FAKE_SOURCE = "fake-helper-source"
+# Runs the harness with the accepted source set: the shipped constant is None until a paid probe measures the real value.
+RUNNER = textwrap.dedent('''\
+    import importlib.util, sys
+    spec = importlib.util.spec_from_file_location("run_skill_eval_runner", sys.argv[1])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.HELPER_KEY_SOURCE = sys.argv[2]
+    sys.exit(module.main(sys.argv[3:]))
+''')
 # Names the platform adds to a child's environment on its own: Python sets LC_CTYPE, macOS sets __CF_USER_TEXT_ENCODING.
 OS_ADDED = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
 
@@ -22,7 +33,7 @@ OS_ADDED = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
 # from claude.cfg beside it; LOG is a file it appends one JSON line per call to.
 FAKE = textwrap.dedent('''\
     #!/usr/bin/env python3
-    import json, os, sys, time
+    import json, os, shlex, subprocess, sys, time
     argv = sys.argv[1:]
     cfg = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude.cfg")))
     mode = cfg.get("MODE", "ok")
@@ -37,6 +48,17 @@ FAKE = textwrap.dedent('''\
     if argv[:1] == ["plugin"]:
         sys.exit(2)
     stdin = sys.stdin.read()
+    settings_text = open(argv[argv.index("--settings") + 1]).read() if "--settings" in argv else "{}"
+    helper = json.loads(settings_text).get("apiKeyHelper")
+    helper_info = None
+    if helper:
+        script = shlex.split(helper)[0]
+        folder = os.path.dirname(script)
+        modes = {n: oct(os.stat(os.path.join(folder, n)).st_mode & 0o777) for n in os.listdir(folder)}
+        helper_info = {"dir": os.path.realpath(folder), "dir_mode": oct(os.stat(folder).st_mode & 0o777), "files": modes,
+                       "command": helper}
+    # The key reaches the agent the way it does in life: by running the settings' apiKeyHelper.
+    KEY = subprocess.run(helper, shell=True, capture_output=True, text=True).stdout if helper else os.environ.get("ANTHROPIC_API_KEY", "")
     log = cfg.get("LOG")
     if log:
         with open(log, "a") as fh:
@@ -45,9 +67,9 @@ FAKE = textwrap.dedent('''\
                 extra["settings"] = open(argv[argv.index("--settings") + 1]).read()
             if "--mcp-config" in argv:
                 extra["mcp"] = open(argv[argv.index("--mcp-config") + 1]).read()
-            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-            fh.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "env": env, "has_key": "ANTHROPIC_API_KEY" in os.environ, **extra}) + "\\n")
-    init = {"type": "system", "subtype": "init", "apiKeySource": cfg.get("API_KEY_SOURCE", "ANTHROPIC_API_KEY"),
+            fh.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "env": dict(os.environ), "helper": helper_info,
+                                 "helper_key": KEY, "has_key": "ANTHROPIC_API_KEY" in os.environ, **extra}) + "\\n")
+    init = {"type": "system", "subtype": "init", "apiKeySource": cfg.get("API_KEY_SOURCE", "FAKE_SOURCE_PLACEHOLDER"),
             "skills": cfg.get("SKILLS", ["qa-demo"]), "tools": ["Read", "Skill"]}
     if mode != "noinit":
         print(json.dumps(init), flush=True)
@@ -60,6 +82,11 @@ FAKE = textwrap.dedent('''\
         subprocess.Popen([sys.executable, "-c", "import time, sys; time.sleep(3); open(sys.argv[1], 'w').write('alive')",
                           cfg["MARKER"]])
         time.sleep(60)
+    if mode == "setsid":
+        subprocess.Popen([sys.executable, "-c", "import os, sys, time; os.setsid(); open(sys.argv[1], 'w').write(str(os.getpid())); "
+                          "time.sleep(60)", cfg["PIDFILE"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        time.sleep(1.6)
     if mode == "crash":
         print("boom", file=sys.stderr)
         sys.exit(7)
@@ -68,7 +95,7 @@ FAKE = textwrap.dedent('''\
         sys.exit(0)
     if cfg.get("QA"):
         qa = os.path.join(os.getcwd(), ".qa")
-        for rel, text in {"ledger/events.jsonl": "{\\"k\\": 1}\\nkey " + os.environ["ANTHROPIC_API_KEY"] + "\\n",
+        for rel, text in {"ledger/events.jsonl": "{\\"k\\": 1}\\nkey " + KEY + "\\n",
                           "config.json": "{}", "redaction.key": "R", "authority.key": "A",
                           "work/scratch.txt": "w", "evidence/EXE-1/stdout.log": "ok"}.items():
             os.makedirs(os.path.dirname(os.path.join(qa, rel)), exist_ok=True)
@@ -80,11 +107,11 @@ FAKE = textwrap.dedent('''\
             "usage": {"input_tokens": 100, "output_tokens": 40, "cache_read_input_tokens": 7,
                       "cache_creation_input_tokens": 3}}
     if mode == "leak":
-        body["result"] = "the key is " + os.environ["ANTHROPIC_API_KEY"]
-        print("stderr has " + os.environ["ANTHROPIC_API_KEY"], file=sys.stderr)
+        body["result"] = "the key is " + KEY
+        print("stderr has " + KEY, file=sys.stderr)
     if mode == "leak-encoded":
         import base64
-        raw = os.environ["ANTHROPIC_API_KEY"].encode()
+        raw = KEY.encode()
         body["result"] = "b64 " + base64.b64encode(b"x" + raw).decode() + " hex " + raw.hex()
         print("url " + base64.urlsafe_b64encode(b"yz" + raw + b"!").decode(), file=sys.stderr)
     if mode == "nocost":
@@ -105,7 +132,7 @@ def world(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     exe = bin_dir / "claude"
-    exe.write_text(FAKE)
+    exe.write_text(FAKE.replace("FAKE_SOURCE_PLACEHOLDER", FAKE_SOURCE))
     exe.chmod(0o755)
 
     fixture = tmp_path / "fixture"
@@ -147,10 +174,12 @@ def world(tmp_path):
     w.root, w.case, w.bait, w.out, w.log, w.tmp = tmp_path, case, bait, tmp_path / "out", tmp_path / "fake.log", tmp_root
     w.ledger = tmp_path / "ledger" / "costs.jsonl"
     w.bin = bin_dir
+    w.runner = tmp_path / "runner.py"
+    w.runner.write_text(RUNNER)
     return w
 
 
-def run(w, *extra, config="with-skill", budget="5", case=None, mode="ok", env=None, keep=True):
+def run(w, *extra, config="with-skill", budget="5", case=None, mode="ok", env=None, keep=True, direct=False):
     environ = dict(os.environ, PATH=str(w.bin) + os.pathsep + os.environ["PATH"], TMPDIR=str(w.tmp), ANTHROPIC_API_KEY=SECRET)
     fake = {"MODE": mode, "LOG": str(w.log)}
     for k in [k for k in (env or {}) if k.startswith("FAKE_")]:
@@ -162,17 +191,19 @@ def run(w, *extra, config="with-skill", budget="5", case=None, mode="ok", env=No
             environ.pop(k, None)
         else:
             environ[k] = v
-    return subprocess.run(command(w, *extra, config=config, budget=budget, case=case, keep=keep), capture_output=True, text=True,
-                          env=environ, timeout=120)
+    return subprocess.run(command(w, *extra, config=config, budget=budget, case=case, keep=keep, direct=direct), capture_output=True,
+                          text=True, env=environ, timeout=120)
 
 
 def set_fake(w, **cfg):
     (w.bin / "claude.cfg").write_text(json.dumps(cfg))
 
 
-def command(w, *extra, config="with-skill", budget="5", case=None, out=None, keep=True):
-    """The harness command. ``keep`` adds ``--keep-workdir`` so a test can look inside the copy; the default run deletes it."""
-    return [sys.executable, "-I", str(HARNESS), "--case", str(case or w.case), "--config", config, "--model", "test-model",
+def command(w, *extra, config="with-skill", budget="5", case=None, out=None, keep=True, direct=False):
+    """The harness command. ``keep`` adds ``--keep-workdir`` so a test can look inside the copy; the default run deletes it.
+    ``direct`` runs the shipped file as it is (no accepted key source); otherwise a runner sets ``FAKE_SOURCE`` as accepted."""
+    launch = [sys.executable, "-I", str(HARNESS)] if direct else [sys.executable, "-I", str(w.runner), str(HARNESS), FAKE_SOURCE]
+    return launch + ["--case", str(case or w.case), "--config", config, "--model", "test-model",
             "--budget-usd", budget, "--out", str(out or w.out), "--ledger", str(w.ledger)] + (["--keep-workdir"] if keep else []) \
         + list(extra)
 
@@ -343,7 +374,7 @@ def test_the_child_gets_a_minimal_environment_and_no_user_config(world):
     r = run(world, env={"GIT_DIR": "/nowhere", "SOME_OTHER_SECRET": "x", "HOME": str(world.root / "realhome")})
     assert r.returncode == 0, r.stderr
     call = calls(world)[0]
-    assert call["has_key"] is True
+    assert call["has_key"] is False and call["helper_key"] == SECRET        # the key arrives through the helper only
     assert sorted(set(call["env"]) - OS_ADDED) == ["CLAUDE_CONFIG_DIR", "HOME", "PATH"]
     assert call["env"]["HOME"] != str(world.root / "realhome") and call["env"]["CLAUDE_CONFIG_DIR"].startswith(call["env"]["HOME"])
     assert not os.path.exists(call["env"]["HOME"])                      # the temporary home is gone afterwards
@@ -397,7 +428,7 @@ def test_bare_is_never_passed_and_the_output_is_a_verbose_event_stream(world):
 def test_the_init_event_is_recorded(world):
     run(world, env={"FAKE_SKILLS": ["qa-demo", "other"]})
     rec = records(world)[0]
-    assert rec["api_key_source"] == "ANTHROPIC_API_KEY" and rec["skills_listed"] == ["qa-demo", "other"]
+    assert rec["api_key_source"] == FAKE_SOURCE and rec["skills_listed"] == ["qa-demo", "other"]
     assert rec["skill_tool_present"] is True and rec["status"] == "ok"
 
 
@@ -844,3 +875,136 @@ def test_copy_qa_state_redacts_encoded_forms_too(tmp_path):
     harness.copy_qa_state(tmp_path / "work", tmp_path / "dest", SECRET)
     saved = (tmp_path / "dest" / "evidence" / "log.txt").read_bytes()
     assert all(form not in saved for form in harness.key_forms(SECRET)) and saved.count(harness.MARKER.encode()) == 2
+
+
+# --------------------------------------------------------------------------- milestone 3, task 1: key helper, sweeper, symlinks
+
+def _alive(pid):
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def test_the_agent_environment_holds_no_key(world):
+    r = run(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    call = calls(world)[0]
+    assert "ANTHROPIC_API_KEY" not in call["env"] and call["has_key"] is False
+    assert SECRET not in json.dumps(call["env"]) and SECRET not in json.dumps(call["argv"]) and SECRET not in call["stdin"]
+    assert SECRET not in call["settings"] and call["helper_key"] == SECRET        # only the helper hands it over
+    harness = _harness_module()
+    assert harness.child_env(pathlib.Path("/h"), pathlib.Path("/c")) == {"PATH": os.environ.get("PATH", os.defpath), "HOME": "/h",
+                                                                         "CLAUDE_CONFIG_DIR": "/c"}
+
+
+def test_settings_name_the_helper_and_deny_its_directory(world):
+    assert run(world).returncode == 0
+    call = calls(world)[0]
+    settings, helper = json.loads(call["settings"]), call["helper"]
+    folder = helper["dir"]
+    assert settings["apiKeyHelper"] == helper["command"] and os.path.basename(folder) in settings["apiKeyHelper"]
+    assert "Read(//%s/**)" % folder.lstrip("/") in settings["permissions"]["deny"]
+    assert folder in settings["sandbox"]["filesystem"]["denyRead"] and folder not in settings["sandbox"]["filesystem"]["allowRead"]
+    cwd = os.path.realpath(call["cwd"])
+    assert not (folder + os.sep).startswith(cwd + os.sep) and not (cwd + os.sep).startswith(folder + os.sep)   # not in the copy
+
+
+@pytest.mark.parametrize("mode, extra", [("ok", ()), ("crash", ()), ("errorresult", ()), ("hang", ("--timeout", "1"))])
+@pytest.mark.parametrize("keep", [True, False])
+def test_helper_files_are_private_and_removed_after_the_run(world, mode, extra, keep):
+    run(world, *extra, mode=mode, keep=keep)
+    helper = calls(world)[0]["helper"]
+    assert helper["dir_mode"] == "0o700" and helper["files"] == {"helper.sh": "0o700", "key": "0o600"}
+    assert not os.path.exists(helper["dir"])
+    assert not [p for p in world.tmp.iterdir() if p.name.startswith("qa-eval-key-")]
+
+
+def test_a_refused_budget_leaves_no_helper_directory(world):
+    assert run(world, budget="0.000001", keep=False).returncode == 3
+    assert _left_in_tmp(world) == []
+
+
+def test_write_key_helper_makes_private_files_and_a_command_that_prints_the_key(tmp_path):
+    harness = _harness_module()
+    folder = tmp_path / "helper"
+    command_line = harness.write_key_helper(SECRET, folder)
+    assert subprocess.run(command_line, shell=True, capture_output=True, text=True).stdout == SECRET
+    assert oct(folder.stat().st_mode & 0o777) == "0o700"
+    assert sorted((p.name, oct(p.stat().st_mode & 0o777)) for p in folder.iterdir()) == [("helper.sh", "0o700"), ("key", "0o600")]
+
+
+@pytest.mark.parametrize("source", ["ANTHROPIC_API_KEY", "none", "/login managed key", None])
+def test_a_run_with_another_key_source_is_failed(world, source):
+    r = run(world, env={"FAKE_API_KEY_SOURCE": source})
+    rec = records(world)[0]
+    assert r.returncode == 1 and rec["status"] == "failed" and rec["api_key_source"] == source
+    assert rec["cost_usd"] == 0.25 and rec["cost_unknown"] is False
+
+
+def test_with_no_accepted_source_every_run_is_failed(world):
+    r = run(world, direct=True)                        # the shipped constant, unset: even a helper-style source is not accepted
+    rec = records(world)[0]
+    assert r.returncode == 1 and rec["status"] == "failed" and rec["api_key_source"] == FAKE_SOURCE
+    r = run(world, direct=True, mode="noinit")         # None must never equal the unset constant
+    assert r.returncode == 1 and records(world)[1]["status"] == "failed"
+
+
+def test_escaped_setsid_grandchild_is_killed(world):
+    import time
+    if shutil.which("ps") is None:
+        pytest.skip("tool missing: ps")
+    pidfile = world.root / "escaped.pid"
+    pid = None
+    try:
+        r = run(world, mode="setsid", env={"FAKE_PIDFILE": str(pidfile)})
+        assert r.returncode == 0, r.stdout + r.stderr
+        pid = int(pidfile.read_text())
+        for _ in range(40):
+            if not _alive(pid):
+                break
+            time.sleep(0.1)
+        assert not _alive(pid)
+        assert records(world)[0]["swept_pids"] >= 1
+    finally:
+        if pid and _alive(pid):
+            os.kill(pid, 9)
+
+
+def test_sweeper_never_kills_a_reused_pid(monkeypatch):
+    harness = _harness_module()
+    killed = []
+    monkeypatch.setattr(harness.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    sweeper = harness.Sweeper(100)
+    monkeypatch.setattr(harness, "process_table", lambda: {100: (1, "Mon Nov 10 10:00:00 2026"), 200: (100, "Mon Nov 10 10:00:01 2026"),
+                                                           300: (200, "Mon Nov 10 10:00:02 2026"), 400: (1, "Mon Nov 10 10:00:00 2026")})
+    sweeper.poll()
+    assert sorted(pid for pid, _ in sweeper.seen) == [200, 300]           # descendants only, never the CLI or a stranger
+    monkeypatch.setattr(harness, "process_table", lambda: {200: (1, "Mon Nov 10 11:30:00 2026"), 300: (1, "Mon Nov 10 10:00:02 2026")})
+    assert sweeper.kill_survivors() == [300] and killed == [(300, harness.signal.SIGKILL)]      # 200 is another process now
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_fixture_with_a_symlink_is_refused(world, kind):
+    fixture = world.root / "fixture"
+    if kind == "file":
+        (fixture / "link.txt").symlink_to(fixture / "app.py")
+    else:
+        (fixture / "notes" / "inner").mkdir()
+        (fixture / "notes" / "linkdir").symlink_to(fixture / "notes" / "inner")
+    r = run(world, keep=False)
+    assert r.returncode == 2 and "symlink" in r.stderr
+    assert calls(world) == [] and not world.ledger.exists() and _left_in_tmp(world) == []
+
+
+def test_allow_write_adds_edit_and_write_only_when_declared(world):
+    run(world)
+    run(world, config="baseline")
+    assert not {"Edit", "Write"} & set(_allowed(world, 0)) and not {"Edit", "Write"} & set(_allowed(world, 1))
+    spec = json.loads(world.case.read_text())
+    spec["allow_write"] = True
+    world.case.write_text(json.dumps(spec))
+    run(world)
+    run(world, config="baseline")
+    assert {"Edit", "Write"} <= set(_allowed(world, 2)) and {"Edit", "Write"} <= set(_allowed(world, 3))
+    spec["allow_write"] = "yes"
+    world.case.write_text(json.dumps(spec))
+    assert run(world).returncode == 2 and len(calls(world)) == 4

@@ -10,10 +10,10 @@ test in ``.claude/skills/`` (``with-skill`` only), runs the agent there, and app
 ``DIR/costs.jsonl``. It never reads, prints or records the environment it passes to the agent.
 
 Confinement, stated plainly: tool patterns do not fully confine an agent that can run shell commands. The harness gives the
-child a minimal environment (``ANTHROPIC_API_KEY``, ``PATH``, and a per-run temporary ``HOME`` and ``CLAUDE_CONFIG_DIR``),
+child a minimal environment (``PATH`` and a per-run temporary ``HOME`` and ``CLAUDE_CONFIG_DIR``; no key),
 turns off user and local settings, hooks, auto-memory, keychain authentication, MCP servers and (for baseline) slash
-commands, and always passes a settings file that denies reading the repository, any ``benchmark`` directory and the real
-home. Real confinement depends on the CLI's sandbox, which is always required (``failIfUnavailable``), with no network
+commands, and always passes a settings file that denies reading the repository, any ``benchmark`` directory, the real
+home and the key helper's directory. Real confinement depends on the CLI's sandbox, which is always required (``failIfUnavailable``), with no network
 domains allowed. ``--bare`` is not used: it removes the Skill tool and the skill listing, so a skill could never be found by
 its description. Bash is limited to read-only prefixes plus the narrow prefixes a case
 lists in ``bash_allow``; never allow a bare interpreter there.
@@ -40,8 +40,9 @@ packages the project's tests need. When present its ``bin`` is put first on the 
 path outside the repository is refused.
 
 The CLI runs with ``--output-format stream-json --verbose``. The ``init`` event gives ``api_key_source`` and the skills and
-tools listed; the final ``result`` event gives the metrics. A run whose ``api_key_source`` is not ``ANTHROPIC_API_KEY`` (or
-that has no ``init`` event) is recorded with status ``failed`` and its cost, whatever else happened.
+tools listed; the final ``result`` event gives the metrics. A run whose ``api_key_source`` is not ``HELPER_KEY_SOURCE`` (or
+that has no ``init`` event) is recorded with status ``failed`` and its cost, whatever else happened. ``HELPER_KEY_SOURCE`` is
+the value the CLI reports when it takes its key from an ``apiKeyHelper``; while it is ``None`` no source is accepted.
 
 The budget authority is one ledger (``--ledger``, default ``.superpowers/eval-ledger/costs.jsonl`` under the repository root),
 read under an exclusive lock before every run, whatever ``--out`` is. A run writes a ``start`` line before it begins and an
@@ -56,8 +57,16 @@ interrupted; ``--keep-workdir`` leaves it under the temporary directory, for deb
 
 Redaction replaces the key itself, its hexadecimal form (either case) and its base64 form (standard and URL-safe alphabets,
 at each of the three byte alignments, so the key inside a longer encoded stream is caught too) with the marker. Out of scope:
-a key split across lines or wrapped inside an encoding, or encoded any other way. The key still reaches the agent through
-its environment; delivering it through a helper the agent cannot read is deferred to milestone 3.
+a key split across lines or wrapped inside an encoding, or encoded any other way. The key never enters the agent's environment or
+the copy: the harness writes it to a mode-0600 file next to a mode-0700 helper script, in a per-run directory under the
+temporary root and outside the copy, and the settings name that script as ``apiKeyHelper`` while denying the directory to the
+agent's file tools and to the sandbox. The directory is deleted in the same ``finally`` that deletes the copy.
+
+Escaped processes: ``Sweeper`` polls the process table every 0.5 s from the moment the CLI starts and records every
+descendant (pid and start time). When the run ends, each recorded process still alive with the same start time is killed, so
+a grandchild that left the process group (``setsid``) does not outlive the run; a reused pid has another start time and is
+left alone. A fixture tree holding any symlink is refused with exit 2 before anything is copied. A case field
+``allow_write: true`` adds ``Edit`` and ``Write`` to the tools of both configurations.
 
 Exit codes: 0 the run finished and was recorded; 1 it failed or timed out and was recorded; 2 bad arguments; 3 refused
 because the budget is reached or a recorded cost is unknown.
@@ -74,13 +83,15 @@ import math
 import os
 import shutil
 import signal
+import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO = Path(__file__).resolve().parent.parent
 CONFIGS = ("with-skill", "baseline")
@@ -93,6 +104,11 @@ BASE_TOOLS = ["Read", "Grep", "Glob", "Bash(git status *)", "Bash(git log *)", "
               "Bash(ls *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)"]
 FORBIDDEN_BARE = {"python", "python3", "find", "bash", "sh", "zsh", "env", "node", "sudo", "xargs", "eval", "exec"}
 KEY_VAR = "ANTHROPIC_API_KEY"
+# The ``api_key_source`` the CLI reports when it takes its key from an ``apiKeyHelper``; set from the paid probe. While it is
+# None no source is accepted, so every run is recorded failed.
+HELPER_KEY_SOURCE: Optional[str] = None
+WRITE_TOOLS = ["Edit", "Write"]
+SWEEP_INTERVAL = 0.5
 MARKER = "[REDACTED:%s]" % KEY_VAR
 DEFAULT_LEDGER = REPO / ".superpowers" / "eval-ledger" / "costs.jsonl"
 ESSENTIAL_FLAGS = ("--settings", "--setting-sources", "--strict-mcp-config", "--max-budget-usd")
@@ -143,6 +159,8 @@ def load_case(path: Path) -> Dict[str, Any]:
     for prefix in allow:
         if prefix.split()[0] in FORBIDDEN_BARE and len(prefix.split()) < 2:
             raise usage_error("bash_allow entry %r is too broad: name the script or subcommand too" % prefix)
+    if "allow_write" in case and not isinstance(case["allow_write"], bool):
+        raise usage_error("allow_write must be true or false")
     script = case.get("setup_script")
     if script is not None:
         case["setup_script"] = str(check_setup_script(case, script))
@@ -268,6 +286,9 @@ def build_workdir(case: Dict[str, Any], config: str, setup_home: Optional[Path] 
     fixture = resolve(case["fixture"])
     if not fixture.is_dir():
         raise usage_error("the fixture is not a directory: %s" % fixture)
+    for base, dirs, files in os.walk(str(fixture), followlinks=False):
+        if [n for n in dirs + files if os.path.islink(os.path.join(base, n))]:
+            raise usage_error("the fixture holds a symlink, which is refused: %s" % base)
     skills: List[Path] = []
     if config == "with-skill":
         if not isinstance(case.get("skill"), str) or not (resolve(case["skill"]) / "SKILL.md").is_file():
@@ -414,7 +435,8 @@ def plugin_eval_available(exe: str) -> bool:
 
 
 def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path, tools: List[str], cap: str,
-                   runtime_venv: Optional[str] = None) -> Dict[str, Any]:
+                   runtime_venv: Optional[str] = None, helper_command: Optional[str] = None,
+                   helper_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Everything that depends on the installed CLI's flags and settings schema, in one place.
 
     Raises ``Refused`` when an essential flag is missing. Confirmed from the CLI's help and docs: flag names, the ``Bash(prefix *)``
@@ -436,6 +458,10 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
         if real and not keep.startswith(real.rstrip("/") + "/") and real != keep:   # never deny the copy itself
             denied.append("Read(//%s/**)" % real.lstrip("/"))      # a double slash anchors at the filesystem root
             deny_read.append(real)
+    if helper_dir is not None:
+        real = os.path.realpath(str(helper_dir))
+        denied.append("Read(//%s/**)" % real.lstrip("/"))
+        deny_read.append(real)
     denied.append("Read(**/benchmark/**)")
     # Built-in file tools run outside the sandbox, so both the permission denies and the sandbox denies are needed. The
     # sandbox is always required: if the CLI cannot start it, the run fails rather than running unconfined.
@@ -444,6 +470,8 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
         "sandbox": {"enabled": True, "failIfUnavailable": True,
                     "filesystem": {"denyRead": deny_read, "allowRead": [keep] + ([runtime_venv] if runtime_venv else [])},
                     "network": {"allowedDomains": []}}}
+    if helper_command:
+        settings["apiKeyHelper"] = helper_command
     settings_path = config_dir / "settings.json"
     settings_path.write_text(json.dumps(settings, sort_keys=True), encoding="utf-8")
     args = ["--setting-sources", "project", "--strict-mcp-config", "--mcp-config", str(mcp), "--allowedTools", ",".join(tools),
@@ -459,12 +487,29 @@ def build_command(exe: str, model: str, plan: Dict[str, Any]) -> List[str]:
     return [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model] + plan["args"]
 
 
-def child_env(key: str, home: Path, config_dir: Path, path_prefix: Optional[str] = None) -> Dict[str, str]:
-    """The only environment the agent gets. Nothing else is inherited, so no GIT_* or other credential passes."""
+def write_key_helper(key: str, helper_dir: Path) -> str:
+    """Writes the key to a mode-0600 file and a mode-0700 script that prints it, both in ``helper_dir`` (made mode 0700).
+
+    Returns the ``apiKeyHelper`` command. The directory must be outside the agent's copy; the caller deletes it."""
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(helper_dir), 0o700)
+    key_file, script = helper_dir / "key", helper_dir / "helper.sh"
+    for path, mode, text in ((key_file, 0o600, key), (script, 0o700, "#!/bin/sh\nexec cat -- %s\n" % shlex.quote(str(key_file)))):
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        try:
+            os.fchmod(fd, mode)
+            os.write(fd, text.encode("utf-8"))
+        finally:
+            os.close(fd)
+    return shlex.quote(str(script))
+
+
+def child_env(home: Path, config_dir: Path, path_prefix: Optional[str] = None) -> Dict[str, str]:
+    """The only environment the agent gets: no key (it comes from the helper), and nothing inherited, so no GIT_* either."""
     path = os.environ.get("PATH", os.defpath)
     if path_prefix:
         path = path_prefix + os.pathsep + path
-    return {KEY_VAR: key, "PATH": path, "HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir)}
+    return {"PATH": path, "HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir)}
 
 
 def key_forms(key: str) -> List[bytes]:
@@ -568,6 +613,74 @@ def extract_metrics(stdout: str) -> Dict[str, Any]:
                        "cache_creation": _count(usage.get("cache_creation_input_tokens"))}}
 
 
+def process_table() -> Dict[int, Tuple[int, str]]:
+    """pid -> (ppid, start time) for every process, from ``ps``; empty when ``ps`` cannot run."""
+    env = {"PATH": os.environ.get("PATH", os.defpath), "LC_ALL": "C"}
+    try:
+        done = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,lstart="], capture_output=True, text=True, timeout=20, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    table: Dict[int, Tuple[int, str]] = {}
+    for line in done.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = (int(parts[1]), " ".join(parts[2].split()))
+    return table
+
+
+class Sweeper:
+    """Records every descendant of ``root_pid`` (pid and start time) while the run lasts, then kills the ones still alive.
+
+    A process that leaves the process group (``setsid``) survives ``killpg``; it is still a descendant while its parent lives,
+    so polling often enough sees it. A pid reused later has a different start time and is never killed."""
+
+    def __init__(self, root_pid: int) -> None:
+        self.root = root_pid
+        self.seen: Dict[Tuple[int, str], bool] = {}
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def poll(self) -> None:
+        table = process_table()
+        children: Dict[int, List[int]] = {}
+        for pid, (ppid, _start) in table.items():
+            children.setdefault(ppid, []).append(pid)
+        stack, visited = [self.root], {self.root}
+        while stack:
+            for child in children.get(stack.pop(), []):
+                if child not in visited:
+                    visited.add(child)
+                    self.seen[(child, table[child][1])] = True
+                    stack.append(child)
+
+    def _loop(self) -> None:
+        while True:
+            self.poll()
+            if self._stop.wait(SWEEP_INTERVAL):
+                return
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=30)
+
+    def kill_survivors(self) -> List[int]:
+        """SIGKILLs each recorded process still alive with the recorded start time; returns the pids it killed."""
+        current, killed = process_table(), []
+        for pid, start in list(self.seen):
+            if pid in (0, 1, os.getpid()) or pid not in current or current[pid][1] != start:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.append(pid)
+            except OSError:
+                pass
+        return killed
+
+
 def _kill_group(proc: "subprocess.Popen[str]") -> None:
     try:
         os.killpg(proc.pid, signal.SIGKILL)
@@ -578,7 +691,7 @@ def _kill_group(proc: "subprocess.Popen[str]") -> None:
 def execute(argv: List[str], prompt: str, workdir: Path, timeout: int, env: Dict[str, str]) -> Dict[str, Any]:
     """Runs the CLI in its own process group, so a timeout or interrupt kills its children too."""
     started = utcnow()
-    outcome: Dict[str, Any] = {"timed_out": False, "interrupted": False, "exit_code": None, "stdout": "", "stderr": ""}
+    outcome: Dict[str, Any] = {"timed_out": False, "interrupted": False, "exit_code": None, "stdout": "", "stderr": "", "swept": []}
     pending: Optional[BaseException] = None
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -587,11 +700,15 @@ def execute(argv: List[str], prompt: str, workdir: Path, timeout: int, env: Dict
         outcome["stderr"] = "could not start the CLI: %s" % exc
         outcome["wall_ms"] = 0
         return outcome
+    sweeper = Sweeper(proc.pid)
+    sweeper.start()
     try:
         out, err = proc.communicate(prompt, timeout=timeout)
         outcome.update(exit_code=proc.returncode, stdout=out, stderr=err)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
+        sweeper.stop()
+        outcome["swept"] = sweeper.kill_survivors()        # an escaped process may hold the pipes open
         out, err = proc.communicate()
         outcome.update(timed_out=True, stdout=out or "", stderr=err or "")
     except BaseException as exc:  # KeyboardInterrupt, SIGTERM, anything: stop the agent and say so
@@ -599,6 +716,9 @@ def execute(argv: List[str], prompt: str, workdir: Path, timeout: int, env: Dict
         proc.wait()
         outcome.update(interrupted=True, stderr="interrupted: %s" % type(exc).__name__)
         pending = exc
+    finally:
+        sweeper.stop()
+        outcome["swept"] = sorted(set(outcome["swept"]) | set(sweeper.kill_survivors()))
     outcome["wall_ms"] = int((utcnow() - started).total_seconds() * 1000)
     outcome["pending"] = pending
     return outcome
@@ -670,6 +790,8 @@ def main(argv: Sequence[str]) -> int:
         tools.append("Skill")
     if case.get("agents"):
         tools.append("Task")
+    if case.get("allow_write") is True:
+        tools += WRITE_TOOLS
     venv = case.get("runtime_venv")
     venv_real = os.path.realpath(str(resolve(venv))) if venv else None
     run_id = uuid.uuid4().hex[:12]
@@ -681,29 +803,35 @@ def main(argv: Sequence[str]) -> int:
         return refuse(str(exc))
     finally:
         shutil.rmtree(str(setup_home), ignore_errors=True)
+    helper_dir = Path(tempfile.mkdtemp(prefix="qa-eval-key-"))       # outside the copy, deleted with it, whichever way this ends
     try:
-        return _run_in(args, case, key, exe, help_text, tools, venv_real, run_id, workdir, out, ledger, setup_log)
+        helper_command = write_key_helper(key, helper_dir)
+        return _run_in(args, case, key, exe, help_text, tools, venv_real, run_id, workdir, out, ledger, setup_log,
+                       helper_command, helper_dir)
     finally:
+        shutil.rmtree(str(helper_dir), ignore_errors=True)
         if not args.keep_workdir:
             shutil.rmtree(str(workdir), ignore_errors=True)
 
 
 def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, help_text: str, tools: List[str],
-            venv_real: Optional[str], run_id: str, workdir: Path, out: Path, ledger: "Ledger", setup_log: List[str]) -> int:
+            venv_real: Optional[str], run_id: str, workdir: Path, out: Path, ledger: "Ledger", setup_log: List[str],
+            helper_command: str, helper_dir: Path) -> int:
     """Everything after the working copy exists; ``main`` deletes the copy whichever way this ends."""
     home = Path(tempfile.mkdtemp(prefix="qa-eval-home-"))
     try:
         try:
             with ledger.locked():
                 cap = run_cap(check_budget(ledger.read(), args.budget_usd))
-                plan = isolation_plan(help_text, args.config, workdir, home / "config", tools, cap, venv_real)
+                plan = isolation_plan(help_text, args.config, workdir, home / "config", tools, cap, venv_real,
+                                      helper_command, helper_dir)
                 ledger.append({"event": "start", "run_id": run_id, "timestamp": now_utc(), "case_id": case["id"],
                                "config": args.config, "model": args.model})
         except Refused as exc:
             return refuse(str(exc))
         command = build_command(exe, args.model, plan)
         signal.signal(signal.SIGTERM, _on_sigterm)
-        outcome = execute(command, case["prompt"], workdir, args.timeout, child_env(key, home, home / "config", os.path.join(venv_real, "bin") if venv_real else None))
+        outcome = execute(command, case["prompt"], workdir, args.timeout, child_env(home, home / "config", os.path.join(venv_real, "bin") if venv_real else None))
     finally:
         shutil.rmtree(str(home), ignore_errors=True)
     pending = outcome.pop("pending", None)
@@ -718,15 +846,15 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
         status = "failed"
     else:
         status = "ok"
-    if metrics["api_key_source"] != KEY_VAR and status != "interrupted":
-        status = "failed"          # the run was not paid with the key it was meant to use, so it proves nothing
+    if (HELPER_KEY_SOURCE is None or metrics["api_key_source"] != HELPER_KEY_SOURCE) and status != "interrupted":
+        status = "failed"          # the run was not paid with the helper's key, so it proves nothing
     record = {"event": "end", "run_id": run_id, "timestamp": now_utc(), "case_id": case["id"], "config": args.config,
               "model": args.model, "engine": "claude -p", "plugin_eval_available": plugin_eval_available(exe),
               "command": command[1:], "prompt_via": "stdin", "isolation": {k: v for k, v in plan.items() if k != "args"},
               "workdir": str(workdir), "status": status, "exit_code": outcome["exit_code"],
               "timed_out": outcome["timed_out"], "cost_usd": cost, "cost_unknown": cost is None,
               "duration_ms": metrics["duration_ms"], "wall_ms": outcome["wall_ms"], "tokens": metrics["tokens"],
-              "api_key_source": metrics["api_key_source"], "skills_listed": metrics["skills"], "skill_tool_present": metrics["skill_tool"]}
+              "api_key_source": metrics["api_key_source"], "swept_pids": len(outcome["swept"]), "skills_listed": metrics["skills"], "skill_tool_present": metrics["skill_tool"]}
     try:                                       # first the ledger line, before anything that can fail
         ledger.append(record)
     except OSError as exc:
