@@ -203,7 +203,7 @@ def test_a_verdict_beside_only_an_execution_id_is_uncited():
 def test_an_expected_label_leaves_only_the_token_it_labels_unjudged():
     st = _gated("NOT_READY")
     assert check_markdown("GATE-001 is NOT_READY (expected: INSUFFICIENT_EVIDENCE).\n", st) == []
-    assert check_markdown("Expected: `INSUFFICIENT_EVIDENCE` for this fixture.\n", st) == []
+    assert _kinds(check_markdown("Expected: `INSUFFICIENT_EVIDENCE` for this fixture.\n", st)) == ["unpaired_expectation"]
     assert _kinds(check_markdown("GATE-001 is READY (expected: INSUFFICIENT_EVIDENCE).\n", st)) == ["status_mismatch"]
     assert _kinds(check_markdown("GATE-001 is NOT_READY, INSUFFICIENT_EVIDENCE was expected.\n", st)) == ["status_mismatch"]
     assert _kinds(check_markdown("The verdict READY was expected: INSUFFICIENT_EVIDENCE.\n", st)) == ["uncited_claim"]
@@ -253,3 +253,42 @@ def test_a_path_with_a_slash_before_the_equals_sign_is_a_plain_path(ws, foreign,
     odd = tmp_path / "x=y"
     shutil.copytree(str(other.qa_dir), str(odd / ".qa"))
     assert report.check(ws, "%s failed.\n" % exe, ledgers=[str(odd)]) == []
+
+
+# --------------------------------------------------------------------------- expectations pair, status words attribute
+
+def _two_runs():
+    st = state.empty_state()
+    st["executions"][EXE] = {"status": "passed", "scope": "smoke", "evidence_manifest": None, "ingested": []}
+    st["executions"][EXE_B] = {"status": "failed", "scope": "smoke", "evidence_manifest": None, "ingested": []}
+    return st
+
+
+EXE_B = "EXE-" + "0" * 25 + "B"
+
+
+def test_an_expected_label_alone_is_unpaired():
+    st = _gated("NOT_READY")
+    assert _kinds(check_markdown("GATE-001 is expected: READY.\n", st)) == ["unpaired_expectation"]
+    assert _kinds(check_markdown("%s is expected: passed.\n" % EXE, _two_runs())) == ["unpaired_expectation"]
+    assert _kinds(check_markdown("GATE-001 is NOT_READY (expected: passed).\n", st)) == ["unpaired_expectation"]  # wrong kind
+
+
+def test_an_expected_label_beside_a_measurement_is_judged():
+    st = _gated("NOT_READY")
+    assert check_markdown("GATE-001 is NOT_READY (expected: NOT_READY).\n", st) == []
+    assert _kinds(check_markdown("GATE-001 is READY, expected: NOT_READY.\n", st)) == ["status_mismatch"]
+    assert check_markdown("%s failed (expected: passed).\n" % EXE_B, _two_runs()) == []
+
+
+def test_status_words_are_judged_against_the_nearest_preceding_id():
+    st = _two_runs()
+    assert check_markdown("%s passed and %s failed.\n" % (EXE, EXE_B), st) == []
+    assert _kinds(check_markdown("%s failed and %s passed.\n" % (EXE, EXE_B), st)) == ["status_mismatch", "status_mismatch"]
+    assert _kinds(check_markdown("%s passed and %s passed.\n" % (EXE, EXE_B), st)) == ["status_mismatch"]
+
+
+def test_a_status_word_before_any_id_is_judged_against_the_first():
+    st = _two_runs()
+    assert check_markdown("Passed: %s, and %s failed.\n" % (EXE, EXE_B), st) == []
+    assert _kinds(check_markdown("Failed: %s, and %s failed.\n" % (EXE, EXE_B), st)) == ["status_mismatch"]

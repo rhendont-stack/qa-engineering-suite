@@ -1,6 +1,8 @@
 """Compare two recorded runs test by test: what broke, what got fixed, what is new or gone.
 
-A pure function over the state ``state.fold`` builds. Only structured per-test results count: a run known only by its
+A pure function over the state ``state.fold`` builds. Only runs that concluded (``passed`` or ``failed``) are comparable:
+a downgraded, blocked or inconclusive run says nothing about its tests, whatever its per-test rows read. Only structured
+per-test results count: a run known only by its
 exit code says nothing about individual tests, so such a pair is not comparable and nothing is classified.
 """
 from __future__ import annotations
@@ -64,12 +66,26 @@ def _slower(test_id: str, base_ms: Optional[int], head_ms: Optional[int]) -> Opt
             "ratio": round(head_ms / base_ms, 2) if base_ms > 0 else None, "delta_ms": head_ms - base_ms}
 
 
+def _record_of(st: dict, execution_id: str) -> dict:
+    ref = _BUNDLE_REF.fullmatch(execution_id)
+    if ref is not None:
+        return st["bundles"][ref.group(1)]["executions"][ref.group(2)]
+    return st["executions"][execution_id]
+
+
 def compare(st: dict, base_id: str, head_id: str) -> dict:
     base_exe, head_exe = _resolve(st, base_id), _resolve(st, head_id)
     base, head = tests_of(st, base_exe), tests_of(st, head_exe)
     out: Dict[str, object] = {"base": base_exe, "head": head_exe, "new_failures": [], "fixed": [], "still_failing": [],
                               "appeared": [], "disappeared": [], "flaky": [], "duration_changes": [],
                               "comparable": True, "comparable_reason": None}
+    for name, exe in (("base", base_exe), ("head", head_exe)):
+        record = _record_of(st, exe)
+        if record["status"] not in ("passed", "failed"):
+            out["comparable"] = False
+            reason = record.get("reason")
+            out["comparable_reason"] = "the %s run is %s%s" % (name, record["status"], " (%s)" % reason if reason else "")
+            return out
     missing = [name for name, tests in (("base", base), ("head", head)) if not tests]
     if missing:
         out["comparable"] = False

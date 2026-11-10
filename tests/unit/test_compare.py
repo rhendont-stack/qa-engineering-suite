@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from qa import compare, state
@@ -99,3 +101,42 @@ def test_compare_does_not_change_the_state(st_two_runs):
     before = state.state_hash(st_two_runs)
     compare.compare(st_two_runs, EXE_A, EXE_B)
     assert state.state_hash(st_two_runs) == before
+
+
+EXE_DOWN = "EXE-" + "0" * 25 + "D"
+
+
+@pytest.fixture
+def st_downgraded(st_two_runs):
+    """EXE_DOWN: per-test results all passed, but the run itself was downgraded to inconclusive."""
+    st = copy.deepcopy(st_two_runs)
+    st["executions"][EXE_DOWN] = dict(st["executions"][EXE_A], id=EXE_DOWN, status="inconclusive", reason="network_not_isolated")
+    st["results"]["RES-%026d" % 900] = _result(900, EXE_DOWN, "t_old", "passed")
+    st["results"]["RES-%026d" % 901] = _result(901, EXE_DOWN, "t_fixed", "passed")
+    return st
+
+
+def test_a_downgraded_run_is_not_comparable(st_downgraded):
+    d = compare.compare(st_downgraded, EXE_A, EXE_DOWN)
+    assert d["comparable"] is False and d["comparable_reason"] == "the head run is inconclusive (network_not_isolated)"
+    assert all(d[key] == [] for key in ("new_failures", "fixed", "still_failing", "appeared", "disappeared", "flaky", "duration_changes"))
+    d = compare.compare(st_downgraded, EXE_DOWN, EXE_B)
+    assert d["comparable"] is False and d["comparable_reason"].startswith("the base run is inconclusive")
+
+
+@pytest.mark.parametrize("status", ["blocked", "not_run", "inconclusive"])
+def test_only_passed_or_failed_runs_are_comparable(st_downgraded, status):
+    st_downgraded["executions"][EXE_B]["status"] = status
+    d = compare.compare(st_downgraded, EXE_A, EXE_B)
+    assert d["comparable"] is False and status in d["comparable_reason"] and d["new_failures"] == []
+
+
+def test_a_blocked_bundle_run_is_not_comparable(st_two_runs):
+    remote = "EXE-" + "0" * 25 + "R"
+    tests = {"t_old": {"status": "passed", "flaky": False, "duration_ms": 1}}
+    st = copy.deepcopy(st_two_runs)
+    st["bundles"]["BUNDLE-001"] = {"executions": {remote: {"status": "blocked", "reason": "sandbox_unavailable", "tests": tests}}}
+    d = compare.compare(st, EXE_A, "BUNDLE-001:" + remote)
+    assert d["comparable"] is False and d["comparable_reason"] == "the head run is blocked (sandbox_unavailable)" and d["fixed"] == []
+    st["bundles"]["BUNDLE-001"]["executions"][remote]["status"] = "passed"
+    assert compare.compare(st, EXE_A, "BUNDLE-001:" + remote)["comparable"] is True

@@ -456,10 +456,12 @@ def test_a_result_is_compared_too(trusted, actor, py):
     assert check_markdown("%s failed\n" % res, st) == [] and kinds("%s passed\n" % res, st) == ["status_mismatch"]
 
 
-def test_an_execution_and_a_result_on_one_line_are_two_ids_so_not_compared(trusted, actor, py):
+def test_an_execution_and_a_result_on_one_line_are_each_judged_by_the_nearest_id(trusted, actor, py):
     exe = run(trusted, actor, py, "fail")
     res = next(iter(state.load(trusted)["results"]))
-    assert check_markdown("%s and %s passed\n" % (exe, res), state.load(trusted)) == []
+    st = state.load(trusted)
+    assert check_markdown("%s failed and %s failed\n" % (exe, res), st) == []
+    assert kinds("%s and %s passed\n" % (exe, res), st) == ["status_mismatch"]  # "passed" belongs to the result, which failed
 
 
 def test_each_unknown_id_is_reported_once_per_line(ws):
