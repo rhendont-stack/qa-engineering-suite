@@ -8,7 +8,7 @@ ends exist (the state's reducer does not judge ends). The pairs recorded here:
     automated_by  TC  -> test id     executed_in   TC  -> EXE
     red_check     TC  -> EXE         violates      FND -> AC | REQ
 
-``addressed_by`` (FND -> FIX) and ``validated_by`` (FIX -> RVL) belong to the fix workflow and are not accepted here.
+``addressed_by`` (FND -> FIX) and ``validated_by`` (FIX -> RVL) are recorded by ``fixes`` alone and are not accepted here.
 
 A test id is the one results record, ``classname::name`` (``tests.test_discount::test_cap``, or
 ``tests.test_discount.TestCap::test_cap`` for a class). ``normalise_test_id`` also takes the pytest path form
@@ -51,9 +51,9 @@ RELATIONS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
 }
 _STATE_KEY = {"AC-": "criteria", "RSK-": "risks", "TC-": "testcases", "EXE-": "executions", "FND-": "findings", "REQ-": "requirements"}
 
-# The kinds of gap the matrix reports; the fix workflow adds its own.
+# The kinds of gap the matrix reports (§9.2).
 GAP_KINDS = ("req_without_ac", "ac_without_tc", "tc_not_automated", "tc_never_executed", "tc_last_blocked_or_inconclusive",
-             "req_only_characterization_or_assumed", "tc_unproven", "fnd_without_fix")
+             "req_only_characterization_or_assumed", "tc_unproven", "fnd_without_fix", "fix_without_rvl", "rvl_off_target")
 _OPEN_FINDINGS = ("open", "reopened", "fix_submitted")
 _NEEDS_FIX = ("open", "reopened")
 
@@ -526,6 +526,13 @@ def matrix(st: dict, target_commit: str, *, target_source: Optional[str] = None,
     for fnd in sorted(st["findings"], key=_order):
         if st["findings"][fnd]["state"] in _NEEDS_FIX and not fixes.get(fnd):
             gap("fnd_without_fix", fnd)
+    validated = {r["fix"] for r in st["revalidations"].values()}
+    for fix in sorted(st["fixes"], key=_order):
+        if fix not in validated:
+            gap("fix_without_rvl", fix)
+    for rvl in sorted(st["revalidations"], key=_order):
+        if st["revalidations"][rvl]["fix_commit"] != target_commit:  # validated at a commit other than the one judged
+            gap("rvl_off_target", rvl)
 
     order = {kind: n for n, kind in enumerate(GAP_KINDS)}
     gaps.sort(key=lambda g: (order[g["kind"]], _order(g["id"])))

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
+from . import authz, bundle, catalog, compare, config, doctor, execution, findings, fixes, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -41,6 +41,7 @@ WRITE_COMMANDS = (
     "worktree add", "worktree remove",
     "req add", "req import", "req confirm", "ac add", "asm add", "asm decide", "risk add", "tc add", "tc import",
     "trace link", "trace scan", "trace matrix",
+    "fix add", "revalidate",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -324,6 +325,14 @@ def _add_record_commands(groups: Dict[str, Any]) -> None:
     scan.add_argument("--root", metavar="PATH", help="the directory to scan (default: the workspace root)")
     matrix = _command(groups, "trace matrix", "write .qa/trace/matrix.json and print the gap counts")
     matrix.add_argument("--target", metavar="COMMIT", help="the commit to judge: a full id, or an abbreviation of 7+ digits that names one recorded commit (default: the current HEAD)")
+    _group(groups, "fix", "record fixes for findings")
+    file_command("fix add", "record a fix (findings, base_commit, fix_commit, description, ref?); its findings become fix_submitted")
+    reval = _command(groups, "revalidate", "revalidate a fix: FAIL_TO_PASS and PASS_TO_PASS over recorded runs decide verified_fixed or reopened")
+    reval.add_argument("fix", metavar="FIX")
+    reval.add_argument("--f2p", required=True, metavar="BASE:HEAD", help="the execution of the defect tests at the base commit, then at the fix")
+    reval.add_argument("--p2p", required=True, metavar="BASE:HEAD", help="the regression-set execution at the base commit, then at the fix")
+    reval.add_argument("--defect-test", dest="defect_tests", action="append", required=True, metavar="ID",
+                       help="a test that must fail by assertion at the base and pass at the fix (repeatable)")
 
 
 def build_parser() -> _Parser:
@@ -561,6 +570,25 @@ def cmd_trace_matrix(args: argparse.Namespace, ctx: Context) -> int:
     ctx.reply(path=path.relative_to(ctx.ws.root).as_posix(), target=result["target"], target_source=facts["source"],
               **({"tree_dirty": facts["dirty"]} if facts["source"] == "head" else {}), counts=result["counts"],
               requirements=len(result["requirements"]), testcases=len(result["testcases"]))
+    return 0
+
+
+def cmd_fix_add(args: argparse.Namespace, ctx: Context) -> int:
+    done = fixes.add(ctx.ws, ctx.actor, _json_object(_read_file(args.json_file)))
+    ctx.reply(**done)
+    return 0
+
+
+def _execution_pair(text: str, name: str) -> Tuple[str, str]:
+    parts = text.split(":")
+    if len(parts) != 2 or not all(parts):
+        raise QaError("usage", "%s is BASE:HEAD, two execution ids" % name, value=text)
+    return parts[0], parts[1]
+
+
+def cmd_revalidate(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**fixes.revalidate(ctx.ws, ctx.actor, args.fix, f2p=_execution_pair(args.f2p, "--f2p"),
+                                 p2p=_execution_pair(args.p2p, "--p2p"), defect_tests=list(args.defect_tests)))
     return 0
 
 

@@ -19,6 +19,8 @@
     "req_id": {"type": "string", "pattern": "^REQ-[0-9]{3,}$"},
     "ac_id": {"type": "string", "pattern": "^AC-[0-9]{3,}\\.[0-9]+$"},
     "asm_id": {"type": "string", "pattern": "^ASM-[0-9]{3,}$"},
+    "fix_id": {"type": "string", "pattern": "^FIX-[0-9]{3,}$"},
+    "rvl_id": {"type": "string", "pattern": "^RVL-[0-9]{3,}$"},
     "rsk_id": {"type": "string", "pattern": "^RSK-[0-9]{3,}$"},
     "tc_id": {"type": "string", "pattern": "^TC-[0-9]{3,}$"},
     "auth_id": {"type": "string", "pattern": "^AUTH-[0-9]{3,}$"},

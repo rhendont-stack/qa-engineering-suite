@@ -25,7 +25,8 @@ PROTECTED_PATHS = (
 )
 
 # Finding lifecycle (§10.6): {current state: {next state: the fields the transition needs}}. Every transition needs a
-# reason. fix_submitted, verified_fixed and reopened arrive with fixes and revalidation (milestone 3), so none is here.
+# reason. TRANSITIONS holds only what a person may do by hand. fix_submitted, verified_fixed and reopened are set by fixes and
+# revalidation alone (KERNEL_STATES; FIX_TRANSITIONS says from where), so none is here.
 TRANSITIONS = {
     "open": {"accepted_risk": ("reason", "accepted_by", "expires_at"), "wont_fix": ("reason",),
              "duplicate": ("reason", "duplicate_of")},
@@ -33,4 +34,6 @@ TRANSITIONS = {
     "wont_fix": {"open": ("reason",)},
     "duplicate": {"open": ("reason",)},
 }
-MILESTONE_3_STATES = ("fix_submitted", "verified_fixed", "reopened")
+KERNEL_STATES = ("fix_submitted", "verified_fixed", "reopened")
+# {state: the states a fix or a revalidation moves a finding to}; the fold applies these and nothing else reaches them.
+FIX_TRANSITIONS = {"open": ("fix_submitted",), "reopened": ("fix_submitted",), "fix_submitted": ("verified_fixed", "reopened")}

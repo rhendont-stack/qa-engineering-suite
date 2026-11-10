@@ -338,6 +338,52 @@ def test_a_gate_verdict_filter(repo, actor, py):
     assert _step(repo)["status"] == "done"
 
 
+def _revalidated(repo, actor, commit, *, fixed=True):
+    """FND-001, a fix whose fix_commit is ``commit``, four runs on it and on a base, and a revalidation; returns its outcome."""
+    from helpers import base
+    from qa import findings, fixes
+    from test_fixes import exe_id, record_run, DEFECT, KEEP
+    base_c = "a" * 40
+    findings.add(repo, actor, base())
+    fixes.add(repo, actor, {"findings": ["FND-001"], "base_commit": base_c, "fix_commit": commit, "description": "d"})
+    record_run(repo, actor, "A", base_c, [(DEFECT, "failed", {})], 1)
+    record_run(repo, actor, "B", commit, [(DEFECT, "passed" if fixed else "failed", {})], 2)
+    record_run(repo, actor, "C", base_c, [(KEEP, "passed", {})], 3)
+    record_run(repo, actor, "D", commit, [(KEEP, "passed", {})], 4)
+    return fixes.revalidate(repo, actor, "FIX-001", f2p=(exe_id("A"), exe_id("B")), p2p=(exe_id("C"), exe_id("D")),
+                            defect_tests=[DEFECT])["outcome"]
+
+
+def test_a_revalidation_output_is_met_only_by_a_revalidation_of_the_plans_commit(repo, actor):
+    plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation", "outcome_in": ["passed"]}]))
+    frozen = state.load(repo)["plans"]["PLAN-0001"]["steps"][0]["expected_outputs"][0]
+    assert frozen["commit"] == _head(repo.root) and frozen["outcome_in"] == ["passed"] and frozen["min_count"] == 1
+    assert _step(repo)["status"] == "pending"
+    assert _revalidated(repo, actor, "d" * 40) == "passed"  # a revalidation of another commit says nothing about this one
+    assert _step(repo)["status"] == "pending"
+
+
+def test_a_passed_revalidation_at_the_target_completes_the_step(repo, actor):
+    plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation", "outcome_in": ["passed"]}]))
+    assert _revalidated(repo, actor, _head(repo.root)) == "passed"
+    step = _step(repo)
+    assert step["status"] == "done" and step["outputs"][0]["met"] is True
+
+
+def test_a_failed_revalidation_does_not_meet_outcome_in_passed_but_meets_an_open_filter(repo, actor):
+    plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation", "outcome_in": ["passed"]}]))
+    assert _revalidated(repo, actor, _head(repo.root), fixed=False) == "failed"
+    assert _step(repo)["status"] == "pending"
+    plan.create(repo, actor, one_step_template(expected_outputs=[{"kind": "revalidation"}]))
+    assert _step(repo)["status"] == "done"
+
+
+@pytest.mark.parametrize("output", [{"kind": "revalidation", "outcome_in": []}, {"kind": "revalidation", "outcome_in": ["fine"]},
+                                    {"kind": "gate", "outcome_in": ["passed"]}])
+def test_a_malformed_revalidation_output_is_refused(repo, actor, output):
+    _refused("plan_invalid", plan.create, repo, actor, one_step_template(expected_outputs=[output]))
+
+
 def test_status_is_compact(repo, actor):
     plan.create(repo, actor, one_step_template())
     summary = plan.status(repo)

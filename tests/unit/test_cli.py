@@ -561,6 +561,8 @@ WRITE_ARGV = {
     "trace link": ("trace", "link", "AC-001.1", "verified_by", "TC-001"),
     "trace scan": ("trace", "scan"),
     "trace matrix": ("trace", "matrix"),
+    "fix add": ("fix", "add", "--json", "missing.json"),
+    "revalidate": ("revalidate", "FIX-001", "--f2p", "EXE-X:EXE-Y", "--p2p", "EXE-X:EXE-Y", "--defect-test", "t.py::test_x"),
 }
 READ_ARGV = {
     "doctor": ("doctor",),

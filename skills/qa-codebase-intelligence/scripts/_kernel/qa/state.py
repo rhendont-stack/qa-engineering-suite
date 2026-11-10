@@ -3,23 +3,24 @@ from __future__ import annotations
 import copy
 from typing import Callable, Dict, Iterable, Optional, Set
 
-from . import authority, ledger, schema
+from . import authority, ledger, regression, schema
 from .canonical import hash_obj
 from .errors import QaError
 from .status import can_reclassify
-from .vocab import TRANSITIONS
+from .vocab import FIX_TRANSITIONS, TRANSITIONS
 from .workspace import Workspace, config_bytes, write_atomic
 
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
 _KEYS = ("executions", "results", "tests", "findings", "authorizations", "config",
          "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees",
-         "requirements", "criteria", "assumptions", "risks", "testcases", "links")
+         "requirements", "criteria", "assumptions", "risks", "testcases", "links", "fixes", "revalidations")
 _LISTS = ("blocked_commands", "violations", "links")
 # Derived from evaluation or rendering, or about the work rather than the evidence, so excluded from state_hash.
 _UNHASHED = ("gates", "reports", "plans", "heads")
 # Keys added after milestone 2. While one is empty it is left out of state_hash, so a ledger that predates the key keeps the hash
 # it had (a bundle and a gate.evaluated record that hash). Once it holds something it counts like any other key.
-_UNHASHED_WHEN_EMPTY = ("worktrees", "requirements", "criteria", "assumptions", "risks", "testcases", "links")
+_UNHASHED_WHEN_EMPTY = ("worktrees", "requirements", "criteria", "assumptions", "risks", "testcases", "links",
+                         "fixes", "revalidations")
 
 
 def empty_state() -> dict:
@@ -201,6 +202,57 @@ def _trace_linked(state: dict, event: dict) -> None:
         state["links"].append(dict(copy.deepcopy(data), event=event["id"]))
 
 
+def _fix_recorded(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["fixes"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    state["fixes"][data["id"]] = copy.deepcopy(data)
+    _queue(state, event)
+
+
+def _settle_fix_recorded(state: dict, event: dict) -> None:
+    """Each finding that can take a fix becomes fix_submitted; the finding remembers which fix, so only that fix's revalidation moves it."""
+    data = event["data"]
+    for fid in data["findings"]:
+        finding = state["findings"].get(fid)
+        if finding is None:
+            _violation(state, event, "unknown_finding")
+        elif "fix_submitted" not in FIX_TRANSITIONS.get(finding["state"], ()):
+            _violation(state, event, "invalid_transition")
+        else:
+            finding.update(state="fix_submitted", state_reason="fix " + data["id"] + " submitted", fix=data["id"])
+
+
+def _settle_revalidation_recorded(state: dict, event: dict) -> None:
+    """Trust: the outcome is derived here from the executions and results in the state. The recorded outcome is only a claim; one
+    that differs is a violation and the derived one is used, so writing ``passed`` into the ledger verifies nothing."""
+    data = event["data"]
+    fix = state["fixes"].get(data["fix"])
+    if data["id"] in state["revalidations"]:
+        _violation(state, event, "duplicate_id")
+        return
+    if fix is None:
+        _violation(state, event, "unknown_fix")
+        return
+    f2p, p2p = (data["f2p"]["base"], data["f2p"]["head"]), (data["p2p"]["base"], data["p2p"]["head"])
+    try:
+        regression.check_inputs(state, fix, f2p, p2p)
+    except regression.Refused as refused:
+        _violation(state, event, refused.code)
+        return
+    derived = regression.derive(state, fix, f2p, p2p, data["defect_tests"])
+    if derived["outcome"] != data["outcome"]:
+        _violation(state, event, "outcome_mismatch")
+    state["revalidations"][data["id"]] = dict(copy.deepcopy(data), outcome=derived["outcome"], reason=derived["reason"],
+                                              fix_commit=fix["fix_commit"], base_commit=fix["base_commit"], event=event["id"])
+    new = {"passed": "verified_fixed", "failed": "reopened"}.get(derived["outcome"])
+    for fid in fix["findings"]:
+        finding = state["findings"].get(fid)
+        if new is not None and finding is not None and finding["state"] == "fix_submitted" and finding.get("fix") == fix["id"]:
+            finding.update(state=new, state_reason="revalidation %s %s" % (data["id"], derived["outcome"]))
+
+
 def _result_recorded(state: dict, event: dict) -> None:
     data = event["data"]
     if data["id"] in state["results"]:  # the first record stays
@@ -375,12 +427,14 @@ def _settle_gate_policy_accepted(state: dict, event: dict) -> None:
     config["accepted_hash"] = next((entry["hash"] for entry in reversed(config["history"]) if "hash" in entry), None)
 
 
+_LIFECYCLE = ("fix.recorded", "revalidation.recorded", "finding.state_changed", "finding.deduplicated")
 _SETTLERS = {"result.recorded": _settle_result, "result.reclassified": _settle_reclassification,
              "report.ingested": _settle_ingest, "finding.updated": _settle_finding_updated,
              "finding.state_changed": _settle_finding_state_changed,
              "finding.deduplicated": _settle_finding_deduplicated,
              "gate.policy_accepted": _settle_gate_policy_accepted, "plan.step_updated": _settle_plan_step_updated,
-             "bundle.compared": _settle_bundle_compared}
+             "bundle.compared": _settle_bundle_compared, "fix.recorded": _settle_fix_recorded,
+             "revalidation.recorded": _settle_revalidation_recorded}
 
 
 def known_references(st: dict) -> Set[str]:
@@ -446,7 +500,10 @@ def _build_tests(state: dict) -> None:
 
 
 def _settle(state: dict) -> None:
-    for event in state.pop(_SETTLE, []):
+    queued = state.pop(_SETTLE, [])
+    # A revalidation judges the runs as they stand after every reclassification, so the events that move a finding along its
+    # lifecycle settle after the rest, in the order they were recorded among themselves.
+    for event in sorted(queued, key=lambda e: e["type"] in _LIFECYCLE):
         _SETTLERS[event["type"]](state, event)
     _build_tests(state)
 
@@ -486,6 +543,8 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "risk.upserted": _stored("risks"),
     "testcase.upserted": _stored("testcases"),
     "trace.linked": _trace_linked,
+    "fix.recorded": _fix_recorded,
+    "revalidation.recorded": _queue,
 }
 
 

@@ -7,7 +7,7 @@ import pytest
 
 import test_compare
 from helpers import base
-from qa import findings, ledger, records, schema, state, trace
+from qa import findings, fixes, ledger, records, schema, state, trace
 from qa.errors import QaError
 from test_records import ac, req, rsk, tc
 
@@ -348,17 +348,36 @@ def build_fnd_without_fix(ws, actor):
     return "FND-001"
 
 
+def build_fix_without_rvl(ws, actor):
+    findings.add(ws, actor, base())
+    fixes.add(ws, actor, {"findings": ["FND-001"], "base_commit": COMMIT_B, "fix_commit": COMMIT_A, "description": "d"})
+    return "FIX-001"
+
+
+def build_rvl_off_target(ws, actor):
+    findings.add(ws, actor, base())
+    fixes.add(ws, actor, {"findings": ["FND-001"], "base_commit": COMMIT_A, "fix_commit": COMMIT_B, "description": "d"})
+    base_f = record_run(ws, actor, "A", COMMIT_A, [(TEST_ID, "failed", {})], 1)
+    head_f = record_run(ws, actor, "B", COMMIT_B, [(TEST_ID, "passed", {})], 2)
+    base_p = record_run(ws, actor, "C", COMMIT_A, [("tests.t::keep", "passed", {})], 3)
+    head_p = record_run(ws, actor, "D", COMMIT_B, [("tests.t::keep", "passed", {})], 4)
+    fixes.revalidate(ws, actor, "FIX-001", f2p=(base_f, head_f), p2p=(base_p, head_p), defect_tests=[TEST_ID])
+    return "RVL-001"  # validated at COMMIT_B, and the matrix below is about COMMIT_A
+
+
 BUILDERS = {
     "req_without_ac": build_req_without_ac, "ac_without_tc": build_ac_without_tc, "tc_not_automated": build_tc_not_automated,
     "tc_never_executed": build_tc_never_executed, "tc_last_blocked_or_inconclusive": build_blocked,
     "req_only_characterization_or_assumed": build_characterization, "tc_unproven": build_unproven,
-    "fnd_without_fix": build_fnd_without_fix,
+    "fnd_without_fix": build_fnd_without_fix, "fix_without_rvl": build_fix_without_rvl, "rvl_off_target": build_rvl_off_target,
 }
 
 
-def test_every_gap_kind_has_a_case_and_the_fix_kinds_wait_for_their_task():
-    assert set(BUILDERS) == set(trace.GAP_KINDS) and len(trace.GAP_KINDS) == 8
-    assert not {"fix_without_rvl", "rvl_off_target"} & set(trace.GAP_KINDS)
+def test_every_gap_kind_has_a_case_and_the_schema_lists_every_kind():
+    assert set(BUILDERS) == set(trace.GAP_KINDS) and len(trace.GAP_KINDS) == 10
+    assert {"fix_without_rvl", "rvl_off_target"} <= set(trace.GAP_KINDS)
+    listed = schema.load_schema("trace-matrix.schema.json")["$defs"]["gap"]["properties"]["kind"]["enum"]
+    assert list(listed) == list(trace.GAP_KINDS)
 
 
 @pytest.mark.parametrize("kind", trace.GAP_KINDS)

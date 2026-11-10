@@ -62,7 +62,7 @@
     "template_output": {
       "type": "object",
       "properties": {
-        "kind": {"enum": ["execution", "result_set", "artifact", "gate", "report"]},
+        "kind": {"enum": ["execution", "result_set", "artifact", "gate", "report", "revalidation"]},
         "skill": {"$ref": "#/$defs/name"},
         "min_count": {"type": "integer", "minimum": 1},
         "status_not_in": {"type": "array", "items": {"type": "string"}},
@@ -70,18 +70,20 @@
         "schema": {"type": "string", "minLength": 1},
         "profile": {"enum": ["change", "fix", "audit", "release"]},
         "verdict_in": {"type": "array", "items": {"enum": ["READY", "READY_WITH_CONDITIONS", "INSUFFICIENT_EVIDENCE", "NOT_READY"]}, "minItems": 1},
-        "format": {"enum": ["md", "json"]}
+        "format": {"enum": ["md", "json"]},
+        "outcome_in": {"type": "array", "items": {"enum": ["passed", "failed", "inconclusive"]}, "minItems": 1}
       },
       "required": ["kind"],
       "additionalProperties": false,
       "allOf": [
-        {"if": {"properties": {"kind": {"const": "artifact"}}, "required": ["kind"]}, "then": {"required": ["path", "schema"]}}
+        {"if": {"properties": {"kind": {"const": "artifact"}}, "required": ["kind"]}, "then": {"required": ["path", "schema"]}},
+        {"if": {"required": ["outcome_in"]}, "then": {"properties": {"kind": {"const": "revalidation"}}}}
       ]
     },
     "output": {
       "type": "object",
       "properties": {
-        "kind": {"enum": ["execution", "result_set", "artifact", "gate", "report"]},
+        "kind": {"enum": ["execution", "result_set", "artifact", "gate", "report", "revalidation"]},
         "skill": {"$ref": "#/$defs/name"},
         "commit": {"type": ["string", "null"]},
         "min_count": {"type": "integer", "minimum": 1},
@@ -90,14 +92,16 @@
         "schema": {"type": "string", "minLength": 1},
         "profile": {"enum": ["change", "fix", "audit", "release"]},
         "verdict_in": {"type": "array", "items": {"enum": ["READY", "READY_WITH_CONDITIONS", "INSUFFICIENT_EVIDENCE", "NOT_READY"]}, "minItems": 1},
-        "format": {"enum": ["md", "json"]}
+        "format": {"enum": ["md", "json"]},
+        "outcome_in": {"type": "array", "items": {"enum": ["passed", "failed", "inconclusive"]}, "minItems": 1}
       },
       "required": ["kind", "commit", "min_count"],
       "additionalProperties": false,
       "allOf": [
         {"if": {"properties": {"kind": {"const": "execution"}}, "required": ["kind"]}, "then": {"required": ["skill"]}},
         {"if": {"properties": {"kind": {"const": "result_set"}}, "required": ["kind"]}, "then": {"required": ["skill"]}},
-        {"if": {"properties": {"kind": {"const": "artifact"}}, "required": ["kind"]}, "then": {"required": ["path", "schema"]}}
+        {"if": {"properties": {"kind": {"const": "artifact"}}, "required": ["kind"]}, "then": {"required": ["path", "schema"]}},
+        {"if": {"required": ["outcome_in"]}, "then": {"properties": {"kind": {"const": "revalidation"}}}}
       ]
     }
   }

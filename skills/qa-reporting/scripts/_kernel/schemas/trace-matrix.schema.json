@@ -23,7 +23,7 @@
     "gap": {
       "type": "object",
       "properties": {
-        "kind": {"enum": ["req_without_ac", "ac_without_tc", "tc_not_automated", "tc_never_executed", "tc_last_blocked_or_inconclusive", "req_only_characterization_or_assumed", "tc_unproven", "fnd_without_fix"]},
+        "kind": {"enum": ["req_without_ac", "ac_without_tc", "tc_not_automated", "tc_never_executed", "tc_last_blocked_or_inconclusive", "req_only_characterization_or_assumed", "tc_unproven", "fnd_without_fix", "fix_without_rvl", "rvl_off_target"]},
         "id": {"type": "string", "minLength": 1}
       },
       "required": ["kind", "id"],

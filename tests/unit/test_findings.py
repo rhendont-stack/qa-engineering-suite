@@ -80,7 +80,7 @@ def test_transitions(ws, actor):
     findings.add(ws, actor, base())
     with pytest.raises(QaError) as e:
         findings.change_state(ws, actor, "FND-001", "fix_submitted", reason="patched")
-    assert e.value.code == "needs_milestone_3"
+    assert e.value.code == "set_by_fix_and_revalidation"
     with pytest.raises(QaError):
         findings.change_state(ws, actor, "FND-001", "accepted_risk", reason="later")
     findings.change_state(ws, actor, "FND-001", "accepted_risk", reason="low traffic", accepted_by="user", expires_at=LATER)
@@ -549,8 +549,8 @@ def _refused(ws, actor, code, fid, new, **kw):
 
 
 @pytest.mark.parametrize("new", ["fix_submitted", "verified_fixed", "reopened"])
-def test_milestone_3_states_come_before_every_other_check(ws, actor, new):
-    _refused(ws, actor, "needs_milestone_3", "FND-404", new, reason="")
+def test_fix_lifecycle_states_come_before_every_other_check(ws, actor, new):
+    _refused(ws, actor, "set_by_fix_and_revalidation", "FND-404", new, reason="")
 
 
 def test_state_change_checks(ws, actor):
@@ -601,7 +601,7 @@ def test_transitions_table_lives_in_vocab():
     assert findings.TRANSITIONS is vocab.TRANSITIONS
     assert set(vocab.TRANSITIONS["open"]) == {"accepted_risk", "wont_fix", "duplicate"}
     assert all(vocab.TRANSITIONS[s] == {"open": ("reason",)} for s in ("accepted_risk", "wont_fix", "duplicate"))
-    assert set(vocab.MILESTONE_3_STATES).isdisjoint(vocab.TRANSITIONS)
+    assert set(vocab.KERNEL_STATES).isdisjoint(vocab.TRANSITIONS)
 
 
 # --------------------------------------------------------------------------- T15-R11, R12: events and the fold
