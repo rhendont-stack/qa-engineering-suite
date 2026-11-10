@@ -5,10 +5,11 @@ called after a file is written: it checks the path, the grant and, for a change 
 and only then records one ``file.created`` or ``file.modified`` event per path, with the sha256 of the bytes on disk. The
 checks, in this order, and a refusal records nothing at all:
 
+- the kind is ``created`` or ``modified``, the test case id has its form, and at least one path is given (``invalid_kind``,
+  ``invalid_testcase``, ``invalid_path``);
 - the workspace's authority holds: the refusals ``execution`` applies to a run (``integrity.authority``: a tracked ``.qa/``, a
   ledger that does not verify, an unusable key) and a drifted ``config.json`` refuse a record too (``authority_refused``,
   ``config_drift``), since a grant counts for nothing there;
-- the kind is ``created`` or ``modified`` and at least one path is given (``invalid_kind``, ``invalid_path``);
 - every path is resolved inside the workspace root without following a symlink: a ``..`` component, a path outside the root,
   a symlink anywhere on the way, a missing file or one that is not a regular file is ``invalid_path``. A path is then
   spelled as the filesystem lists it, so on one that ignores case or Unicode form every spelling is one file, one key;
@@ -17,7 +18,12 @@ checks, in this order, and a refusal records nothing at all:
 - a grant that this machine recorded (``state.load`` holds no other), is not revoked, has not expired and names the activity
   ``write-tests`` has ``paths`` globs matching the path, or it is ``write_not_authorized``; the globs match as
   ``fnmatch.fnmatchcase`` matches, with ``**/`` also standing for no directory, as the ``write_scopes`` rules read them;
-- ``modified`` of a file git tracks needs ``justification`` and ``approval``
+- ``created`` of a file git tracks is ``already_tracked`` (that is a modification). A listing name is the same file as the
+  path when it is the same name in Unicode form, or another spelling of the same device and inode; otherwise it is another file;
+- when git cannot answer at all (missing, or its configuration cannot be neutralised), nothing can be shown untracked, so
+  every path counts as tracked: ``created`` is ``tracked_unknown`` (record it as modified), and ``modified`` goes on with
+  ``git_unknown: true`` in its event;
+- ``modified`` of a file counted as tracked needs ``justification`` and ``approval``
   (``justification_required``, ``approval_required``), and the approval travels in its own signed event,
   ``file.modification_approved``, over the path and the bytes' sha256.
 
@@ -31,7 +37,7 @@ import os
 import re
 import stat
 import unicodedata
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import gitinfo, ids, integrity, ledger, state, vocab, worktree
 from .canonical import sha256_bytes
@@ -39,7 +45,7 @@ from .errors import QaError
 from .workspace import Workspace
 
 # QaError codes raised here: invalid_kind, invalid_path, invalid_testcase, protected_path, write_not_authorized,
-# justification_required, approval_required, already_tracked, git_unavailable, authority_refused, config_drift; plus whatever ledger.append raises.
+# justification_required, approval_required, already_tracked, tracked_unknown, authority_refused, config_drift; plus whatever ledger.append raises.
 
 KINDS = ("created", "modified")
 ACTIVITY = "write-tests"
@@ -95,10 +101,20 @@ def _on_disk(parent: str, part: str) -> str:
         return part
     if part in names:
         return part
+    wanted = _identity(os.path.join(parent, part))
     for name in names:
-        if _fold(name) == _fold(part) and os.path.samefile(os.path.join(parent, name), os.path.join(parent, part)):
+        if _fold(name) == _fold(part) and wanted is not None and _identity(os.path.join(parent, name)) == wanted:
             return name
     return part
+
+
+def _identity(path: str) -> Optional[Tuple[int, int]]:
+    """(device, inode) of ``path`` itself, never of what a symlink points at; None for a symlink or a path that is not there."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    return None if stat.S_ISLNK(info.st_mode) else (info.st_dev, info.st_ino)
 
 
 def _read(ws: Workspace, rel: str) -> bytes:
@@ -152,6 +168,17 @@ def _granting(st: dict, rel: str) -> Optional[str]:
     return None
 
 
+def _is_tracked(ws: Workspace, rel: str, listing: Set[str]) -> bool:
+    """Whether git's ``listing`` holds ``rel``: the same name in Unicode form, or another spelling the filesystem says is the
+    same file (same device and inode). Where it does not, as with two case-variants on a case-sensitive one, they are two files."""
+    here = unicodedata.normalize("NFC", rel)
+    if any(unicodedata.normalize("NFC", name) == here for name in listing):
+        return True
+    own = _identity(os.path.join(str(ws.root), rel))
+    return own is not None and any(_fold(name) == _fold(rel) and _identity(os.path.join(str(ws.root), name)) == own
+                                   for name in listing)
+
+
 def _text(value: Optional[str]) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
@@ -185,11 +212,15 @@ def record(ws: Workspace, actor: ledger.Actor, paths: List[str], *, kind: str, t
             if grants[rel] is None:
                 raise QaError("write_not_authorized", "no valid write-tests grant covers this path: record one with `qa authorize`",
                               path=rel)
-        tracked_set = gitinfo.tracked_files(ws.root)
-        if tracked_set is None:
-            raise QaError("git_unavailable", "git cannot say which files it tracks here, and a tracked file needs approval")
-        folded = {_fold(name) for name in tracked_set}  # on a filesystem that ignores case or Unicode form, spelling is no proof
-        tracked = {rel: _fold(rel) in folded for rel in rels}
+        listing = gitinfo.tracked_files(ws.root)
+        git_unknown = listing is None
+        if listing is None:  # fail closed: nothing can be shown untracked
+            if kind == "created":
+                raise QaError("tracked_unknown", "git cannot say whether this file is tracked here, so it cannot be recorded as "
+                              "created: record it as modified, with a justification and the user's approval", path=rels[0])
+            tracked = {rel: True for rel in rels}
+        else:
+            tracked = {rel: _is_tracked(ws, rel, listing) for rel in rels}
         if kind == "created":
             for rel in rels:
                 if tracked[rel]:
@@ -206,6 +237,8 @@ def record(ws: Workspace, actor: ledger.Actor, paths: List[str], *, kind: str, t
             data: Dict[str, Any] = {"path": rel, "sha256": digests[rel], "grant": grants[rel], "testcase": testcase}
             if kind == "modified":
                 data["tracked"] = tracked[rel]
+                if git_unknown:
+                    data["git_unknown"] = True
             event = ledger.append(ws, actor, "file." + kind, data)
             row = {"path": rel, "sha256": digests[rel], "grant": grants[rel], "event": event["id"]}
             if kind == "modified" and tracked[rel]:
@@ -235,7 +268,7 @@ def list_changes(ws: Workspace, st: dict) -> List[dict]:
             rows.append({
                 "path": path, "kind": rec["kind"], "event": rec["event"], "grant": rec["grant"], "testcase": rec["testcase"],
                 "recorded_sha256": rec["sha256"], "current_sha256": current, "changed_since": current != rec["sha256"],
-                "approval_required": required, "approved": (not required) or approval is not None,
+                "git_unknown": rec["git_unknown"], "approval_required": required, "approved": (not required) or approval is not None,
                 "approval_event": None if approval is None else approval["event"],
                 "justification": None if approval is None else approval["justification"],
             })

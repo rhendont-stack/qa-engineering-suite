@@ -141,7 +141,8 @@ def _file_recorded(kind: str) -> Callable[[dict, dict], None]:
         data = event["data"]
         state["files"].setdefault(data["path"], []).append({
             "kind": kind, "sha256": data["sha256"], "event": event["id"], "grant": data["grant"],
-            "testcase": data["testcase"], "tracked": data.get("tracked", False), "approval": None})
+            "testcase": data["testcase"], "tracked": data.get("tracked", False),
+            "git_unknown": data.get("git_unknown", False), "approval": None})
     return reduce
 
 

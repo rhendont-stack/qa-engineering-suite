@@ -259,8 +259,9 @@ def test_a_decomposed_spelling_of_a_tracked_file_is_the_same_file(project, actor
     assert list(state.load(project)["files"]) == [nfc]
 
 
-@pytest.mark.parametrize("breakage", ["tracked_authority", "ledger_unverified", "authority_key_invalid", "config_drift"])
-def test_nothing_is_recorded_where_execution_would_refuse(project, actor, breakage):
+@pytest.mark.parametrize("breakage,code", [("tracked_authority", "authority_refused"), ("ledger_unverified", "authority_refused"),
+                                           ("authority_key_invalid", "authority_refused"), ("config_drift", "config_drift")])
+def test_nothing_is_recorded_where_execution_would_refuse(project, actor, breakage, code):
     grant(project, actor)
     write(project, "tests/test_new.py", "x")
     if breakage == "tracked_authority":
@@ -277,7 +278,9 @@ def test_nothing_is_recorded_where_execution_would_refuse(project, actor, breaka
         project.path("config.json").write_bytes(__import__("qa.workspace", fromlist=["x"]).config_bytes(cfg))
     with pytest.raises(QaError) as caught:
         changes.record(project, actor, ["tests/test_new.py"], kind="created", testcase=None)
-    assert caught.value.code in ("authority_refused", "config_drift")
+    assert caught.value.code == code
+    if code == "authority_refused":
+        assert caught.value.details["limitations"] == [breakage]
     assert [e for e in file_events(project)] == []
 
 
@@ -296,3 +299,34 @@ def test_the_workspace_directory_is_never_recorded(project, actor):
         "limits": {"write-tests": {"paths": ["**"]}}, "granted_by": "user", "approval_quote": "q",
         "granted_at": "2026-11-10T10:00:00.000Z", "expires_at": "2999-01-01T00:00:00.000Z"})
     refused("protected_path", changes.record, project, actor, [".qa/config.json"], kind="modified", testcase=None)
+
+
+def test_when_git_cannot_say_a_modification_is_recorded_as_tracked_with_its_approval(project, actor, monkeypatch):
+    monkeypatch.setattr(changes.gitinfo, "tracked_files", lambda root: None)
+    grant(project, actor)
+    write(project, "tests/test_new.py", "x")  # not tracked, but nobody can tell
+    refused("justification_required", changes.record, project, actor, ["tests/test_new.py"], kind="modified", testcase=None)
+    changes.record(project, actor, ["tests/test_new.py"], kind="modified", testcase=None, justification="j", approval="a")
+    assert [e["type"] for e in file_events(project)] == ["file.modified", "file.modification_approved"]
+    assert file_events(project)[0]["data"]["tracked"] is True and file_events(project)[0]["data"]["git_unknown"] is True
+    (row,) = changes.list_changes(project, state.load(project))
+    assert row["approval_required"] is True and row["approved"] is True and row["git_unknown"] is True
+
+
+def test_when_git_cannot_say_a_creation_is_refused_without_claiming_the_file_is_tracked(project, actor, monkeypatch):
+    monkeypatch.setattr(changes.gitinfo, "tracked_files", lambda root: None)
+    grant(project, actor)
+    write(project, "tests/test_new.py", "x")
+    caught = refused("tracked_unknown", changes.record, project, actor, ["tests/test_new.py"], kind="created", testcase=None)
+    assert "cannot say whether" in caught.message and "tracks this file" not in caught.message
+    assert "modified" in caught.message and file_events(project) == []
+
+
+def test_a_case_variant_in_git_is_another_file_unless_the_filesystem_says_it_is_the_same(project, actor, monkeypatch):
+    if _same_file_under(project, "tests/TEST_OLD.py"):
+        pytest.skip("this filesystem is case-insensitive, so the variant is the same file")
+    monkeypatch.setattr(changes.gitinfo, "tracked_files", lambda root: {"tests/TEST_OLD.py"})
+    grant(project, actor)
+    write(project, "tests/test_old.py", "changed\n")
+    changes.record(project, actor, ["tests/test_old.py"], kind="created", testcase=None)  # a distinct file: not tracked
+    assert file_events(project)[0]["type"] == "file.created"
