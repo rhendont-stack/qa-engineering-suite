@@ -11,7 +11,7 @@ INIT = {"kernel_version": "0.1.0-dev", "schema_version": "1", "config_hash": "sh
 def test_skeleton():
     assert set(state.fold([])) == {"executions", "results", "tests", "findings", "authorizations", "config",
                                    "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees",
-                                   "requirements", "criteria", "assumptions", "risks", "testcases", "links", "fixes", "revalidations"}
+                                   "requirements", "criteria", "assumptions", "risks", "testcases", "links", "fixes", "revalidations", "files"}
 
 
 def test_unknown_type_is_violation():

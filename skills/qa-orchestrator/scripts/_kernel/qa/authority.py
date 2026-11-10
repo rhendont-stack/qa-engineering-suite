@@ -37,7 +37,8 @@ from .workspace import AUTHORITY_KEY_FILE, Workspace, ensure_authority_key, read
 
 MAC_FIELD = "authority_mac"
 EVENTS = frozenset({"workspace.initialized", "config.accepted", "config.changed", "gate.policy_accepted",
-                    "authorization.granted", "authorization.revoked", "requirement.confirmed", "assumption.decided"})
+                    "authorization.granted", "authorization.revoked", "requirement.confirmed", "assumption.decided",
+                    "file.modification_approved"})
 CONFERRING = EVENTS - {"authorization.revoked"}
 RECOVERY = ('run `qa config accept --approval "<quote>"` to approve .qa/config.json on this machine, and `qa authorize` '
             "to record each grant again")

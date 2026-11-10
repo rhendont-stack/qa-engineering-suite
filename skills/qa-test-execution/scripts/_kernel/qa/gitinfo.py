@@ -22,7 +22,7 @@ import stat
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .canonical import sha256_bytes, sha256_file
 
@@ -252,6 +252,28 @@ def project_files(root: Path) -> Optional[List[str]]:
     if listed.returncode != 0:
         return None
     return [os.fsdecode(path) for path in listed.stdout.split(b"\0") if path]
+
+
+def tracked_files(root: Path) -> Optional[Set[str]]:
+    """The paths git tracks under ``root`` (posix, relative to it); an empty set outside a git work tree.
+
+    ``None`` means git could not say (missing, or its configuration cannot be neutralised): a caller that must not guess
+    treats every path as tracked.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        session = _Git(git, Path(root))
+        inside = session.run(["rev-parse", "--is-inside-work-tree"])
+        if inside.returncode != 0 or inside.stdout.strip() != b"true":
+            return set()
+        listed = session.run(["ls-files", "-z"])
+    except _Unavailable:
+        return None
+    if listed.returncode != 0:
+        return None
+    return {os.fsdecode(path) for path in listed.stdout.split(b"\0") if path}
 
 
 def tracked_under_qa(root: Path) -> Tuple[List[str], Optional[str]]:

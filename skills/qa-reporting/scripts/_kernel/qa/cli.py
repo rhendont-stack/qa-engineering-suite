@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, compare, config, doctor, execution, findings, fixes, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
+from . import authz, bundle, catalog, changes, compare, config, doctor, execution, findings, fixes, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -41,7 +41,7 @@ WRITE_COMMANDS = (
     "worktree add", "worktree remove",
     "req add", "req import", "req confirm", "ac add", "asm add", "asm decide", "risk add", "tc add", "tc import",
     "trace link", "trace scan", "trace matrix",
-    "fix add", "revalidate",
+    "fix add", "revalidate", "changes record",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -287,6 +287,14 @@ def _add_plan_commands(groups: Dict[str, Any]) -> None:
     add.add_argument("commit", metavar="COMMIT")
     drop = _command(groups, "worktree remove", "remove a worktree this suite created")
     drop.add_argument("path", metavar="PATH", help="as `worktree add` printed it")
+    _group(groups, "changes", "record and list the files the suite wrote into the project")
+    rec = _command(groups, "changes record", "record files the suite wrote, inside a write-tests grant, with their sha256")
+    rec.add_argument("paths", nargs="+", metavar="PATH", help="relative to the project root")
+    rec.add_argument("--kind", required=True, choices=("created", "modified"))
+    rec.add_argument("--tc", metavar="TC", help="the test case the files implement")
+    rec.add_argument("--justification", metavar="R", help="why a tracked file was changed (needed for a tracked file)")
+    rec.add_argument("--approval", metavar="Q", help="the user's words approving that change (needed for a tracked file)")
+    _command(groups, "changes list", "list every recorded change with the file's current sha256 and whether it changed since")
     _group(groups, "catalog", "list the skills installed beside this one")
     listing = _command(groups, "catalog list", "list the suite skills with their roles and artifact types")
     listing.add_argument("--skills-dir", metavar="PATH", help="the directory holding the skills (default: next to this skill)")
@@ -622,6 +630,17 @@ def cmd_worktree_add(args: argparse.Namespace, ctx: Context) -> int:
 def cmd_worktree_remove(args: argparse.Namespace, ctx: Context) -> int:
     done = worktree.remove(ctx.ws, ctx.actor, args.path)
     ctx.reply(path=done["path"], event=done["event"])
+    return 0
+
+
+def cmd_changes_record(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**changes.record(ctx.ws, ctx.actor, args.paths, kind=args.kind, testcase=args.tc,
+                               justification=args.justification, approval=args.approval))
+    return 0
+
+
+def cmd_changes_list(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(changes=changes.list_changes(ctx.ws, state.load(ctx.ws)))
     return 0
 
 

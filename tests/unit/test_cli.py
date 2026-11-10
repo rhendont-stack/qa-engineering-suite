@@ -562,6 +562,7 @@ WRITE_ARGV = {
     "trace scan": ("trace", "scan"),
     "trace matrix": ("trace", "matrix"),
     "fix add": ("fix", "add", "--json", "missing.json"),
+    "changes record": ("changes", "record", "tests/x.py", "--kind", "created"),
     "revalidate": ("revalidate", "FIX-001", "--f2p", "EXE-X:EXE-Y", "--p2p", "EXE-X:EXE-Y", "--defect-test", "t.py::test_x"),
 }
 READ_ARGV = {
@@ -581,6 +582,7 @@ READ_ARGV = {
     "plan status": ("plan", "status"),
     "catalog list": ("catalog", "list"),
     "req list": ("req", "list"),
+    "changes list": ("changes", "list"),
     "compare": ("compare", "EXE-" + "0" * 25 + "A", "EXE-" + "0" * 25 + "B"),  # the test below records both
 }
 READ_COMMANDS = set(READ_ARGV) | {"init"}  # init writes, but runs without find_workspace and rewrites nothing

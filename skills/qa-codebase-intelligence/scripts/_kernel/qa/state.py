@@ -13,14 +13,14 @@ from .workspace import Workspace, config_bytes, write_atomic
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
 _KEYS = ("executions", "results", "tests", "findings", "authorizations", "config",
          "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees",
-         "requirements", "criteria", "assumptions", "risks", "testcases", "links", "fixes", "revalidations")
+         "requirements", "criteria", "assumptions", "risks", "testcases", "links", "fixes", "revalidations", "files")
 _LISTS = ("blocked_commands", "violations", "links")
 # Derived from evaluation or rendering, or about the work rather than the evidence, so excluded from state_hash.
 _UNHASHED = ("gates", "reports", "plans", "heads")
 # Keys added after milestone 2. While one is empty it is left out of state_hash, so a ledger that predates the key keeps the hash
 # it had (a bundle and a gate.evaluated record that hash). Once it holds something it counts like any other key.
 _UNHASHED_WHEN_EMPTY = ("worktrees", "requirements", "criteria", "assumptions", "risks", "testcases", "links",
-                         "fixes", "revalidations")
+                         "fixes", "revalidations", "files")
 
 
 def empty_state() -> dict:
@@ -127,6 +127,38 @@ def _worktree_removed(state: dict, event: dict) -> None:
         _violation(state, event, "unknown_worktree")
         return
     known["removed"] = event["id"]
+
+
+# Files the suite wrote (§12.4): {path: [change record, ...]} in fold order. file.created and file.modified are plain records
+# and always fold. The user's approval of changing a tracked file is its own signed event, file.modification_approved, which
+# folds only when its MAC verifies; it attaches to the modification of the same path and bytes, and one that matches nothing
+# is a ``stale_approval``. fold drops the internal list before it returns.
+_FILE_APPROVALS = "_file_approvals"
+
+
+def _file_recorded(kind: str) -> Callable[[dict, dict], None]:
+    def reduce(state: dict, event: dict) -> None:
+        data = event["data"]
+        state["files"].setdefault(data["path"], []).append({
+            "kind": kind, "sha256": data["sha256"], "event": event["id"], "grant": data["grant"],
+            "testcase": data["testcase"], "tracked": data.get("tracked", False), "approval": None})
+    return reduce
+
+
+def _file_approved(state: dict, event: dict) -> None:
+    state.setdefault(_FILE_APPROVALS, []).append(event)
+
+
+def _settle_file_approvals(state: dict) -> None:
+    for event in state.pop(_FILE_APPROVALS, []):
+        data = event["data"]
+        matches = [r for r in state["files"].get(data["path"], [])
+                   if r["kind"] == "modified" and r["tracked"] and r["sha256"] == data["sha256"]]
+        if not matches:
+            _violation(state, event, "stale_approval")
+        for record in matches:
+            if record["approval"] is None:  # the first approval of these bytes stays
+                record["approval"] = {"event": event["id"], "approval": data["approval"], "justification": data["justification"]}
 
 
 # Analysis records (§9.1). Each upsert replaces the whole record under its id. What a person decides is kept beside the record,
@@ -571,6 +603,9 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "trace.linked": _trace_linked,
     "fix.recorded": _fix_recorded,
     "revalidation.recorded": _revalidation_recorded,
+    "file.created": _file_recorded("created"),
+    "file.modified": _file_recorded("modified"),
+    "file.modification_approved": _file_approved,
 }
 
 
@@ -609,6 +644,7 @@ def fold(events: Iterable[dict], backed: Optional[Callable[[dict], bool]] = None
     _forget_revocations(state, withheld_grants)
     state.pop(_EARLY_REVOCATIONS, None)  # its violations stay: no grant in the ledger holds those ids
     _settle(state)
+    _settle_file_approvals(state)
     state.pop(_REVALIDATIONS, None)
     return state
 
