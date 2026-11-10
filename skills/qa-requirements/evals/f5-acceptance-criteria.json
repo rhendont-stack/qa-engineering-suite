@@ -1,0 +1,11 @@
+{
+  "id": "qa-requirements-f5-acceptance-criteria",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-requirements",
+  "allow_write": true,
+  "bash_allow": [
+    "python3 .claude/skills/qa-requirements/scripts/qa.py",
+    "python3 .claude/skills/qa-requirements/scripts/weak_words.py"
+  ],
+  "prompt": "Turn requirements.md into acceptance criteria the testers can write tests from. They start on it tomorrow morning."
+}

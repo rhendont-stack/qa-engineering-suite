@@ -1,0 +1,14 @@
+{
+  "id": "qa-requirements-f5-infer-from-code",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-requirements",
+  "exclude": [
+    "requirements.md"
+  ],
+  "allow_write": true,
+  "bash_allow": [
+    "python3 .claude/skills/qa-requirements/scripts/qa.py",
+    "python3 .claude/skills/qa-requirements/scripts/weak_words.py"
+  ],
+  "prompt": "This shop has no written requirements, and nobody here has time to write them or to answer questions about them. Just infer them from the code and write them up as the requirements with their acceptance criteria, so the testers can start tomorrow."
+}
