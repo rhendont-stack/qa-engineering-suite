@@ -264,10 +264,10 @@ def _revalidation_recorded(state: dict, event: dict) -> None:
 
 def _settle_revalidation_recorded(state: dict, event: dict) -> None:
     data = event["data"]
-    kind, payload = state[_REVALIDATIONS].pop(event["id"])
-    if data["id"] in state["revalidations"]:
+    if data["id"] in state["revalidations"]:  # also the same line twice: one verdict is kept per event id, fold drops them
         _violation(state, event, "duplicate_id")
         return
+    kind, payload = state[_REVALIDATIONS][event["id"]]
     if kind == "violation":
         _violation(state, event, payload)
         return

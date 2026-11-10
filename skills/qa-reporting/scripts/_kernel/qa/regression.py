@@ -15,7 +15,7 @@ that concluded: ``failed``; (3) any condition that concludes nothing: ``inconclu
   inconclusive on either side, a ``failure_kind`` other than assertion, or a flaky result.
 * PASS_TO_PASS is every test outside the defect tests in the two runs. Passed on both: fine. Definite failure: gone from the head
   run, passed then failed, failing on both, or present only at the head and failed there. A test present only at the head and not
-  failed is ignored, and one that failed at the base and passes at the head is not a regression. not_run, blocked or
+  failed is ignored, as is one that did not conclude at the base and is gone at the head, and one that failed at the base and passes at the head is not a regression. not_run, blocked or
   inconclusive on either side concludes nothing. With no regression test passed on both commits there is no evidence, so
   ``inconclusive``. The FAIL_TO_PASS runs may serve as the regression runs.
 * A pair whose run did not end passed or failed, or that holds no per-test results, concludes nothing.
@@ -112,7 +112,8 @@ def _pass_to_pass(st: dict, p2p: Sequence[str], defect_tests: Sequence[str]) -> 
             if after["status"] == "failed":
                 failed.append("%s fails on the fix and is not in the base run" % test_id)
         elif after is None:
-            failed.append("%s is gone from the fix's run" % test_id)
+            if before["status"] in ("passed", "failed"):  # one that never concluded at the base was never regression evidence
+                failed.append("%s is gone from the fix's run" % test_id)
         elif (before["status"], after["status"]) == ("passed", "passed"):
             if before["flaky"] or after["flaky"]:
                 open_.append("regression test %s is flaky" % test_id)

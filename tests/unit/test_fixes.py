@@ -199,6 +199,13 @@ ROWS = [
     # PASS_TO_PASS: ignored or fine
     ("a new passing test only on head is ignored", dict(p2p_head=[(KEEP, "passed", {}), ("tests.x::new", "passed", {})]), "passed", None),
     ("a new skipped test only on head is ignored", dict(p2p_head=[(KEEP, "passed", {}), ("tests.x::new", "not_run", {})]), "passed", None),
+    ("a test not concluded on base and gone from head is ignored", dict(p2p_base=[(KEEP, "passed", {}), ("tests.x::skip", "not_run", {})],
+                                                                    p2p_head=[(KEEP, "passed", {})]), "passed", None),
+    ("a test inconclusive on base and gone from head is ignored", dict(p2p_base=[(KEEP, "passed", {}), ("tests.x::unsure", "inconclusive", {})],
+                                                                      p2p_head=[(KEEP, "passed", {})]), "passed", None),
+    ("a test blocked only on head is ignored", dict(p2p_head=[(KEEP, "passed", {}), ("tests.x::new", "blocked", {})]), "passed", None),
+    ("a failed test gone from head still fails", dict(p2p_base=[(KEEP, "passed", {}), ("tests.x::old", "failed", {})],
+                                                      p2p_head=[(KEEP, "passed", {})]), "failed", "tests.x::old"),
     # a definite failure beats a pair that concluded nothing, in either direction
     ("definite P2P failure beats an inconclusive F2P pair", dict(head_run={"status": "blocked"}, p2p_head=[(KEEP, "failed", {})]), "failed", KEEP),
     ("definite F2P failure beats an inconclusive P2P pair", dict(f2p_base=[(DEFECT, "passed", {})], p2p_head_run={"status": "blocked"}), "failed", DEFECT),
@@ -487,3 +494,52 @@ def test_a_newer_fix_supersedes_a_fix_submitted_one(ws, actor):
     assert {"kind": "fix_without_rvl", "id": "FIX-002"} in trace.matrix(state.load(ws), OTHER_C)["gaps"]
     revalidate(ws, actor, "FIX-001")  # the older fix no longer decides the finding
     assert finding_state(ws) == "fix_submitted"
+
+
+# --------------------------------------------------------------------------- fix round 2
+
+def _duplicate_line(ws, needle):
+    """Repeat, in the session ledger, the line that holds ``needle`` (a hand copy or a line-union merge)."""
+    for _session, path in ledger._session_files(ws)[0]:
+        lines = path.read_bytes().split(b"\n")
+        for line in lines:
+            if needle in line:
+                path.write_bytes(path.read_bytes() + line + b"\n")
+                return line
+    raise AssertionError("no such line")
+
+
+def test_a_revalidation_line_repeated_in_the_ledger_is_a_duplicate_not_a_crash(ws, actor):
+    scene(ws, actor)
+    revalidate(ws, actor)
+    _duplicate_line(ws, b"revalidation.recorded")
+    st = state.load(ws)
+    assert [v["kind"] for v in st["violations"]] == ["duplicate_id"]
+    assert st["findings"]["FND-001"]["state"] == "verified_fixed" and list(st["revalidations"]) == ["RVL-001"]
+
+
+def test_a_bundle_whose_ledger_repeats_a_revalidation_line_is_refused_not_crashed(ws, actor, tmp_path):
+    import io
+    import json
+    import tarfile
+    from qa import bundle, safetar
+    from qa.canonical import dumps, sha256_bytes
+    from qa.workspace import init_workspace
+    scene(ws, actor)
+    revalidate(ws, actor)
+    bundle.create(ws, actor, tmp_path / "out.tar.gz")
+    with open(str(tmp_path / "out.tar.gz"), "rb") as handle:
+        members = dict(safetar.read_members(handle, 1 << 28))
+    name = next(n for n in members if n.startswith("ledger/"))
+    line = next(l for l in members[name].split(b"\n") if b"revalidation.recorded" in l)
+    members[name] = members[name] + line + b"\n"
+    manifest = json.loads(members["manifest.json"])
+    manifest["files"][name] = sha256_bytes(members[name])
+    members["manifest.json"] = dumps(manifest)
+    with tarfile.open(str(tmp_path / "bad.tar.gz"), "w:gz") as tar:
+        for member, data in members.items():
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    other = init_workspace(tmp_path / "other")[0]
+    refused("bundle_invalid", bundle.ingest, other, actor, tmp_path / "bad.tar.gz")

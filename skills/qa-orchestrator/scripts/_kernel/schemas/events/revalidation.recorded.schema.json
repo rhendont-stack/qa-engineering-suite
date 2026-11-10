@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "revalidation.recorded event data",
-  "description": "A revalidation of a fix: the inputs (FAIL_TO_PASS and PASS_TO_PASS execution pairs, base then head, and the defect tests) and the outcome the kernel computed from them. The fold recomputes the outcome from the executions and results in the state and uses its own answer; a different recorded outcome is a violation (outcome_mismatch), so writing passed here verifies nothing. The reason says why the outcome is failed or inconclusive.",
+  "description": "A revalidation of a fix: the inputs (FAIL_TO_PASS and PASS_TO_PASS execution pairs, base then head, and the defect tests) and the outcome the kernel computed from them. The fold recomputes the outcome from the executions and results the state holds at this event's position in the fold (later events never change it) and uses its own answer; a different recorded outcome is a violation (outcome_mismatch), so writing passed here verifies nothing. The reason says why the outcome is failed or inconclusive.",
   "type": "object",
   "properties": {
     "id": {"$ref": "defs.schema.json#/$defs/rvl_id"},
