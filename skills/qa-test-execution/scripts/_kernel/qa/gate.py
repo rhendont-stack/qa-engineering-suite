@@ -481,7 +481,9 @@ def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     scored = {path: counts for path, counts in totals["by_file"].items() if _selected(path, patterns)}
     pending = {path: counts["Pending"] for path, counts in sorted(scored.items()) if counts.get("Pending")}
     if pending:
-        where = ", ".join(sorted(pending)[:_MUTATION_FILES_SHOWN])
+        names = sorted(pending)
+        where = ", ".join(names[:_MUTATION_FILES_SHOWN]) + (" and %d more" % (len(names) - _MUTATION_FILES_SHOWN)
+                                                           if len(names) > _MUTATION_FILES_SHOWN else "")
         return (_NO_EVIDENCE, "%d Pending in %s: the report is partial (a tool that stopped early leaves mutants unrun)%s"
                 % (sum(pending.values()), where, skipped), cited)
     overall: Dict[str, int] = {}

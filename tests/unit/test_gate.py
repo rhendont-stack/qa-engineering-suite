@@ -482,6 +482,25 @@ def test_pending_mutants_outside_the_selected_files_do_not_matter():
     assert r["outcome"] == "MET"
 
 
+def test_opted_in_without_paths_is_no_evidence_that_says_what_is_missing():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 5}})), paths=None)
+    assert r["outcome"] == "NO_EVIDENCE" and "needs paths" in r["detail"] and r["evidence"] == []
+
+
+def test_coverage_is_never_read_as_a_score():
+    totals = {"files": 1, "lines_total": 10, "lines_covered": 10, "branches_total": 0, "branches_covered": 0}
+    entry = {"format": "lcov", "kind": "coverage", "file": "reports/c.info", "sha256": "sha256:" + "4" * 64, "totals": totals}
+    r = _mutation(_st(_exe("EXE-1", measurements=[entry], reports=[{"format": "lcov", "pattern": "c", "files": [], "error": None}])))
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == []
+
+
+def test_a_long_list_of_pending_files_is_cut_with_a_count():
+    many = {"src/f%02d.js" % i: {"Killed": 1, "Pending": 1} for i in range(23)}
+    r = _mutation(_st(_measured(many)))
+    assert r["outcome"] == "NO_EVIDENCE" and "23 Pending" in r["detail"] and "and 3 more" in r["detail"]
+    assert "src/f19.js" in r["detail"] and "src/f20.js" not in r["detail"]
+
+
 @pytest.mark.parametrize("status,outcome", [("passed", "MET"), ("failed", "MET"), ("blocked", "NO_EVIDENCE"), ("inconclusive", "NO_EVIDENCE"),
                                            ("not_run", "NO_EVIDENCE")])
 def test_a_mutation_report_is_read_only_from_a_passed_or_failed_run(status, outcome):
