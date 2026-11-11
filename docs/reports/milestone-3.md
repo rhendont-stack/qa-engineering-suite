@@ -1,6 +1,6 @@
 # Milestone 3 exit evidence
 
-Date of the exit runs: 2026-11-11 (UTC). Branch `milestone-3/analysis-change-skills`. The exit cases and their grader were committed as `7657b8f` before any exit run; the commits that add this report change only documentation, apart from `1c55b77`, a test-only skip guard described under Kernel legs. `<repo>` stands for the repository path.
+Date of the exit runs: 2026-11-11 (UTC). Branch `milestone-3/analysis-change-skills`. The exit cases and their grader were committed as `7657b8f` before any exit run; the commits that add this report change only documentation, apart from `1c55b77`, a test-only skip guard described under Kernel legs, and `4576bcf`, a grader fix described under Exit evaluation runs. The message of commit `789250e` gives a wrong cause for the F5 result (it blames the kernel's rendered report); the cause is a grader defect, corrected below. Git history was not rewritten.
 
 Every `EXE-`, `AUTH-`, `GATE-`, `FND-`, `PLAN-` and `RPT-` ID below is a full ID that `qa report check` resolves. The evidence is not in git: this repository's own `.qa/` ledger (`project:`), the saved `qa-state` of each exit evaluation run, and two deterministic F7 workspaces. Numbered IDs are handed out by each ledger on its own, so each one is written with its ledger's alias, as in `f7c4:GATE-001`. This is the exact command, run from the repository root:
 
@@ -21,7 +21,7 @@ The milestone's deviations from the specification are numbers 42 to 63 in §22.3
 
 | Exit item | Result |
 |---|---|
-| F5 through the whole chain, one evaluated run | fail on one hard criterion: requirements, criteria, risks, test cases, written tests with red checks, kernel runs, gate f5:GATE-001 NOT_READY and report f5:RPT-001 were all recorded, but the report does not list every traceability gap. All nine seeded issues are in the records (9 of 9), 7 of 9 named in the answer |
+| F5 through the whole chain, one evaluated run | Requirements, criteria, risks, test cases, written tests with red checks, kernel runs, gate f5:GATE-001 NOT_READY and report f5:RPT-001 were all recorded, and the report lists every traceability gap by ID and kind. Graded fail (9 of 10 hard criteria) by the frozen grader, whose gap matcher missed the kernel's Markdown-escaped gap kinds; pass (10 of 10) after the grader fix `4576bcf`, re-graded offline. Seed recall 9 of 9 in the records (F5-05 identified from a requirements finding, not confirmed by a run), 7 of 9 named in the answer |
 | F7 M1 at C1 through the orchestrator, `change` template | pass: S02 `qa-regression-guard` done (closes deviation 29 for this scenario), regression and weakened test recorded as m1:FND-001 and m1:FND-002, gate m1:GATE-002 NOT_READY |
 | F7 M2 at C3 through the orchestrator, `fix` template | fail: two calls in worktree-relative form were outside the case's allow-list and denied; no revalidation, no gate. In Task 18 the same scenario held every hard criterion in 3 of 3 runs |
 | F7 at C4 and C5, deterministic | Special-cased fix f7c4:FND-001 and runner hook f7c5:FND-001 are test-quality findings; f7c4:GATE-001 and f7c5:GATE-001 NOT_READY with `test_integrity` not met |
@@ -34,11 +34,11 @@ The milestone's deviations from the specification are numbers 42 to 63 in §22.3
 
 ## Exit evaluation runs
 
-All exit runs went through `tools/run_skill_eval.py`, model `claude-sonnet-5-5`, configuration with-skill, in a fresh copy of the fixture with all nine suite skills and the three agents installed (`qa-orchestrator` as the case's skill, the eight others in `skills`), `allow_write: true` and `runtime_venv: .venv-eval`. The user prompt grants trust and the test run in plain words. Each was run once and graded once by `skills/qa-orchestrator/evals/grade.py` as committed in `7657b8f`; nothing was re-run. Evidence: `.superpowers/eval-ledger/t19-runs/runs/<run id>/`, grades in `.superpowers/eval-ledger/t19-runs/grade-<run id>.json`.
+All exit runs went through `tools/run_skill_eval.py`, model `claude-sonnet-5-5`, configuration with-skill, in a fresh copy of the fixture with all nine suite skills and the three agents installed (`qa-orchestrator` as the case's skill, the eight others in `skills`), `allow_write: true` and `runtime_venv: .venv-eval`. The user prompt grants trust and the test run in plain words. Each was run once and graded by `skills/qa-orchestrator/evals/grade.py` as committed in `7657b8f`; nothing was re-run. After review, the shared gap matcher was fixed (`4576bcf`) and every affected saved run was re-graded offline; both numbers are below. Evidence: `.superpowers/eval-ledger/t19-runs/runs/<run id>/`, grades in `.superpowers/eval-ledger/t19-runs/grade-<run id>.json`.
 
 | Scenario | Case | Run | Ledger cost (US$) | Wall time | Grade |
 |---|---|---|---|---|---|
-| F5 through the whole chain | `f5-chain.json` | `c6ece4592ed7` | 1.3674 | 428 s | fail: 9 of 10 hard criteria, `report_lists_every_gap` missed |
+| F5 through the whole chain | `f5-chain.json` | `c6ece4592ed7` | 1.3674 | 428 s | frozen grader: fail, 9 of 10 hard criteria (`report_lists_every_gap` missed); after `4576bcf`: pass, 10 of 10 |
 | F7 M1 at C1, `change` template | `f7-change.json` | `cb264b3a68ca` | 0.7022 | 420 s | pass: 10 of 10 hard criteria |
 | F7 M2 at C3, `fix` template | `verify-fix.json` | `300fdb418ea4` | 0.2291 | 63 s | fail: 4 of 8 hard criteria; no revalidation, no gate |
 
@@ -64,7 +64,7 @@ What it recorded, read from the saved kernel state:
 | `red_check_for_every_automated_tc` | pass |
 | `executions_recorded` | pass |
 | `gate_recorded` | pass |
-| `report_lists_every_gap` | fail: the matrix at the gate's commit has 22 gaps (12 findings without a fix, 10 test cases not automated); the report gives the 10 as a count without IDs and does not list the 12 |
+| `report_lists_every_gap` | frozen grader: fail; after `4576bcf`: pass. The matrix at the gate's commit has 22 gaps (12 findings without a fix, 10 test cases not automated), and the report's Traceability section lists all 22 in a `Record \| Gap` table. The kernel writes each kind Markdown-escaped (`fnd\_without\_fix`), and the frozen matcher accepted only a plain underscore, space or hyphen between the kind's words |
 | `project_code_ran_only_through_the_kernel` | pass |
 | `no_fixture_file_changed` | pass |
 
@@ -84,16 +84,16 @@ Recall against `benchmark/answer-keys/seeded-defects.json`, as the grader measur
 | F5-08 | contradiction on coupons per order | f5:FND-001, f5:FND-005, f5:FND-007 | yes |
 | F5-09 | missing behaviour, coupon larger than the order | f5:FND-006 | yes |
 
-Recall: 9 of 9 in the records, 7 of 9 named in the answer. Two qualifications. F5-05 is matched by f5:FND-008, a requirements finding about invalid and empty inputs; the agent read `cart.py`, said an empty cart would probably crash `receipt()`, and did not run it (its test case is one of the 10 not automated), so the code seed is identified, not confirmed. The grader's patterns for F5-06 and F5-07 match findings that name the vague speed and readability wording of R3 and R9 without quoting the seeded words.
+Recall: 9 of 9 in the records, 7 of 9 named in the answer. Two qualifications. F5-05 is matched by f5:FND-008, a requirements finding about invalid and empty inputs; the agent read `cart.py`, said an empty cart would probably crash `receipt()`, and did not run it (its test case is one of the 10 not automated), so the code seed is identified, not confirmed. For F5-06 and F5-07 the findings quote the seeded words (f5:FND-002 quotes "quickly" and "rápida"; f5:FND-003 to f5:FND-005 quote other vague wording of the same requirements); it is the answer that names R3 and R9 without quoting them, hence "no" in the last column.
 
 ### F7 M1 at C1, `change` template
 
 Run `cb264b3a68ca`, on the F7 history checked out at C1 (the "feature done" commit `58d3b17`), with a prompt that asks for a review before merging and grants trust and the test run. The agent recorded trust with the user's words and created m1:PLAN-0001 in `change` mode; its four steps ended `done`, the regression step S02 (`qa-regression-guard`) among them, which closes deviation 29 for this scenario.
 
-- Regression recorded: the base run at C0 in a suite worktree, m1:EXE-01M75WWXTR8HA67SCMTQKKTDYZ, passed (6 tests); the head run m1:EXE-01M75WW16ASRRWVD9F7S2A7S0V failed on `test_payable_amount_after_ten_percent` (8 tests, 1 failure), and its three recorded re-runs failed the same way.
+- Regression recorded: the base run at C0 in a suite worktree, m1:EXE-01M75WWXTR8HA67SCMTQKKTDYZ, passed (6 tests); the head run m1:EXE-01M75WW16ASRRWVD9F7S2A7S0V failed on `test_payable_amount_after_ten_percent` (8 tests, 1 failure), and its three recorded re-runs failed the same way. The regression step's own head run, m1:EXE-01M75WX1PXGWZ72T7VPZRWMXDG, also at C1 (8 tests, 1 failure), failed the same way.
 - m1:FND-001 (high, confirmed): the rounding change in `apply_discount`, keyed F7-01.
 - m1:FND-002 (high, test quality, confirmed): `assertEqual(apply_discount(999, 10), 900)` weakened to `assertTrue(...)`, keyed F7-02.
-- m1:FND-003 (medium, suspected): the tier threshold `quantity > 25` against the documented 20 units, keyed F7-07. No run covers it, and the answer says so.
+- m1:FND-003 (medium, suspected): the tier threshold `quantity > 25` against the documented 20 units, matching F7-07 in the answer key. No run covers it, and the answer says so. The grader has no criterion for F7-07; this line is read from the record only.
 - Gate m1:GATE-002, profile `change`, target C1: NOT_READY, with `no_unresolved_high`, `suite_executed` and `test_integrity` not met; it re-evaluated m1:GATE-001 (also NOT_READY) after the last finding. Report m1:RPT-001 is rendered from m1:GATE-002.
 
 Every hard criterion held: trust recorded with the user's words, plan in `change` mode, every step terminal, regression step done, regression recorded, weakened test reported, gate NOT_READY on C1 (m1:GATE-002), the answer's verdict is the gate's word, project code ran only through the kernel, no project file changed. The soft criteria held too (the answer names the regressed test and the weakened assertion, and asks no question). Delegation: three subagents (`qa-auditor`, `qa-verifier`, `qa-evaluator`), all dispatched in the foreground, no launcher call in shell-variable form, no permission denial; `qa-regression-guard` ran in the orchestrator's own context, which read its SKILL.md directly rather than through the Skill tool.
@@ -102,7 +102,7 @@ Every hard criterion held: trust recorded with the user's words, plan in `change
 
 Run `300fdb418ea4`, the Task 18 case `verify-fix.json` unchanged: the F7 history at C3 (`43e691a`, the fix), with m2:FND-001 (the rounding defect) recorded by the case's setup script, and a prompt that asks to verify the fix and grants trust and the test run. The expected outcome, a revalidation that passed and a gate of profile `fix`, was not reached.
 
-What the agent did, read from the saved ledger: it recorded trust with the user's words, created m2:PLAN-0001 in `fix` mode, opened suite worktrees at C2 (`be4ef3c`) and C3, and ran the suite in each through the kernel. The base run m2:EXE-01M75X8FX0QNM3VG0FADQ6ZQTN failed at C2 and the head run m2:EXE-01M75X8R1D16WJXHVC996F67ET passed at C3. It recorded the fix as FIX-001 from C2 to C3 for m2:FND-001, and the weakening scan found nothing.
+What the agent did, read from the saved ledger: it recorded trust with the user's words, created m2:PLAN-0001 in `fix` mode, opened suite worktrees at C2 (`be4ef3c`) and C3, and ran the suite in each through the kernel. The base run m2:EXE-01M75X8FX0QNM3VG0FADQ6ZQTN failed at C2 and the head run m2:EXE-01M75X8R1D16WJXHVC996F67ET passed at C3. It recorded the fix as m2:FIX-001 from C2 to C3 for m2:FND-001, and the weakening scan found nothing.
 
 Then two calls were denied by the permission boundary. The working directory had stayed inside the C3 worktree after a `cd` there, so the agent wrote both calls in their worktree-relative form (`python3 ../../../.claude/skills/...`): the FAIL_TO_PASS helper of `qa-regression-guard`, and the orchestrator's launcher call that would record the step's state. The case's Bash allow-list carries the worktree-relative form for three skills' `qa.py` launchers only, not for the helper script and not for the orchestrator's launcher, so both calls were outside it. The CLI's denial says that anything else needing approval will be denied too, so the agent stopped, recorded no revalidation, left the plan's three steps `pending` and gave no verdict. Its answer says so and asks for a re-run with those calls allowed.
 
@@ -135,7 +135,7 @@ F7's C2 (the renamed response field, answer-key entry F7-03) was not exercised: 
 
 ## Kernel legs
 
-Two rounds, all on 2026-11-11 under `qa run --container` on the remote engine, one leg after the other, each round with a clean tree: the first at commit `789250e8b1b549dd84062689c713fb094609e7ff` (the first commit of this report), the second at `1c55b77b1093647ef210776442abfae8a8658f6b` after a test-only fix. In both rounds the only local difference, `.qa/config.json`, is marked skip-worktree and was never added. The command is the milestone 2 legs' command: the launcher of `qa-test-execution`, `--activity install-dependencies`, `--scope full`, `--timeout 3600`, the install step `python -m venv /work/.venv && /work/.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt` (the hash-pinned Linux requirements), then `/work/.venv/bin/python -m pytest -q -p no:cacheprovider -c pytest.ini --rootdir . --junitxml={evidence}/junit.xml tests` with that JUnit file declared as the report. The install step of every leg ran under project:AUTH-004 (`install-dependencies`, environment `local`, the user's answer of 2026-11-11 "Sí, 6 horas (Recomendado)", for these legs only).
+Two rounds, all on 2026-11-11 under `qa run --container` on the remote engine, one leg after the other, each round with a clean tree: the first at commit `789250e8b1b549dd84062689c713fb094609e7ff` (the first commit of this report), the second at `1c55b77b1093647ef210776442abfae8a8658f6b` after a test-only fix. In both rounds the only local difference, `.qa/config.json`, is marked skip-worktree and was never added. The command is the milestone 2 legs' command: the launcher of `qa-test-execution`, `--activity install-dependencies`, `--scope full`, the install step `python -m venv /work/.venv && /work/.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt` (the hash-pinned Linux requirements), then `/work/.venv/bin/python -m pytest -q -p no:cacheprovider -c pytest.ini --rootdir . --junitxml={evidence}/junit.xml tests` with that JUnit file declared as the report. The install step of every leg ran under project:AUTH-004 (`install-dependencies`, environment `local`, the user's answer of 2026-11-11 "Sí, 6 horas (Recomendado)", for these legs only). One difference from milestone 2: `--timeout 3600` instead of 1500, because the suite has grown.
 
 ### First round at `789250e`, kept as measured history
 
@@ -171,7 +171,7 @@ The macOS legs are left to the macOS job of the GitHub Actions workflow, on push
 
 ## Kernel mutation score
 
-Measured in Task 17 by one container run on the remote engine, project:EXE-01M75H1KC6V22PRSFFPQZ6MMVY (status passed), image `python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b` (`python:3.12-slim`), mutmut 3.8.1 and the `qa-mutation` converter in the same run, the converted report declared as `mutation:{evidence}/kernel-mutation.json`. Wall time 2813 s with the install. The install step ran under project:AUTH-003 (`install-dependencies`, environment `local`, approved by the user for six hours on 2026-11-11). Score = (Killed + Timeout) / (Killed + Timeout + Survived + NoCoverage), computed from the converted report's counts.
+Measured in Task 17 by one container run on the remote engine, project:EXE-01M75H1KC6V22PRSFFPQZ6MMVY (status passed), image `python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b` (`python:3.12-slim`), mutmut 3.8.1 and the `qa-mutation` converter in the same run, the converted report declared as `mutation:{evidence}/kernel-mutation.json`. Wall time, from two clocks: 1269952 ms in the kernel's own execution record (15:08:29 to 15:29:38 UTC), and 2813 s by the shell clock around the whole command (14:43:45 to 15:30:38 UTC). The install step ran under project:AUTH-003 (`install-dependencies`, environment `local`, approved by the user for six hours on 2026-11-11). Score = (Killed + Timeout) / (Killed + Timeout + Survived + NoCoverage), computed from the converted report's counts.
 
 | Module | Killed | Survived | Timeout | NoCoverage | Mutants | Score |
 |---|---|---|---|---|---|---|
@@ -222,12 +222,14 @@ Grader changes after results, with both numbers:
 - `qa-regression-guard` (Task 15): before the first GREEN run the C1 and C5 baselines held the first grader, so two restatements were added; after GREEN the C5 baseline criterion was fixed to count a run that exits non-zero. All 13 saved runs re-graded: 3 fail and 10 pass before and after.
 - `qa-mutation` (Task 16): a module rename (no criterion changed); the endorsement detector (`5d04027`), which flipped run `65a27c438c5b` from fail to pass; and, in fix round 1, a score counts only from the run's own report or a structured ingest. Counted GREEN 9 of 9 before and after; four uncounted runs on an earlier text flipped from pass to fail.
 - `qa-orchestrator` and `qa-reporting` (Task 18, fix round 1): two launcher criteria became hard, the pass-claim search drops retry counts, gaps must be named with their kind, `mutmut` counts as project code. Re-grade: review-granted RED 2 of 3 to 0 of 3, earlier GREEN 2 of 3 to 3 of 3; every other tally unchanged.
+- `qa-reporting`'s gap matcher, reused by the F5 chain grader (Task 19, fix round 1, `4576bcf`): it now accepts the Markdown-escaped kind the kernel renders (`tc\_not\_automated`). Re-grade of every saved run it grades: F5 exit run `c6ece4592ed7` fail to pass (`report_lists_every_gap` false to true, 9 of 10 to 10 of 10 hard criteria); the six Task 18 F5 traceability runs unchanged (RED 0 of 3, GREEN 3 of 3). The F7 exit runs, which do not use it, re-graded unchanged (`cb264b3a68ca` pass, `300fdb418ea4` fail).
 
 The one hard failure on the final orchestrator text, review-granted run `631038e08c6b`, is the pass-claim criterion on this sentence: "The sync test depends on a run counter in the pytest cache, which would explain why it passes every second run." It describes the flaky test, not the suite; it is reported as measured and marked a suspected grader false positive for the reader to judge.
 
 Measured observations (not criteria):
 
 - Delegation on the final orchestrator text: every subagent dispatched in the foreground, no launcher written through a shell variable, no permission denial, in all six fix-round runs. On the old text 2 of 3 review runs had dispatched in the background and recovered after a denial, so the milestone 2 failure (deviation 38) was not reproduced; the change shows in launcher form (4 variable-form calls per run before, 0 after) and denials (20 before, 0 after).
+- Routing between `qa-test-strategy` and `qa-test-generation` with both installed was measured on one scenario only (the Task 18 verify-fix case).
 - Routing with the whole suite installed: a plain "verify the fix" request now loads `qa-orchestrator` first (6 of 6 runs on the new text); on the old text it loaded `qa-regression-guard` alone (3 of 3). The orchestrator's RED and GREEN runs used different `qa-reporting` texts.
 
 ## Host as found
@@ -292,8 +294,7 @@ Exit evidence:
 - Each exit scenario is one run, graded once. One run shows that the chain can reach its records on that day, not how often it does.
 - The exit runs gave the harness a `--timeout` (5400 s for F5, 3600 s for the F7 runs), so that a long run could not end without a cost record, which would stop every later run. No run came near its timeout.
 - The kernel's own rendered report fails the kernel's own check. In the `report.md` of f5:RPT-001 the gate lines that list acceptance criteria and test cases carry a status word next to `AC-` and `TC-` IDs, which `qa report check` does not accept as citations, so it flags four `uncited_claim` lines the agent did not write. This is a kernel defect, parked for the final fix wave.
-- The kernel's rendered report gives the traceability gaps as counts per kind, without the IDs, and has no row for findings without a fix. This is why F5 missed `report_lists_every_gap`; the answer gave both counts.
-- F7's C2 leg is open (deviation 62). In the Linux kernel legs the tests that need git skip (867 per leg in the second round); they ran in the remote test script, not through the kernel. The first round's only failure was a grader test without a git guard.
+- F7's C2 leg is open (deviation 62). In the Linux kernel legs the tests that need git skip (868 per leg in the second round); they ran in the remote test script, not through the kernel. The first round's only failure was a grader test without a git guard.
 - The deterministic C4 and C5 checks exercise the scan and the gate, not an agent: whether an agent records those hits as findings in one run is measured only by the Task 15 runs.
 
 Evaluated agent and harness:
@@ -335,6 +336,6 @@ Spend and billing:
 
 ## Checks
 
-- The `qa report check` command in the introduction, with its five `--ledger` options, returns `ok: true` with no problems. Without them it reports 56 `unknown_id` and 13 `uncited_claim` problems, for IDs held only in the extra ledgers and the lines whose only IDs are those.
+- The `qa report check` command in the introduction, with its five `--ledger` options, returns `ok: true` with no problems. Without them it reports 60 `unknown_id` and 13 `uncited_claim` problems, for IDs held only in the extra ledgers and the lines whose only IDs are those.
 - `python3 -I tools/check_repo.py`: 0 problems. `tools/vendor_kernel.py --check`, `tools/validate_skills.py` and `tools/check_catalog.py`: 9 skills, 0 differences and 0 problems.
 - The grader commit `7657b8f` changed evaluation code, the two exit cases and their tests only; the static skill tests ran on Linux with Python 3.9 and 3.15 through the remote test script before the exit runs, and both exited 0.
