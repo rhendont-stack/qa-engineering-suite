@@ -26,10 +26,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixes and revalidation: `qa fix add` and `qa revalidate`, which records FAIL_TO_PASS and PASS_TO_PASS against a base and a fix commit; suite worktrees (`qa worktree add|remove`) and records of the files the suite writes (`qa changes record|list`) under a `write-tests` grant.
 - Five skills: `qa-requirements` (with a weak-word scanner for English and Spanish), `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard` (diff impact, a test-weakening scan and a FAIL_TO_PASS helper) and `qa-mutation` (mutmut and PIT converters into mutation-testing-report-schema). `qa-orchestrator` gains the `fix` plan template, literal launcher calls and foreground dispatch; `qa-reporting` gains the traceability matrix.
 - `tools/mutate_kernel.py`, which prints the container run that measures the kernel's own mutation score, and `tools/run_skill_eval.py` gains a key helper, generated fixtures with their history, per-case write tools, a saved file state per run and an allow-list that is the agent's Bash boundary.
-- The [milestone 3 report](docs/reports/milestone-3.md). It records the exit as measured, with its open items.
+- The [milestone 3 report](docs/reports/milestone-3.md). It records the exit as measured, with its open items, and the final review fix wave with its re-runs.
+- `scripts/git_read.py` in `qa-orchestrator`, `qa-regression-guard` and `qa-mutation`: read-only `log`, `status` and `diff` through the kernel's neutralised git session. The skill texts name no raw git command, and a static test holds that.
+
+### Fixed
+
+- The traceability matrix gives a row its run's status when that run did not conclude with a pass or a fail, and `requirements_verified` and `no_blocked_critical` count only runs on the target tree.
+- A report the kernel renders now passes `qa report check`: the gate's details no longer put a bare status word next to `AC-` and `TC-` IDs.
+- A declared JSON report is no longer made invalid by redaction: it is redacted per key and value and stored re-serialised when redaction changes it.
+- `qa changes record --kind created` on a repository git cannot read now needs the approval a modification needs, instead of passing; a `files` record stores `tracked` and `git_unknown` only when true.
+- The test map read and the matrix write use the canonical JSON reader and writer, which refuse duplicate keys. Kernel messages no longer cite sections of unpublished documents.
+- `tools/mutate_kernel.py` refuses to overwrite a different `setup.cfg` without `--force` and says the file must not be committed.
+- `qa-regression-guard`'s FAIL_TO_PASS helper prints a revalidation command only when the fix's findings name the defect test, and otherwise reports the fix unverified and exits 1.
+- `qa-orchestrator` follows a delegated skill's own command forms and writes only what that skill names; it and `qa-regression-guard`, `qa-mutation` and `qa-test-generation` return to the project root after a worktree `cd`. Only template skills are plan steps. `qa-test-generation` records the user's trust approval, `qa-test-strategy` maps a medium risk to criticality `normal`, and `qa-mutation` says what the gate reads for its score.
 
 ### Security
 
 - The kernel's git reads no longer run a filter or diff program that a repository configures for itself (its `.git/config`, an included file, `config.worktree` or a submodule); a user-level driver such as git-lfs still applies. The diff hash is computed as a stream.
 - `tools/run_skill_eval.py` deletes each run's working copy after saving its `.qa/` state, and redacts hex and base64 forms of the API key as well as the key itself.
 - An `ssh` container engine runs with `LogLevel=ERROR`, so login banners stay out of the logs.
+- The skills' git reads go through `git_read.py` and the kernel's neutralised session instead of raw `git status`, `git log`, `git diff` or `git show`, which read the repository's own configuration and could start a program it names.
+- Redaction of a declared JSON report keeps its strength: the parsed document's keys and values are redacted with the ledger's patterns, and a report whose secrets are not all found that way keeps the byte-level redaction.
+- An unreadable repository no longer lets `qa changes record --kind created` skip the approval for a tracked file.

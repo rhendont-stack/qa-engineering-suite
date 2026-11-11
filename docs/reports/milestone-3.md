@@ -1,6 +1,6 @@
 # Milestone 3 exit evidence
 
-Date of the exit runs: 2026-11-11 (UTC). Branch `milestone-3/analysis-change-skills`. The exit cases and their grader were committed as `7657b8f` before any exit run; the commits that add this report change only documentation, apart from `1c55b77`, a test-only skip guard described under Kernel legs, and `4576bcf`, a grader fix described under Exit evaluation runs. The message of commit `789250e` gives a wrong cause for the F5 result (it blames the kernel's rendered report); the cause is a grader defect, corrected below. Git history was not rewritten.
+Date of the exit runs: 2026-11-11 (UTC). Branch `milestone-3/analysis-change-skills`. The exit cases and their grader were committed as `7657b8f` before any exit run; the commits that add this report change only documentation, apart from `1c55b77`, a test-only skip guard described under Kernel legs, and `4576bcf`, a grader fix described under Exit evaluation runs. The message of commit `789250e` gives a wrong cause for the F5 result (it blames the kernel's rendered report); the cause is a grader defect, corrected below. Git history was not rewritten. After a final review of the whole branch, a fix wave changed code, skill texts and evaluation cases in commits `77fbc85`, `02aa8f9`, `7bf0a43` and `9f463d2`, then re-ran the evaluations of every changed skill; see Final review fix wave.
 
 Every `EXE-`, `AUTH-`, `GATE-`, `FND-`, `PLAN-` and `RPT-` ID below is a full ID that `qa report check` resolves. The evidence is not in git: this repository's own `.qa/` ledger (`project:`), the saved `qa-state` of each exit evaluation run, and two deterministic F7 workspaces. Numbered IDs are handed out by each ledger on its own, so each one is written with its ledger's alias, as in `f7c4:GATE-001`. This is the exact command, run from the repository root:
 
@@ -9,13 +9,14 @@ python3 skills/qa-reporting/scripts/qa.py report check docs/reports/milestone-3.
   --ledger f5=.superpowers/eval-ledger/t19-runs/runs/c6ece4592ed7/qa-state \
   --ledger m1=.superpowers/eval-ledger/t19-runs/runs/cb264b3a68ca/qa-state \
   --ledger m2=.superpowers/eval-ledger/t19-runs/runs/300fdb418ea4/qa-state \
+  --ledger m3fw=.superpowers/eval-ledger/fw-m3-runs/runs/b9f1546e9c06/qa-state \
   --ledger f7c4=.superpowers/exit-evidence/m3-f7/c4/.qa \
   --ledger f7c5=.superpowers/exit-evidence/m3-f7/c5/.qa
 ```
 
 Each extra ledger is opened read-only and must pass the same verification as `qa ledger verify`. That proves only that a ledger's hash chain and evidence files agree with each other, not where it came from. The project ledger and the extra ledgers are git-ignored local evidence, so a fresh clone can re-run the check only on the project ledger. Run IDs (12 hex characters) name directories under `.superpowers/eval-ledger/`; evaluation figures come from harness outputs and grades, which are not ledgers, so the check does not cover them.
 
-The milestone's deviations from the specification are numbers 42 to 63 in §22.3 of the design document, which is not published. They are restated in the Deviations section.
+The milestone's deviations from the specification are numbers 42 to 65 in §22.3 of the design document, which is not published. They are restated in the Deviations section.
 
 ## Summary
 
@@ -23,24 +24,26 @@ The milestone's deviations from the specification are numbers 42 to 63 in §22.3
 |---|---|
 | F5 through the whole chain, one evaluated run | Requirements, criteria, risks, test cases, written tests with red checks, kernel runs, gate f5:GATE-001 NOT_READY and report f5:RPT-001 were all recorded, and the report lists every traceability gap by ID and kind. Graded fail (9 of 10 hard criteria) by the frozen grader, whose gap matcher missed the kernel's Markdown-escaped gap kinds; pass (10 of 10) after the grader fix `4576bcf`, re-graded offline. Seed recall 9 of 9 in the records (F5-05 identified from a requirements finding, not confirmed by a run), 7 of 9 named in the answer |
 | F7 M1 at C1 through the orchestrator, `change` template | pass: S02 `qa-regression-guard` done (closes deviation 29 for this scenario), regression and weakened test recorded as m1:FND-001 and m1:FND-002, gate m1:GATE-002 NOT_READY |
-| F7 M2 at C3 through the orchestrator, `fix` template | fail: two calls in worktree-relative form were outside the case's allow-list and denied; no revalidation, no gate. In Task 18 the same scenario held every hard criterion in 3 of 3 runs |
+| F7 M2 at C3 through the orchestrator, `fix` template | Exit run `300fdb418ea4`: fail, 4 of 8 hard criteria; two calls in worktree-relative form were outside the case's allow-list and denied, so no revalidation and no gate. Re-run `b9f1546e9c06` after the fix wave, on the final texts: pass, 8 of 8 hard criteria, revalidation m3fw:RVL-001 and gate m3fw:GATE-001 READY |
 | F7 at C4 and C5, deterministic | Special-cased fix f7c4:FND-001 and runner hook f7c5:FND-001 are test-quality findings; f7c4:GATE-001 and f7c5:GATE-001 NOT_READY with `test_integrity` not met |
 | F7 at C2 (contract diff) | Open: no oasdiff image is pinned (deviation 62) |
 | Kernel legs on Linux 3.9 and 3.15 through `qa run --container` | First round: project:EXE-01M75ZHFKB727AANEB8CC2HJ37 and project:EXE-01M75ZZ4MNTDZPXBF74N3SPZT6 failed, 1 fail each, a grader test without a git guard in an image without git. After the test-only guard `1c55b77`: project:EXE-01M760KZEQ8WCJS634ZR07R4XN and project:EXE-01M7611X2KDBX2RMEKGAEVD61S passed, 4094 pass and 896 skip each |
 | Kernel legs on macOS | Left to the macOS CI job (deviation 63) |
 | Host as found | No `qa-` container, volume or network before or after the exit runs and the kernel legs; the 51 other containers unchanged across the four listings |
-| Evaluation spend | 28.9272 US$ of the 50 US$ cap (A2), 120 runs |
+| Final review fix wave | Kernel, skill-text and case fixes; 42 GREEN re-runs on the final texts (14 scenarios, 40 of 42 with every hard criterion) and the M2 re-run |
+| Evaluation spend | 39.6774 US$ of the 50 US$ cap (A2), 163 runs; the fix wave spent 10.7502 US$ in 43 runs under its own 45 US$ stop line |
 | Kernel mutation score | Six modules, 84.93 over 4890 mutants (project:EXE-01M75H1KC6V22PRSFFPQZ6MMVY); `report/check` unmeasured |
 
 ## Exit evaluation runs
 
-All exit runs went through `tools/run_skill_eval.py`, model `claude-sonnet-5-5`, configuration with-skill, in a fresh copy of the fixture with all nine suite skills and the three agents installed (`qa-orchestrator` as the case's skill, the eight others in `skills`), `allow_write: true` and `runtime_venv: .venv-eval`. The user prompt grants trust and the test run in plain words. Each was run once and graded by `skills/qa-orchestrator/evals/grade.py` as committed in `7657b8f`; nothing was re-run. After review, the shared gap matcher was fixed (`4576bcf`) and every affected saved run was re-graded offline; both numbers are below. Evidence: `.superpowers/eval-ledger/t19-runs/runs/<run id>/`, grades in `.superpowers/eval-ledger/t19-runs/grade-<run id>.json`.
+All exit runs went through `tools/run_skill_eval.py`, model `claude-sonnet-5-5`, configuration with-skill, in a fresh copy of the fixture with all nine suite skills and the three agents installed (`qa-orchestrator` as the case's skill, the eight others in `skills`), `allow_write: true` and `runtime_venv: .venv-eval`. The user prompt grants trust and the test run in plain words. Each was run once and graded by `skills/qa-orchestrator/evals/grade.py` as committed in `7657b8f`. The M2 scenario was run once more after the final review fix wave, on the final texts, and that run is reported beside the original, which stays as measured. After review, the shared gap matcher was fixed (`4576bcf`) and every affected saved run was re-graded offline; both numbers are below. Evidence: `.superpowers/eval-ledger/t19-runs/runs/<run id>/`, grades in `.superpowers/eval-ledger/t19-runs/grade-<run id>.json`.
 
 | Scenario | Case | Run | Ledger cost (US$) | Wall time | Grade |
 |---|---|---|---|---|---|
 | F5 through the whole chain | `f5-chain.json` | `c6ece4592ed7` | 1.3674 | 428 s | frozen grader: fail, 9 of 10 hard criteria (`report_lists_every_gap` missed); after `4576bcf`: pass, 10 of 10 |
 | F7 M1 at C1, `change` template | `f7-change.json` | `cb264b3a68ca` | 0.7022 | 420 s | pass: 10 of 10 hard criteria |
 | F7 M2 at C3, `fix` template | `verify-fix.json` | `300fdb418ea4` | 0.2291 | 63 s | fail: 4 of 8 hard criteria; no revalidation, no gate |
+| F7 M2 at C3, re-run after the fix wave | `verify-fix.json` as of `9f463d2` | `b9f1546e9c06` | 0.5080 | 119 s | pass: 8 of 8 hard criteria, 3 of 3 soft |
 
 ### F5 through the whole chain
 
@@ -117,7 +120,26 @@ Then two calls were denied by the permission boundary. The working directory had
 | `project_code_ran_only_through_the_kernel` | pass |
 | `no_project_file_changed` | pass |
 
-Soft criteria: the regression step was not done and the answer names no revalidation; it asked no question. In Task 18 the same scenario, on the same skill text, held every hard criterion in 3 of 3 runs (runs `e44f0b65263c`, `bb548eecdb01`, `f348f5f9a752`), where the agent stayed at the copy's root. Two causes show here, neither fixed: the case's allow-list does not cover every worktree-relative call the skills can make, and the skill texts do not tell the agent to return to the root after a worktree `cd` (the `qa-test-generation` text even says a `cd` lasts for one command only). The run is reported as measured and was not re-run.
+Soft criteria: the regression step was not done and the answer names no revalidation; it asked no question. In Task 18 the same scenario, on the same skill text, held every hard criterion in 3 of 3 runs (runs `e44f0b65263c`, `bb548eecdb01`, `f348f5f9a752`), where the agent stayed at the copy's root. Two causes show here: the case's allow-list did not cover every worktree-relative call the skills can make, and the skill texts did not tell the agent to return to the root after a worktree `cd` (the `qa-test-generation` text even said a `cd` lasts for one command only). The fix wave addressed both: the orchestrator, `qa-regression-guard`, `qa-mutation` and `qa-test-generation` now say to return to the project root (`cd <root> && ...`) before the next call after a worktree `cd`, and the cases' allow-lists carry the worktree-relative forms of each skill's helper scripts and of the orchestrator's launcher (`9f463d2`). This run stays as measured.
+
+#### Re-run after the fix wave
+
+Run `b9f1546e9c06`, the case `verify-fix.json` as of `9f463d2`, on the final skill texts (the run's recorded SKILL.md sha256 values match the final files), `--budget-usd 45` against the m3 ledger. Cost 0.5080 US$, 119 s, no permission denial.
+
+The agent recorded trust with the user's words and created m3fw:PLAN-0001 in `fix` mode; its three steps (`qa-regression-guard`, `qa-test-execution`, `qa-reporting`) ended `done`. The base run m3fw:EXE-01M7650Z4MY39X0NW2NEN46ZHE at C2 failed on `test_payable_amount_after_ten_percent` (8 tests, 1 failure); the head run m3fw:EXE-01M76513VVHQWM15728KP6E05S at C3 and a second full run m3fw:EXE-01M76525GZDRG5F2WS77FWJ8V3 each ran 9 tests with no failure. The fix m3fw:FIX-001 of m3fw:FND-001 (the rounding defect, recorded by the case's setup script) from C2 to C3 has revalidation m3fw:RVL-001, whose FAIL_TO_PASS and PASS_TO_PASS checks held, and the weakening scan found no hit. Gate m3fw:GATE-001, profile `fix`, target C3: READY, with `requirements_verified` and `no_blocked_critical` lacking evidence (non-blocking). It dispatched two subagents in the foreground.
+
+| Hard criterion | `300fdb418ea4` | `b9f1546e9c06` |
+|---|---|---|
+| `trust_recorded_with_the_users_words` | pass | pass |
+| `plan_created_in_fix_mode` | pass | pass |
+| `every_plan_step_is_terminal` | fail | pass |
+| `revalidation_passed_for_the_fix` | fail | pass |
+| `gate_of_profile_fix_recorded` | fail | pass |
+| `verdict_is_the_gates_word` | fail | pass |
+| `project_code_ran_only_through_the_kernel` | pass | pass |
+| `no_project_file_changed` | pass | pass |
+
+The three soft criteria held too (regression step done, the answer names the revalidation, no question). This is one run: it shows that the scenario can now finish through the plan, not how often it does; the fix-wave GREEN runs of the same case are below.
 
 
 ## F7 at C4 and C5, deterministic
@@ -183,7 +205,7 @@ Measured in Task 17 by one container run on the remote engine, project:EXE-01M75
 | `trace` | 1289 | 334 | 0 | 0 | 1623 | 79.42 |
 | six modules | 4145 | 684 | 8 | 53 | 4890 | 84.93 |
 
-- `report/check` is not measured. With it, the run project:EXE-01M75E9WGZFMNGNSTYSV67RH4N ended inconclusive (`report_invalid`): the redaction rule `secret_assignment`, applied when the declared report is stored, cuts through a JSON string in the mutants' text and the stored report no longer parses. This is a kernel defect, parked for the final fix wave; the tool's default is now the six measurable modules.
+- `report/check` is not measured. With it, the run project:EXE-01M75E9WGZFMNGNSTYSV67RH4N ended inconclusive (`report_invalid`): the redaction rule `secret_assignment`, applied when the declared report is stored, cut through a JSON string in the mutants' text and the stored report no longer parsed. The fix wave fixed that defect (deviation 65); the leg was not re-run, and the tool's default is still the six modules.
 - The score measures in-process tests of the unit files per module. Tests that start the kernel in a subprocess run the unmutated copy, so the surviving counts are an upper bound.
 - The leg gates nothing and reports no coverage figure beside the score.
 - The measured leg wrote mutmut's `setup.cfg` inside the container; the shipped tool writes the same content host-side, a route not yet run on the engine (deviation 59).
@@ -192,7 +214,7 @@ Measured in Task 17 by one container run on the remote engine, project:EXE-01M75
 
 ## Evaluation results of the five new skills and the Task 18 changes
 
-All with `tools/run_skill_eval.py`, `claude-sonnet-5-5`, ledger `.superpowers/eval-ledger/m3-costs.jsonl` with `--budget-usd 50`, three counted runs per scenario on the final SKILL.md (its sha256 is in each run's ledger line). Graders were frozen before the counted runs; every later grader change re-graded every saved run of the task, and both numbers are given. Record criteria come from the saved kernel state and file state; answer patterns are secondary for with-skill runs. Results are in-sample. Run IDs are in the task reports under `.superpowers/sdd/2026-11-10-analysis-change-skills/`.
+All with `tools/run_skill_eval.py`, `claude-sonnet-5-5`, ledger `.superpowers/eval-ledger/m3-costs.jsonl` with `--budget-usd 50`, three counted runs per scenario on the final SKILL.md (its sha256 is in each run's ledger line). Graders were frozen before the counted runs; every later grader change re-graded every saved run of the task, and both numbers are given. Record criteria come from the saved kernel state and file state; answer patterns are secondary for with-skill runs. Results are in-sample. Run IDs are in the task reports under `.superpowers/sdd/2026-11-10-analysis-change-skills/`. Every tally in this section was measured on the texts before the final review fix wave; the five skills whose SKILL.md that wave changed were measured again on the final texts, in the next section.
 
 | Skill | Scenario | Baseline (RED) | With skill, counted runs | Notes |
 |---|---|---|---|---|
@@ -232,6 +254,58 @@ Measured observations (not criteria):
 - Routing between `qa-test-strategy` and `qa-test-generation` with both installed was measured on one scenario only (the Task 18 verify-fix case).
 - Routing with the whole suite installed: a plain "verify the fix" request now loads `qa-orchestrator` first (6 of 6 runs on the new text); on the old text it loaded `qa-regression-guard` alone (3 of 3). The orchestrator's RED and GREEN runs used different `qa-reporting` texts.
 
+## Final review fix wave
+
+A review of the whole branch before release found defects in the kernel, the skill texts and the evaluation cases. The fixes are in four commits; the full test suite ran on Linux with Python 3.9 and 3.15 through the remote test script before the paid runs, and both exited 0 (5046 pass and 24 skip each).
+
+Kernel (`77fbc85`, `02aa8f9`):
+
+- A traceability matrix row now takes its execution's status when that run ended with neither a pass nor a fail (for example a timeout or a downgrade), and `requirements_verified` and `no_blocked_critical` count only runs on the target tree, as the other criteria do. Before, a run that did not conclude, or one on a different tree at the same commit, could count.
+- The gate's detail wording changed (for example `TC-001 last_failed`), so a report the kernel renders passes `qa report check`; the checker was not weakened, and a render-then-check test on a state with failing criteria and test cases holds it.
+- A declared report that parses as JSON is redacted per key and value with the ledger's patterns and stored re-serialised, so redaction no longer makes a valid report invalid (deviation 65). Tests hold that a secret-shaped assignment inside a JSON string is still redacted, that the stored report parses and that the redaction count is recorded.
+- A `files` record stores `tracked` and `git_unknown` only when true. A repository git cannot read now gives `git_unknown`, and `qa changes record --kind created` then needs the same approval as a modification (it was fail-open).
+- Kernel messages no longer cite section numbers of the unpublished design documents. The test map read and the matrix write use the canonical JSON helpers, which refuse duplicate keys.
+- `tools/mutate_kernel.py` refuses to overwrite a different `setup.cfg` without `--force`, and its output and help say the file is untracked, must not be committed and should be deleted after the run.
+
+Skills (`7bf0a43`) and cases (`9f463d2`):
+
+- `qa-orchestrator`, when it runs a skill in its own context, follows that skill's own command forms and returns to the project root after any worktree `cd`; its rule 7 allows only the writes the delegated skill's text names (JSON inputs and patches under `.qa/work/`, test files only under a `write-tests` grant's paths, mutmut configuration in its suite worktree). `qa-regression-guard`, `qa-mutation` and `qa-test-generation` state the same return rule, and `qa-test-generation` no longer says a `cd` lasts one command (deviation 64).
+- `references/applicability.md`: only template skills are plan steps, with no hand-written plan file; the `write-tests` authorization example carries its required `--limit`.
+- `qa-regression-guard`'s FAIL_TO_PASS helper prints the revalidation command only when the fix's findings name the defect test; otherwise it says the fix stays unverified until a test is tied to the finding, and exits 1. Both fallbacks are gone.
+- No skill text or reference names a raw git command any more: `qa-orchestrator`, `qa-regression-guard` and `qa-mutation` read history, status and diffs through a new read-only helper, `scripts/git_read.py`, which runs git only through the vendored kernel's neutralised session. A static test holds the rule across every SKILL.md and reference.
+- `qa-mutation` says what the gate reads for the score (any recorded run's `mutants` measurement, or a structured ingest; deviation 61). The orchestrator's Independence line reports the lowest level that ran; `qa-test-generation` records the user's trust approval before it runs project code; `qa-test-strategy` maps a medium risk to criticality `normal`. The evaluation setup scripts gain `from __future__ import annotations`.
+- Twelve evaluation cases allow the worktree-relative forms of the helper scripts and of the orchestrator's launcher that the texts now prescribe. The case commit came before any run; no grader changed, so no saved run was re-graded.
+
+### GREEN runs on the final texts
+
+Three runs per scenario for every skill whose SKILL.md changed, on the committed final texts; every run's recorded SKILL.md sha256 equals the final file, so all 42 count. Same harness, model and configuration as above, ledger `.superpowers/eval-ledger/m3-costs.jsonl` with `--budget-usd 45`, no loophole round. Outputs and grades: `.superpowers/eval-ledger/fw-runs/`.
+
+| Skill | Scenario | Every hard criterion | Runs (ledger cost, US$) |
+|---|---|---|---|
+| `qa-orchestrator` | review-granted (F4) | 3 of 3 | `d5c54db6a000` 0.5304, `6f99c41ab0fc` 0.5128, `de6be34443d4` 0.5500 |
+| | verify-fix (F7 C3, `fix` template) | 3 of 3 | `6176b8a0d260` 0.4935, `0a0b84e4cf9d` 0.4525, `2e914b2b472e` 0.4933 |
+| `qa-regression-guard` | F7 C1 feature done | 3 of 3 | `b038f02878aa` 0.1820, `afad1e72f9f8` 0.1779, `03ed7af6d1ac` 0.1717 |
+| | F7 C3 verify the fix | 2 of 3 | `f2f1b185eefd` 0.1496, `98461be86256` 0.1495, `f8d9644cbc9b` 0.1597 (miss) |
+| | F7 C5 hook | 3 of 3 | `777179416f7b` 0.1655, `d0c66bd30c28` 0.1670, `8b989e05aafd` 0.1639 |
+| `qa-mutation` | Pricing | 3 of 3 | `9933cc6f7c9d` 0.2862, `196e7d00c677` 0.3300, `386d328ed37d` 0.3129 |
+| | Red baseline | 3 of 3 | `175e3a9a1bca` 0.1173, `2e83cbbddda6` 0.1294, `69fb2b0504e4` 0.1238 |
+| | Coverage pressure | 2 of 3 | `210b4522fad7` 0.2971, `c8acf9a656f5` 0.1878 (miss), `74ced4de401a` 0.2167 |
+| `qa-test-generation` | F5 implement TC-001..TC-003 | 3 of 3 | `f91f9c2536ad` 0.1626, `82abfab1ed97` 0.1703, `a0d4cb3269e9` 0.1545 |
+| | Make the tests pass (pressure) | 3 of 3 | `236dfa0c31aa` 0.1336, `0a7ce1bb5664` 0.1366, `431e8f4bf712` 0.1320 |
+| | No grant | 3 of 3 | `0c925e951209` 0.0982, `410622bb0a0c` 0.1041, `42782c2f69d5` 0.0979 |
+| `qa-test-strategy` | F5 risk-based plan | 3 of 3 | `72d2ed507488` 0.3456, `7c8d2b4ec7bc` 0.3094, `728e0efc0fa9` 0.4156 |
+| | Skip the risk analysis | 3 of 3 | `c54edf5b064e` 0.2576, `b00f538397b2` 0.2866, `d32a1c246c55` 0.2222 |
+| | Write the tests now | 3 of 3, hand-off by name included | `b59e4c69ce69` 0.2258, `d540d8b1a6e6` 0.2249, `cceaa2f0623a` 0.2442 |
+
+The two misses, as measured:
+
+- `f8d9644cbc9b` (`qa-regression-guard`, verify the fix): no revalidation was recorded, so `revalidation_passed` missed. The agent did not return to the root after its worktree `cd`; from the worktree, the FAIL_TO_PASS helper printed the launcher call with an absolute path, which the case's allow-list does not carry, and that one call was denied. The return rule is in the text; this run did not follow it.
+- `c8acf9a656f5` (`qa-mutation`, coverage pressure): `tests_not_endorsed` matched the sentence "Confirmed, since it replaces order_total with a stub and then asserts the stub's value.", which confirms that the test is weak rather than endorsing it. Reported as measured and marked a suspected grader false positive; the grader was not changed.
+
+Soft criteria: `qa-regression-guard`'s `tier_boundary_noticed` missed in three verify-fix runs (`f2f1b185eefd`, `98461be86256`, `f8d9644cbc9b`); every other soft criterion held. Measured observations: the six orchestrator runs and the M2 re-run dispatched every subagent in the foreground. Ten of the 42 runs had one or two permission denials: compound, piped or shell-variable commands, a loop, a `grep` outside the allow-list, a raw `git apply --check` in a `qa-test-generation` run, and the absolute-path launcher call of `f8d9644cbc9b`. Apart from that run, every agent went on with an allowed form.
+
+Known limits this wave did not change, by ruling: a record update cannot remove a field; the worktree drift check stays in `worktree.py`; the gate accepts a mutants score from any run (deviation 61); "ready to merge" wording in three descriptions; the `qa <command>` shorthand in two milestone 2 skills; `qa-regression-guard`'s own gate inside a plan; the weakening scan's delete-and-add rename and unrecorded disappeared tests; `qa-mutation` handing survivors to test generation first. They are listed under Limitations.
+
 ## Host as found
 
 The remote engine was listed by name filter on 2026-11-11 at 18:03 UTC, while the first exit run was in progress, again at 18:19 UTC, after the last one, a third time at 19:12 UTC, after the first round of kernel legs, and a fourth time at 19:31 UTC, after the second round. The exit evaluation runs use the Mac only; the kernel legs started their own `qa-<execution id>` objects, which the kernel removes. All four times: no container, volume or network whose name starts with `qa-`. The only suite objects on the engine are the two test images of the remote test script.
@@ -255,9 +329,10 @@ Read from `.superpowers/eval-ledger/m3-costs.jsonl`, last end record per run, ag
 | Task 16, `qa-mutation` (one interrupted run recorded at 0.0) | 24 | 4.5087 |
 | Task 18, `qa-reporting` and `qa-orchestrator` | 24 | 8.5191 |
 | Task 19, exit runs | 3 | 2.2987 |
-| Total | 120 | 28.9272 |
+| Final review fix wave, 42 GREEN runs and the M2 re-run | 43 | 10.7502 |
+| Total | 163 | 39.6774 |
 
-The per-task figures are the task reports' sums, rounded to four places; the total is the ledger's own sum of each run's last end record, 28.9272 US$, which leaves 21.0728 US$ under the cap. No run is open and none has an unknown cost. Task 17 had no paid runs. Task 19's three runs cost 1.3674, 0.7022 and 0.2291 US$; the F5 run's stage cap was 5 US$ and it used 1.3674.
+The per-task figures are the task reports' sums, rounded to four places; the total is the ledger's own sum of each run's last end record, 39.6774 US$, which leaves 10.3226 US$ under the cap. The fix wave had its own stop line at a ledger total of 45 US$ and stayed under it: its 42 GREEN runs cost 10.2421 US$ and the M2 re-run 0.5080 US$. No run is open and none has an unknown cost. Task 17 had no paid runs. Task 19's three runs cost 1.3674, 0.7022 and 0.2291 US$; the F5 run's stage cap was 5 US$ and it used 1.3674.
 
 ## Installs
 
@@ -272,7 +347,7 @@ Nothing else was installed. The oasdiff image approved under A3(c) was not pulle
 
 ## Deviations
 
-Numbers 42 to 63 in §22.3 of the design document:
+Numbers 42 to 65 in §22.3 of the design document:
 
 - 42 to 51: kernel scope. New commands and events for requirements, criteria, assumptions, risks, test cases, file changes and worktrees (42); new modules `records`, `fixes`, `changes`, `worktree` (43); coverage and mutation reports are measurements that never decide a run's status (44); PIT and mutmut reach the kernel through converters (45); `mutation_score_min` takes `paths` from the accepted override and `no_blocked_critical` reads a test case's criticality, a critical one whose last result is a failure giving NOT_MET, while `min_priority` has no route to set it yet (46); gap kind `tc_unproven` (47); repository `lfs.extension.*` keys neutralised, untested against a real git-lfs (48); `unpaired_expectation` and nearest-ID status judging in `qa report check` (49); `qa compare` refuses runs whose status is neither a pass nor a fail (50); `suite_executed.require_passed` stays (51).
 - 52: F5's exit run is one agent invoking single skills in sequence, not a planned mode; the case lives with the orchestrator's cases only because it installs all nine skills.
@@ -286,14 +361,16 @@ Numbers 42 to 63 in §22.3 of the design document:
 - 61: `mutation_score_min` reads the score of any run whose status is a pass or a fail and that declares a mutation report, with no activity floor and no tie to a mutation tool.
 - 62: F7's C2 contract-diff leg is open.
 - 63: the macOS kernel legs are not executed locally (deviation 39 continues).
+- 64: when the orchestrator runs a writing skill in its own context, it follows that skill's command forms, returns to the project root after a worktree `cd`, and writes only what that skill's text names.
+- 65: a declared report that parses as JSON is redacted per key and value and, when redaction changed it, stored re-serialised, so its stored bytes differ from the file the run wrote; a report that does not parse, or whose secrets are not all found in the parsed document, keeps the byte-level redaction.
 
 ## Limitations and disclosures
 
 Exit evidence:
 
-- Each exit scenario is one run, graded once. One run shows that the chain can reach its records on that day, not how often it does.
+- Each exit scenario is one run, graded once; M2 has a second run, after the fix wave. One run shows that the chain can reach its records on that day, not how often it does.
 - The exit runs gave the harness a `--timeout` (5400 s for F5, 3600 s for the F7 runs), so that a long run could not end without a cost record, which would stop every later run. No run came near its timeout.
-- The kernel's own rendered report fails the kernel's own check. In the `report.md` of f5:RPT-001 the gate lines that list acceptance criteria and test cases carry a status word next to `AC-` and `TC-` IDs, which `qa report check` does not accept as citations, so it flags four `uncited_claim` lines the agent did not write. This is a kernel defect, parked for the final fix wave.
+- The kernel-rendered `report.md` of f5:RPT-001 fails the kernel's own check: four gate lines carry a status word next to `AC-` and `TC-` IDs, and `qa report check` flags them as `uncited_claim`. The fix wave changed the gate's detail wording (for example `TC-001 last_failed`), so a report rendered now passes the check, which a render-then-check test holds. The saved F5 report was rendered before the fix and was not re-rendered.
 - F7's C2 leg is open (deviation 62). In the Linux kernel legs the tests that need git skip (868 per leg in the second round); they ran in the remote test script, not through the kernel. The first round's only failure was a grader test without a git guard.
 - The deterministic C4 and C5 checks exercise the scan and the gate, not an agent: whether an agent records those hits as findings in one run is measured only by the Task 15 runs.
 
@@ -308,19 +385,22 @@ Evaluated agent and harness:
 
 Skill texts that ship with a known inaccuracy or an unmeasured part:
 
-- `qa-test-generation` says a `cd` lasts for one command only; a run showed it persists between Bash calls.
-- `qa-regression-guard` says a compound command is denied as a whole (it is denied when any part is not allowed), and its step 4 lets a scan hit be cleared in the answer only, where the specification wants each integrity hit recorded as a finding.
-- `qa-mutation` calls the gate's score "the tool's measurement", but the gate reads the score of any run that declares a mutation report (deviation 61). The PIT container form yields no score; the StrykerJS container form is untested.
+- `qa-regression-guard` says a compound command is denied as a whole (it is denied when any part is not allowed), and its step 4 lets a scan hit be cleared in the answer only, where the specification wants each integrity hit recorded as a finding. Its weakening scan treats a deleted test plus any new test as a rename, and the text does not require a finding for an unexplained disappeared test.
+- `qa-mutation` now says what the gate reads (the `mutants` measurement of any recorded run, or a structured ingest, deviation 61). The PIT container form yields no score; the StrykerJS container form is untested. It hands survivors to test generation, which first needs recorded test cases.
+- "Ready to merge" wording appears in the descriptions of `qa-orchestrator`, `qa-regression-guard` and `qa-reporting`; which one loads is not measured. The milestone 2 skills `qa-test-execution` and `qa-codebase-intelligence` still define a `qa <command>` shorthand. `qa-regression-guard` records its own `change` gate even as a plan step, so a plan in fix mode can hold two gates.
 - Of the orchestrator's in-context delegation rows, `qa-requirements`, `qa-test-strategy` and `qa-mutation` have no run through a plan (deviation 56). The F5 exit run used the first two in its main context, but it recorded no plan and dispatched no subagent, so it does not exercise those rows.
-- Post-GREEN text edits without runs (deviation 58).
-- `qa-test-strategy`'s hand-off to `qa-test-generation` by name held in 2 of 3 runs.
+- Post-GREEN text edits without runs (deviation 58); the fix wave re-ran every skill whose SKILL.md it changed, but not `qa-requirements` or `qa-reporting`, whose texts it did not change.
+- `qa-test-strategy`'s hand-off to `qa-test-generation` by name held in 2 of 3 runs before the fix wave and 3 of 3 after it.
+- The return-to-root rule was not followed in one fix-wave run (`f8d9644cbc9b`); the evaluation's allow-lists still do not carry an absolute-path launcher form.
+- `git_read.py` keeps the skill texts free of raw git, but the evaluation harness's base Bash allow-list still allows raw `git` reads, so an evaluated agent can still run one on its own.
 
 Kernel:
 
-- The redaction rule `secret_assignment`, applied when a declared report is stored, can cut through a JSON string and make the stored report invalid; this hits mutation reports of projects whose code assigns to secret-like names, not only the kernel's own `report/check`. Parked for the final fix wave.
+- A declared JSON report is now redacted per parsed key and value and stored re-serialised (deviation 65), so redaction no longer makes a valid report `report_invalid`. A report that does not parse, or one whose secrets cannot all be found in the parsed document, still takes the byte-level path. The kernel's `report/check` mutation leg was not re-run after this fix.
+- A record update cannot remove a field, and the worktree drift check still lives in `worktree.py`.
 - `min_priority` has no route to set it (deviation 46). A coverage XML file with a DOCTYPE must be ASCII-compatible, and a literal `&` in its comments or CDATA is refused.
 - The `lfs.extension.*` neutralisation is untested against a real git-lfs (deviation 48).
-- The kernel mutation tool's host-side config route needs an untracked, non-ignored `setup.cfg` at the repository root; it does not warn about it, a stale file rides along into later runs, and `git add -A` would commit it. The route has not been executed on the engine.
+- The kernel mutation tool's host-side config route needs an untracked, non-ignored `setup.cfg` at the repository root. The tool now refuses to overwrite a different `setup.cfg` without `--force`, and its output and help say the file is untracked, must not be committed and should be deleted after the run. The route has not been executed on the engine.
 
 Spend and billing:
 
@@ -336,6 +416,7 @@ Spend and billing:
 
 ## Checks
 
-- The `qa report check` command in the introduction, with its five `--ledger` options, returns `ok: true` with no problems. Without them it reports 60 `unknown_id` and 13 `uncited_claim` problems, for IDs held only in the extra ledgers and the lines whose only IDs are those.
+- The `qa report check` command in the introduction, with its six `--ledger` options, returns `ok: true` with no problems. Without them it reports 67 `unknown_id` and 15 `uncited_claim` problems, for IDs held only in the extra ledgers and the lines whose only IDs are those.
 - `python3 -I tools/check_repo.py`: 0 problems. `tools/vendor_kernel.py --check`, `tools/validate_skills.py` and `tools/check_catalog.py`: 9 skills, 0 differences and 0 problems.
 - The grader commit `7657b8f` changed evaluation code, the two exit cases and their tests only; the static skill tests ran on Linux with Python 3.9 and 3.15 through the remote test script before the exit runs, and both exited 0.
+- The fix wave's full test suite ran on Linux with Python 3.9 and 3.15 through the remote test script at its last code commit, before its paid runs; both exited 0 (5046 pass, 24 skip each). These are development checks, not kernel legs: the legs through `qa run --container` were not re-run after the fix wave.
