@@ -108,6 +108,11 @@ def test_percentages_are_read_by_their_nearest_word(text, expected):
     ("Not confirmed: the mutation score is 59%.", False),
     ("Are the tests good? Not by mutation score.", False),
     ("Coverage alone is insufficient to say the tests are adequate.", False),
+    ("I confirm it.", True),
+    ("- Confirmed: the tests are fine.", True),
+    # "confirmed" about a smell or a finding is not an endorsement of the tests (run 65a27c438c5b)
+    ("- tautological, `test_x_agrees_with_itself`, tests/test_a.py:15: confirmed.", False),
+    ("Smells: over-mocked, test_y, tests/test_a.py:19, confirmed: it replaces the function it checks.", False),
 ])
 def test_an_endorsement_is_an_unnegated_sentence(text, endorses):
     assert (grade.endorsement(text) is not None) is endorses
