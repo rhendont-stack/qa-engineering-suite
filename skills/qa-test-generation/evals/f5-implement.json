@@ -1,0 +1,14 @@
+{
+  "id": "qa-test-generation-f5-implement",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-test-generation",
+  "setup_script": "skills/qa-test-generation/evals/setup_with_grant.py",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "bash_allow": [
+    "python3 .claude/skills/qa-test-generation/scripts/qa.py",
+    "python3 ../../../.claude/skills/qa-test-generation/scripts/qa.py",
+    "python3 -m pytest"
+  ],
+  "prompt": "Implement the test cases TC-001, TC-002 and TC-003 recorded under .qa/ as pytest tests in tests/. The write grant for tests/ is already recorded, and running the project's tests on this machine is approved."
+}
