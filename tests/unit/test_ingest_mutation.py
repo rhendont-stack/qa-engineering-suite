@@ -374,3 +374,20 @@ def test_a_sarif_snippet_holding_a_secret_is_stored_redacted_and_still_parses(tr
     assert (r["status"], r["reason"]) == ("failed", "assertion")   # an alert, read from the stored copy: not report_invalid
     stored = trusted.path("evidence", r["execution"], "reports", "r.sarif").read_bytes()
     assert SECRET.encode() not in stored and json.loads(stored)["runs"][0]["results"][0]["ruleId"] == "R1"
+
+
+def test_a_report_nested_near_the_recursion_limit_does_not_crash_the_run(trusted, actor, py, tmp_path):
+    text = None
+    for depth in range(sys.getrecursionlimit() // 2, sys.getrecursionlimit() * 4, 50):
+        candidate = "[" * depth + "]" * depth
+        try:
+            json.loads(candidate)
+        except RecursionError:
+            break
+        text = candidate
+    if text is None or text.count("[") < sys.getrecursionlimit() - 300:
+        pytest.skip("this interpreter's JSON parser rejects a document nested near the recursion limit")
+    source = tmp_path / "deep.json"
+    source.write_text(text)
+    r = copy_run(trusted, actor, py, source, "{evidence}/m.json", (("mutation", "{evidence}/m.json"),))
+    assert (r["status"], r["reason"]) == ("inconclusive", "report_invalid")   # a report, not a crash: the parse fails as before

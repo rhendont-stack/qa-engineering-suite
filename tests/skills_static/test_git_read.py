@@ -151,10 +151,28 @@ def test_it_writes_nothing(repo):
 
 # --------------------------------------------------------------------------- no raw git command in a skill text (S4)
 
-RAW_GIT = re.compile(r"\bgit +(?:-[cC] +\S+ +)*(?:log|show|status|diff|rev-parse|ls-files|ls-tree|blame|checkout|reset|revert|stash|"
+GIT_GLOBAL_OPTION = r"(?:-[cC] +\S+|--(?:git-dir|work-tree|namespace|exec-path) +\S+|--[a-z][a-z-]*(?:=\S+)?|-[pP])"
+RAW_GIT = re.compile(r"\bgit +(?:" + GIT_GLOBAL_OPTION + r" +)*(?:log|show|status|diff|rev-parse|ls-files|ls-tree|blame|checkout|reset|revert|stash|"
                      r"commit|add|fetch|pull|push|branch|tag|cat-file|config|grep|shortlog|describe|worktree|merge|merge-base|"
                      r"rebase|clone|init|apply|am|cherry-pick|clean|restore|switch|mv|rm|notes|reflog|for-each-ref|rev-list|"
                      r"name-rev|archive|bisect|submodule|remote|gc|fsck)\b")
+
+
+@pytest.mark.parametrize("line", [
+    "git log", "git status", "git -c core.pager=cat log", "git -C /tmp/x diff", "git --no-pager log", "git -P diff",
+    "git --git-dir=/x/.git status", "git --work-tree=/x status", "git --git-dir /x/.git --work-tree /x show",
+    "git -C a -c k=v --no-pager -P rev-parse HEAD", "git -c k=v -C a diff", "run `git --no-pager diff --stat`",
+])
+def test_the_raw_git_pattern_catches_a_raw_invocation_with_global_options(line):
+    assert RAW_GIT.search(line)
+
+
+@pytest.mark.parametrize("line", [
+    "python3 skills/qa-regression-guard/scripts/git_read.py status", "python3 scripts/git_read.py log --limit 5",
+    "git_read.py diff --base A --head B", "the git history", "a git repository", "use git_read.py -C path status",
+])
+def test_the_raw_git_pattern_leaves_the_allowed_forms_alone(line):
+    assert RAW_GIT.search(line) is None
 
 
 def test_no_skill_text_names_a_raw_git_command():

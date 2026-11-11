@@ -206,7 +206,7 @@ def record(ws: Workspace, actor: ledger.Actor, paths: List[str], *, kind: str, t
                 rels.append(rel)
         for rel in rels:
             if _is_protected(rel):
-                raise QaError("protected_path", "agent and IDE configuration is never written ", path=rel)
+                raise QaError("protected_path", "agent and IDE configuration is never written", path=rel)
         grants = {}
         for rel in rels:
             grants[rel] = _granting(st, rel)

@@ -196,6 +196,12 @@ class Redactor:
         text of a number, ``true``, ``false`` or ``null`` (which becomes the marker string). A document with nothing to
         redact is returned byte for byte."""
         try:
+            return self._json_document(data)
+        except RecursionError:  # nested past the interpreter's budget: the caller takes the byte-level route
+            return None
+
+    def _json_document(self, data: bytes) -> Optional[Tuple[bytes, int]]:
+        try:
             doc = loads(data)
         except QaError:
             return None
@@ -261,7 +267,8 @@ def _literal_forms(found: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
 
 def _forms(secret: str) -> List[str]:
     """A match in the serialised text can end on the backslash that escapes a quote: that backslash is the document's,
-    not the value's, so a form without it is tried too."""
+    not the value's, so a form without it is tried too. A form with no letter or digit is dropped: it would match
+    punctuation and spaces all over the document."""
     out = [secret, secret.strip(_JSON_EDGES)]
     for text in list(out):
         trailing = len(text) - len(text.rstrip("\\"))
@@ -273,7 +280,7 @@ def _forms(secret: str) -> List[str]:
                 continue
             if isinstance(decoded, str):
                 out.append(decoded)
-    return [form for form in dict.fromkeys(out) if form]
+    return [form for form in dict.fromkeys(out) if any(ch.isalnum() for ch in form)]
 
 
 def _all_located(doc: Any, found: List[Tuple[str, str]], literals: List[Tuple[str, str]]) -> bool:

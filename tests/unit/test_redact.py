@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 
 import pytest
 
@@ -369,3 +370,53 @@ def test_an_environment_value_is_redacted_from_keys_and_strings():
     redactor = redact.Redactor(b"k" * 32, redact.load_patterns(), {"QA_X_TOKEN": value})
     stored, count = redactor.json_document(json.dumps({value: ["a %s b" % value]}).encode("utf-8"))
     assert count == 2 and value not in stored.decode() and json.loads(stored)
+
+
+def _deepest_parsable():
+    """The deepest nesting, past the recursion limit, that ``json.loads`` still accepts; ``None`` when it accepts none."""
+    best = None
+    for depth in range(sys.getrecursionlimit() // 2, sys.getrecursionlimit() * 4, 50):
+        data = ("[" * depth + '"x"' + "]" * depth).encode("utf-8")
+        try:
+            json.loads(data)
+        except RecursionError:
+            break
+        best = data
+    return best
+
+
+def test_a_document_nested_past_the_recursion_limit_is_left_to_the_byte_level_pass(redactor):
+    data = _deepest_parsable()
+    if data is None or data.count(b"[") < sys.getrecursionlimit() - 300:
+        pytest.skip("this interpreter's JSON parser rejects a document nested near the recursion limit")
+    assert redactor.json_document(data) is None   # no RecursionError escapes
+
+
+def test_a_recursion_error_while_walking_the_document_gives_none(redactor, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise RecursionError("too deep")
+    monkeypatch.setattr(redact.Redactor, "_tree", boom)
+    assert redactor.json_document(json.dumps({"password": "hunter22"}).encode("utf-8")) is None
+
+
+def test_a_deeply_nested_text_holding_a_secret_is_still_redacted_as_bytes(redactor):
+    data = b"[" * 2000 + b'"password: hunter2xx"' + b"]" * 2000
+    out, n = redactor.bytes_(data)
+    assert n >= 1 and b"hunter2xx" not in out
+
+
+def test_a_form_of_only_punctuation_does_not_touch_the_spaces_of_the_report(redactor):
+    assert redact._forms(" ") == [] and redact._forms("}, {") == [] and redact._forms(", ") == []
+    data = json.dumps({"by_file": {"src/a b.py": {"Killed": 1}}, "text": "see a b"}).encode("utf-8")
+    # a byte-level match made only of structural characters and a space
+    found = [("secret_assignment", "}, {")]
+    assert redact._literal_forms(found) == []
+    stored, count = redactor.json_document(data)
+    assert (stored, count) == (data, 0)
+
+
+def test_a_secret_is_still_redacted_beside_a_name_with_spaces(redactor):
+    data = json.dumps({"src/a b.py": {"replacement": "token = os.environ[\"API_TOKEN_VALUE\"]"}, "note": "a b"}).encode("utf-8")
+    stored, count = redactor.json_document(data)
+    doc = json.loads(stored)
+    assert count >= 1 and "src/a b.py" in doc and doc["note"] == "a b" and "[REDACTED:" in doc["src/a b.py"]["replacement"]
