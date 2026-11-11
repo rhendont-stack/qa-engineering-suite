@@ -64,7 +64,18 @@ refuses further runs, as does an unknown cost. ``DIR/costs.jsonl`` repeats the `
 After the ``end`` line, the working copy's ``.qa/`` is copied to ``DIR/runs/ID/qa-state/`` so record criteria can be graded
 once the temporary working copy is gone. ``redaction.key``, ``authority.key`` and any ``work`` directory are left out, symlinks
 are not followed, and the API key is redacted from every copied file. A failed copy is reported as a problem (exit 1), never
-as a crash, and never touches the ledger. The working copy is then deleted, on every path that created it, refused, failed or
+as a crash, and never touches the ledger. ``.qa/work/patches/`` is the one part of ``work`` that is kept.
+
+The copy's final file state is saved beside it, in ``DIR/runs/ID/file-state/``: ``status.txt`` (``git status --porcelain=v1
+-uall``), ``diff.patch`` (``git diff --binary`` of tracked and untracked files against the commit the agent started from, so a
+commit the agent made still shows; ignored files are left out) and ``meta.json`` (that base commit, the final HEAD, whether the
+diff was cut at ``FILE_STATE_LIMIT`` bytes, the installed skills' SKILL.md sha256, and ``error``). git never reads the copy's
+own repository configuration, which the agent could have changed: ``.git`` is copied outside the copy and given a minimal
+configuration of the harness's, with no user or system configuration, hooks, fsmonitor, filters, diff drivers or prompts, so
+nothing the repository names runs and nothing is written into the copy. A ``.git`` that is not a plain directory or holds a
+symlink gives no state, only ``meta.json`` with ``error``: a problem (exit 1), never a crash and never an empty state. The
+sha256 of each installed SKILL.md, read before the agent starts, is also in the ledger's ``end`` line (``skill_sha256``, with
+``base_commit``). The working copy is then deleted, on every path that created it, refused, failed or
 interrupted; ``--keep-workdir`` leaves it under the temporary directory, for debugging the harness only.
 
 Redaction replaces the key itself, its hexadecimal form (either case) and its base64 form (standard and URL-safe alphabets,
@@ -672,12 +683,14 @@ def redact(text: str, key: str) -> str:
 
 QA_STATE_SKIP_FILES = {"redaction.key", "authority.key"}
 QA_STATE_SKIP_DIRS = {"work"}
+QA_STATE_KEEP_IN_WORK = "patches"
 
 
 def copy_qa_state(workdir: Path, dest: Path, key: str) -> None:
     """Copy the working copy's ``.qa/`` to ``dest``, so a record criterion can be graded after the workdir is gone.
 
-    Left out: ``redaction.key``, ``authority.key`` and any ``work`` directory. Symlinks are never followed (a link is skipped,
+    Left out: ``redaction.key``, ``authority.key`` and any ``work`` directory, except ``.qa/work/patches/`` (the patches a
+    skill leaves when it may not write into the project), which is kept. Symlinks are never followed (a link is skipped,
     not copied). The API key, if it appears in any file, is replaced by the marker. Raises OSError on a failure."""
     source = workdir / ".qa"
     if not source.is_dir() or source.is_symlink():
@@ -685,15 +698,139 @@ def copy_qa_state(workdir: Path, dest: Path, key: str) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for root, dirs, files in os.walk(str(source), followlinks=False):
         base = Path(root)
-        dirs[:] = [d for d in dirs if d not in QA_STATE_SKIP_DIRS and not (base / d).is_symlink()]
+        top_work = base == source / "work"
+        if top_work:      # only the patches survive from the work directory: no worktree, no scratch file
+            dirs[:] = [d for d in dirs if d == QA_STATE_KEEP_IN_WORK and not (base / d).is_symlink()]
+            files = []
+        else:
+            dirs[:] = [d for d in dirs if (d not in QA_STATE_SKIP_DIRS or base == source) and not (base / d).is_symlink()]
         target = dest / base.relative_to(source)
-        target.mkdir(parents=True, exist_ok=True)
+        if not top_work:
+            target.mkdir(parents=True, exist_ok=True)
         for name in files:
             path = base / name
             if name in QA_STATE_SKIP_FILES or path.is_symlink() or not path.is_file():
                 continue
             data = path.read_bytes()
             (target / name).write_bytes(redact_bytes(data, key))
+
+
+# -- the copy's final file state ----------------------------------------------------------------------------------------
+
+FILE_STATE_LIMIT = 20_000_000       # bytes of diff kept; more is cut and ``diff_truncated`` says so
+# Every git call on the copy: no user or system configuration (``_git_env``), and nothing the repository could name runs.
+_GIT_SAFE_OPTS = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=" + os.devnull,
+                  "-c", "core.attributesFile=" + os.devnull, "-c", "core.quotePath=false", "-c", "protocol.allow=never"]
+_CLEAN_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
+
+
+class FileStateError(Exception):
+    """The file state cannot be taken safely; ``args[0]`` says why."""
+
+
+def _safe_git_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    env = _git_env()
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1", GIT_ATTR_NOSYSTEM="1")
+    env.update(extra or {})
+    return env
+
+
+def base_commit(workdir: Path) -> Optional[str]:
+    """The copy's HEAD before the agent starts (the harness made the repository, so its configuration is the harness's)."""
+    try:
+        done = subprocess.run(["git", "-C", str(workdir)] + _GIT_SAFE_OPTS + ["rev-parse", "--verify", "-q", "HEAD^{commit}"],
+                              env=_safe_git_env(), capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    head = done.stdout.strip()
+    return head if done.returncode == 0 and len(head) in (40, 64) else None
+
+
+def installed_skill_hashes(workdir: Path) -> Dict[str, str]:
+    """``{skill name: "sha256:<hex>"}`` of each SKILL.md installed in the copy, read before the agent starts."""
+    import hashlib
+    found: Dict[str, str] = {}
+    skills = workdir / ".claude" / "skills"
+    if skills.is_dir() and not skills.is_symlink():
+        for folder in sorted(skills.iterdir()):
+            path = folder / "SKILL.md"
+            if folder.is_dir() and not folder.is_symlink() and path.is_file() and not path.is_symlink():
+                found[folder.name] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    return found
+
+
+def _plain_git_dir(git_dir: Path) -> None:
+    """``git_dir`` is a real directory with no symlink anywhere in it, or ``FileStateError``: a link could point git (and the
+    harness's own writes) at anything outside the copy."""
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        raise FileStateError("the copy's .git is not a plain directory")
+    for base, dirs, files in os.walk(str(git_dir), followlinks=False):
+        if [n for n in dirs + files if os.path.islink(os.path.join(base, n))]:
+            raise FileStateError("the copy's .git holds a symlink")
+
+
+def capture_file_state(workdir: Path, base: Optional[str], scratch: Path) -> Dict[str, Any]:
+    """The copy's ``git status --porcelain=v1 -uall`` and ``git diff --binary`` against ``base`` (the commit the agent started
+    from), tracked and untracked files alike, ignored files left out.
+
+    git never reads the copy's own repository configuration: ``.git`` (refused when it holds a symlink) is copied into
+    ``scratch`` and given a minimal configuration of the harness's, so no filter, diff driver, fsmonitor or hook the agent may
+    have set runs, and nothing is written into the copy. Untracked files enter the diff through a separate index in
+    ``scratch``. Returns ``{status, diff, head_commit}`` (bytes, bytes, text); raises ``FileStateError``."""
+    if base is None:
+        raise FileStateError("the base commit was not read before the agent started")
+    git_dir = workdir / ".git"
+    _plain_git_dir(git_dir)
+    copy = scratch / "git"
+    shutil.copytree(str(git_dir), str(copy), symlinks=True)
+    for name in ("config", "config.worktree"):
+        if os.path.lexists(str(copy / name)):
+            os.unlink(str(copy / name))
+    (copy / "config").write_text(_CLEAN_CONFIG, encoding="utf-8")
+    where = {"GIT_DIR": str(copy), "GIT_WORK_TREE": str(workdir)}
+
+    def git(args: List[str], index: Optional[Path] = None) -> bytes:
+        env = _safe_git_env(dict(where, **({"GIT_INDEX_FILE": str(index)} if index else {})))
+        try:
+            done = subprocess.run(["git"] + _GIT_SAFE_OPTS + args, cwd=str(workdir), env=env, capture_output=True, timeout=300,
+                                  stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise FileStateError("git %s could not run: %s" % (args[0], type(exc).__name__))
+        if done.returncode != 0:
+            raise FileStateError("git %s exited %d" % (args[0], done.returncode))
+        return done.stdout
+
+    status = git(["status", "--porcelain=v1", "-uall", "--no-renames"])
+    head = git(["rev-parse", "--verify", "-q", "HEAD^{commit}"]).decode("ascii", "replace").strip()
+    index = scratch / "full-index"
+    git(["read-tree", base], index)
+    git(["add", "-A", "--", "."], index)
+    diff = git(["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", base, "--"], index)
+    return {"status": status, "diff": diff, "head_commit": head}
+
+
+def save_file_state(workdir: Path, dest: Path, base: Optional[str], skills: Dict[str, str], key: str) -> Optional[str]:
+    """Writes ``status.txt``, ``diff.patch`` and ``meta.json`` under ``dest``, redacted. Returns None, or the problem: then only
+    ``meta.json`` is written, with ``error``, so a grader reading the snapshot finds no state rather than an empty one."""
+    dest.mkdir(parents=True, exist_ok=True)
+    meta: Dict[str, Any] = {"base_commit": base, "head_commit": None, "head_moved": None, "skill_sha256": skills,
+                            "diff_truncated": None, "diff_bytes": None, "error": None}
+    scratch = Path(tempfile.mkdtemp(prefix="qa-eval-state-"))
+    try:
+        try:
+            state = capture_file_state(workdir, base, scratch)
+        except (FileStateError, OSError, shutil.Error) as exc:
+            meta["error"] = str(exc) if isinstance(exc, FileStateError) else type(exc).__name__
+        else:
+            diff = redact_bytes(state["diff"], key)          # redacted whole, then cut, so a cut never splits a key
+            (dest / "status.txt").write_bytes(redact_bytes(state["status"], key))
+            (dest / "diff.patch").write_bytes(diff[:FILE_STATE_LIMIT])
+            meta.update(head_commit=state["head_commit"], head_moved=state["head_commit"] != base,
+                        diff_truncated=len(diff) > FILE_STATE_LIMIT, diff_bytes=len(diff))
+    finally:
+        shutil.rmtree(str(scratch), ignore_errors=True)
+    (dest / "meta.json").write_text(json.dumps(meta, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return None if meta["error"] is None else meta["error"]
 
 
 def _number(value: Any) -> Optional[float]:
@@ -966,6 +1103,7 @@ def main(argv: Sequence[str]) -> int:
         return refuse(str(exc))
     finally:
         shutil.rmtree(str(setup_home), ignore_errors=True)
+    base, skills = base_commit(workdir), installed_skill_hashes(workdir)     # before the agent can change either
     if case.get("allow_write") is True:       # the allow covers the copy only; the settings deny the rest
         scope = os.path.realpath(str(workdir)).lstrip("/")
         tools += ["%s(//%s/**)" % (tool, scope) for tool in WRITE_TOOLS]
@@ -974,7 +1112,7 @@ def main(argv: Sequence[str]) -> int:
         helper_dir = Path(tempfile.mkdtemp(prefix="qa-eval-key-"))   # outside the copy, deleted with it, whichever way this ends
         helper_command = write_key_helper(key, helper_dir)
         return _run_in(args, case, key, exe, help_text, tools, venv_real, run_id, workdir, out, ledger, setup_log,
-                       helper_command, helper_dir)
+                       helper_command, helper_dir, base, skills)
     except Refused as exc:
         return refuse(str(exc))
     finally:
@@ -986,7 +1124,7 @@ def main(argv: Sequence[str]) -> int:
 
 def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, help_text: str, tools: List[str],
             venv_real: Optional[str], run_id: str, workdir: Path, out: Path, ledger: "Ledger", setup_log: List[str],
-            helper_command: str, helper_dir: Path) -> int:
+            helper_command: str, helper_dir: Path, base: Optional[str] = None, skills: Optional[Dict[str, str]] = None) -> int:
     """Everything after the working copy exists; ``main`` deletes the copy whichever way this ends."""
     home = Path(tempfile.mkdtemp(prefix="qa-eval-home-"))
     try:
@@ -1025,7 +1163,8 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
               "workdir": str(workdir), "status": status, "exit_code": outcome["exit_code"],
               "timed_out": outcome["timed_out"], "cost_usd": cost, "cost_unknown": cost is None,
               "duration_ms": metrics["duration_ms"], "wall_ms": outcome["wall_ms"], "tokens": metrics["tokens"],
-              "api_key_source": metrics["api_key_source"], "swept_pids": len(outcome["swept"]), "sweeper_blind": outcome["sweeper_blind"], "skills_listed": metrics["skills"], "skill_tool_present": metrics["skill_tool"]}
+              "api_key_source": metrics["api_key_source"], "swept_pids": len(outcome["swept"]), "sweeper_blind": outcome["sweeper_blind"], "skills_listed": metrics["skills"], "skill_tool_present": metrics["skill_tool"],
+              "skill_sha256": skills or {}, "base_commit": base}
     try:                                       # first the ledger line, before anything that can fail
         ledger.append(record)
     except OSError as exc:
@@ -1049,6 +1188,13 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
         copy_qa_state(workdir, run_dir / "qa-state", key)
     except Exception as exc:                   # noqa: BLE001 - whatever goes wrong here is a problem, not a crash
         problems.append("qa-state not saved: %s" % type(exc).__name__)
+        print(problems[-1] + " (the ledger line was written)", file=sys.stderr)
+    try:                                       # the copy's final file state, before the copy is deleted
+        failure = save_file_state(workdir, run_dir / "file-state", base, skills or {}, key)
+    except Exception as exc:                   # noqa: BLE001 - as for qa-state: a problem, never a crash
+        failure = type(exc).__name__
+    if failure is not None:
+        problems.append("file state not saved: %s" % redact(failure, key))
         print(problems[-1] + " (the ledger line was written)", file=sys.stderr)
     print(json.dumps({"run_id": run_id, "status": status, "cost_usd": cost, "cost_unknown": cost is None,
                       "workdir": str(workdir), "evidence": str(run_dir)}, sort_keys=True))

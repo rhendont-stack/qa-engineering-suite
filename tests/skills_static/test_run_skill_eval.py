@@ -27,6 +27,8 @@ RUNNER = textwrap.dedent('''\
     import os
     if os.environ.get("QA_TEST_BLIND"):                       # test hooks, set by a test and absent in life
         module.process_table = lambda: {}
+    if os.environ.get("QA_TEST_FILE_STATE_LIMIT"):
+        module.FILE_STATE_LIMIT = int(os.environ["QA_TEST_FILE_STATE_LIMIT"])
     if os.environ.get("QA_TEST_SIGTERM_AFTER_HELPER"):
         real = module.write_key_helper
         def write_then_term(key, folder):
@@ -124,6 +126,26 @@ FAKE = textwrap.dedent('''\
             open(os.path.join(qa, rel), "w").write(text)
         os.symlink("/etc/hosts", os.path.join(qa, "link.txt"))
         os.symlink(os.getcwd(), os.path.join(qa, "evidence", "linkdir"))
+    # File changes the agent makes: EDITS writes (or, for null, deletes) files in the copy, @KEY@ standing for the key; LINKS
+    # replaces a path by a symlink; GIT runs git commands in the copy, as an agent could.
+    for rel, text in (cfg.get("EDITS") or {}).items():
+        path = os.path.join(os.getcwd(), rel)
+        if text is None:
+            os.remove(path)
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write(text.replace("@KEY@", KEY))
+    for rel, target in (cfg.get("LINKS") or {}).items():
+        path = os.path.join(os.getcwd(), rel)
+        if os.path.isdir(path) and not os.path.islink(path):
+            import shutil
+            shutil.rmtree(path)
+        elif os.path.lexists(path):
+            os.remove(path)
+        os.symlink(target, path)
+    for args in cfg.get("GIT") or []:
+        subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@a", "-c", "commit.gpgsign=false"] + args, cwd=os.getcwd(),
+                       capture_output=True)
     body = {"type": "result", "subtype": "success", "is_error": False, "result": "done", "num_turns": 2,
             "duration_ms": 1500, "total_cost_usd": float(cfg.get("COST", "0.25")),
             "usage": {"input_tokens": 100, "output_tokens": 40, "cache_read_input_tokens": 7,
@@ -1311,3 +1333,131 @@ def test_the_documentation_states_the_copy_history_rule_once_with_its_exception(
     text = HARNESS.read_text(encoding="utf-8")
     assert "newly generated one-commit git history, places" not in text          # the opening paragraph names keep_history
     assert max(len(line) for line in text.splitlines()[:12]) <= 140
+
+
+# -- the copy's final file state and the installed skill's hash (task 14) -------------------------------------------------
+
+def _state_dir(w, index=0):
+    return w.out / "runs" / records(w)[index]["run_id"] / "file-state"
+
+
+def _meta(w, index=0):
+    return json.loads((_state_dir(w, index) / "meta.json").read_text())
+
+
+def _sha(path):
+    import hashlib
+    return "sha256:" + hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def test_the_file_state_holds_tracked_and_untracked_changes_against_the_base(world):
+    (world.root / "fixture" / "old.md").write_text("old\n")
+    edits = {"app.py": "def f():\n    return 2\n", "tests/test_new.py": "def test_new():\n    assert True\n", "old.md": None}
+    r = run(world, env={"FAKE_EDITS": edits})
+    assert r.returncode == 0, r.stdout + r.stderr
+    state, work = _state_dir(world), _workdir(world)
+    status = (state / "status.txt").read_text().splitlines()
+    assert " M app.py" in status and "?? tests/test_new.py" in status and " D old.md" in status
+    assert not [line for line in status if ".claude" in line]          # the installed skill is the harness's, not a change
+    diff = (state / "diff.patch").read_text()
+    assert "+++ b/tests/test_new.py" in diff and "+    return 2" in diff and "--- a/old.md" in diff
+    meta = _meta(world)
+    assert meta["error"] is None and meta["head_moved"] is False and meta["diff_truncated"] is False
+    assert meta["base_commit"] == records(world)[0]["base_commit"] == git(work, "rev-parse", "HEAD")[0]
+    rebuilt = world.root / "rebuilt"                                     # the base plus the diff is the copy as the agent left it
+    rebuilt.mkdir()
+    archive = subprocess.run(["git", "-C", str(work), "archive", meta["base_commit"]], capture_output=True, check=True).stdout
+    subprocess.run(["tar", "-x", "-C", str(rebuilt)], input=archive, check=True)
+    subprocess.run(["git", "apply", "--binary", str(state / "diff.patch")], cwd=str(rebuilt), check=True, capture_output=True,
+                   env=dict(os.environ, GIT_CEILING_DIRECTORIES=str(world.root)))
+    assert listing(rebuilt) == ["app.py", "tests/test_new.py"]
+    assert (rebuilt / "app.py").read_text() == edits["app.py"] and (rebuilt / "tests" / "test_new.py").read_text() == edits["tests/test_new.py"]
+
+
+def test_the_file_state_is_saved_for_baseline_runs_and_leaves_nothing_behind(world):
+    r = run(world, config="baseline", keep=False, env={"FAKE_EDITS": {"app.py": "changed\n"}})
+    assert r.returncode == 0, r.stderr
+    assert " M app.py" in (_state_dir(world) / "status.txt").read_text() and _left_in_tmp(world) == []
+
+
+def test_a_commit_the_agent_makes_still_shows_against_the_base(world):
+    r = run(world, env={"FAKE_EDITS": {"app.py": "changed\n"}, "FAKE_GIT": [["add", "-A"], ["commit", "-qm", "hide it"]]})
+    assert r.returncode == 0, r.stderr
+    meta = _meta(world)
+    assert meta["head_moved"] is True and meta["head_commit"] != meta["base_commit"]
+    assert "+changed" in (_state_dir(world) / "diff.patch").read_text()
+    assert (_state_dir(world) / "status.txt").read_text() == ""          # the working tree is clean against the new HEAD
+
+
+def test_the_repository_configuration_the_agent_leaves_runs_nothing(world):
+    import shlex
+    marker = world.root / "ran"
+    touch = "touch %s" % shlex.quote(str(marker))
+    config = ("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tfsmonitor = %s\n\tpager = %s\n"
+              "[filter \"x\"]\n\tclean = %s\n\tsmudge = %s\n[diff \"x\"]\n\ttextconv = %s\n\tcommand = %s\n[diff]\n\texternal = %s\n") % ((touch,) * 7)
+    edits = {"app.py": "changed\n", "new.txt": "n\n", ".gitattributes": "* filter=x diff=x\n", ".git/config": config}
+    r = run(world, env={"FAKE_EDITS": edits})
+    assert r.returncode == 0, r.stderr
+    assert not marker.exists()
+    state = _state_dir(world)
+    assert "+changed" in (state / "diff.patch").read_text() and "?? new.txt" in (state / "status.txt").read_text().splitlines()
+    subprocess.run(["git", "-C", str(_workdir(world)), "diff", "HEAD"], capture_output=True)   # the same configuration, read as it stands,
+    assert marker.exists()                                                                       # does run a program: the test shows something
+
+
+@pytest.mark.parametrize("target", [".git/config", ".git/objects", ".git"])
+def test_a_git_directory_holding_a_symlink_gives_no_file_state_and_is_a_problem(world, target):
+    elsewhere = world.root / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("untouched\n")
+    r = run(world, env={"FAKE_EDITS": {"app.py": "changed\n"}, "FAKE_LINKS": {target: str(elsewhere)}})
+    assert r.returncode == 1 and "file state not saved" in r.stderr and SECRET not in r.stderr
+    rec = records(world)[0]
+    assert rec["status"] == "ok" and [json.loads(line)["event"] for line in world.ledger.read_text().splitlines()] == ["start", "end"]
+    state = _state_dir(world)
+    assert not (state / "status.txt").exists() and not (state / "diff.patch").exists() and _meta(world)["error"]
+    assert listing(elsewhere) == ["keep.txt"] and (elsewhere / "keep.txt").read_text() == "untouched\n"
+
+
+def test_the_installed_skill_hash_is_in_the_end_record_and_the_evidence(world):
+    skill = pathlib.Path(json.loads(world.case.read_text())["skill"]) / "SKILL.md"
+    expected = {"qa-demo": _sha(skill)}
+    assert run(world, env={"FAKE_EDITS": {".claude/skills/qa-demo/SKILL.md": "changed by the agent\n"}}).returncode == 0
+    assert records(world)[0]["skill_sha256"] == expected == _meta(world)["skill_sha256"]     # what was installed, not what is left
+    assert run(world, config="baseline").returncode == 0
+    assert records(world)[1]["skill_sha256"] == {} == _meta(world, 1)["skill_sha256"]
+
+
+def test_the_file_state_is_redacted(world):
+    assert run(world, env={"FAKE_EDITS": {"leak.txt": "key @KEY@\n"}}).returncode == 0
+    text = (_state_dir(world) / "diff.patch").read_text()
+    assert SECRET not in text and "[REDACTED:ANTHROPIC_API_KEY]" in text
+
+
+def test_a_diff_past_the_limit_is_cut_and_says_so(world):
+    r = run(world, env={"FAKE_EDITS": {"big.txt": "x" * 5000 + "\n"}, "QA_TEST_FILE_STATE_LIMIT": "1000"})
+    assert r.returncode == 0, r.stderr
+    assert _meta(world)["diff_truncated"] is True and len((_state_dir(world) / "diff.patch").read_bytes()) <= 1000
+
+
+def test_the_end_line_comes_before_the_file_state_and_a_failed_capture_is_a_problem(world, monkeypatch):
+    repo = _harness_copy(world, monkeypatch)
+    text = (repo / "tools" / "run_skill_eval.py").read_text()
+    assert "    git_dir = workdir / \".git\"\n" in text
+    (repo / "tools" / "run_skill_eval.py").write_text(text.replace(
+        "    git_dir = workdir / \".git\"\n", "    raise PermissionError('no')\n", 1))
+    r = run(world, env={"FAKE_QA": True})
+    assert r.returncode == 1 and "file state not saved" in r.stderr
+    rec = records(world)[0]
+    assert rec["status"] == "ok" and (world.out / "runs" / rec["run_id"] / "qa-state" / "config.json").is_file()
+    assert [json.loads(line)["event"] for line in world.ledger.read_text().splitlines()] == ["start", "end"]
+
+
+def test_qa_state_keeps_the_patches_under_work_and_nothing_else_of_it(world):
+    edits = {".qa/work/patches/tc-001.diff": "+++ b/tests/test_x.py\n", ".qa/work/wt-abc/app.py": "x\n", ".qa/work/scratch.txt": "w",
+             ".qa/evidence/work/x.txt": "deep", ".qa/work/patches/sub/two.diff": "2\n"}
+    r = run(world, env={"FAKE_EDITS": edits, "FAKE_LINKS": {".qa/work/patches/link.diff": "/etc/hosts"}})
+    assert r.returncode == 0, r.stderr
+    saved = world.out / "runs" / records(world)[0]["run_id"] / "qa-state"
+    files = sorted(str(p.relative_to(saved)) for p in saved.rglob("*") if p.is_file() or p.is_symlink())
+    assert files == ["work/patches/sub/two.diff", "work/patches/tc-001.diff"]
