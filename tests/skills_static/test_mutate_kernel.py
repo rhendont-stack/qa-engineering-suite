@@ -71,7 +71,7 @@ def test_printed_command_pins_the_image_by_digest(tmp_path):
     assert argv == summary["argv"]
     image = argv[argv.index("--container") + 1]
     assert re.fullmatch(r"python@sha256:[0-9a-f]{64}", image) and summary["image"] == image
-    assert "--install" in argv and argv[argv.index("--install") + 1].startswith("pip install ")
+    assert "--install" in argv and "/bin/pip install " in argv[argv.index("--install") + 1]
     assert "--require-hashes" in argv[argv.index("--install") + 1]
     # one run does both: mutmut, then the converter, whose output is the declared report of that same execution
     assert argv[argv.index("--report") + 1] == "mutation:{evidence}/kernel-mutation.json"

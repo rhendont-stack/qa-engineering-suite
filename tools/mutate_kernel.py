@@ -43,7 +43,7 @@ TIMEOUT_SECONDS = 4 * 3600
 REQUIREMENTS = ("requirements-dev.txt", "tests/corpus/producers/mutmut_mutation/requirements.txt")
 # What the tests read next to the kernel: mutmut runs them in ``mutants/``, a copy of the paths it is told to take.
 ALSO_COPY = ("pytest.ini", "fixtures", "shared/launcher", "shared/policies", "shared/schemas", "shared/templates")
-SITE, HOME = "/work/site", "/work/home"
+VENV, HOME = "/work/venv", "/work/home"
 
 
 class Refused(Exception):
@@ -73,15 +73,17 @@ def config_lines(modules: List[str]) -> List[str]:
 
 
 def install_command() -> str:
-    return ("pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: --target %s %s"
-            % (SITE, " ".join("-r " + path for path in REQUIREMENTS)))
+    # A virtual environment, not ``pip --target``: some kernel tests start ``sys.executable`` with a scrubbed environment, and
+    # the mutated modules import mutmut, so it must be found without PYTHONPATH.
+    return ("python -m venv %s && %s/bin/pip install --disable-pip-version-check --no-cache-dir --require-hashes "
+            "--only-binary=:all: %s" % (VENV, VENV, " ".join("-r " + path for path in REQUIREMENTS)))
 
 
 def run_script(lines: List[str]) -> str:
     """What runs in the container after the install: the configuration, mutmut, then the converter, in one shell."""
     write = "printf '%%s\\n' %s | tee setup.cfg" % " ".join(shlex.quote(line) for line in lines)
     return " && ".join([
-        "export PYTHONPATH=%s HOME=%s PYTHONDONTWRITEBYTECODE=1" % (SITE, HOME), "mkdir -p " + HOME, write,
+        "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME), "mkdir -p " + HOME, write,
         "python -m mutmut run", "python3 %s --root . --out %s" % (CONVERTER, REPORT)])
 
 
