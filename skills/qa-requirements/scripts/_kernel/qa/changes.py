@@ -20,9 +20,10 @@ checks, in this order, and a refusal records nothing at all:
   ``fnmatch.fnmatchcase`` matches, with ``**/`` also standing for no directory, as the ``write_scopes`` rules read them;
 - ``created`` of a file git tracks is ``already_tracked`` (that is a modification). A listing name is the same file as the
   path when it is the same name in Unicode form, or another spelling of the same device and inode; otherwise it is another file;
-- when git cannot answer at all (missing, or its configuration cannot be neutralised), nothing can be shown untracked, so
-  every path counts as tracked: ``created`` is ``tracked_unknown`` (record it as modified), and ``modified`` goes on with
-  ``git_unknown: true`` in its event;
+- when git cannot answer at all (missing, its configuration cannot be neutralised, or it refuses a repository that is
+  there), nothing can be shown untracked, so every path counts as tracked: ``created`` is ``tracked_unknown`` (record it as
+  modified, which needs the same justification and approval as any tracked modification), and ``modified`` goes on with
+  ``tracked: true`` and ``git_unknown: true`` in its event (each flag is written only when true);
 - ``modified`` of a file counted as tracked needs ``justification`` and ``approval``
   (``justification_required``, ``approval_required``), and the approval travels in its own signed event,
   ``file.modification_approved``, over the path and the bytes' sha256.
@@ -205,7 +206,7 @@ def record(ws: Workspace, actor: ledger.Actor, paths: List[str], *, kind: str, t
                 rels.append(rel)
         for rel in rels:
             if _is_protected(rel):
-                raise QaError("protected_path", "agent and IDE configuration is never written (§12.4)", path=rel)
+                raise QaError("protected_path", "agent and IDE configuration is never written ", path=rel)
         grants = {}
         for rel in rels:
             grants[rel] = _granting(st, rel)
@@ -228,15 +229,15 @@ def record(ws: Workspace, actor: ledger.Actor, paths: List[str], *, kind: str, t
                                   "modified, with a justification and the user's approval", path=rel)
         if kind == "modified" and any(tracked.values()):
             if not _text(justification):
-                raise QaError("justification_required", "modifying a file git tracks needs the reason for the change (§12.4)")
+                raise QaError("justification_required", "modifying a file git tracks needs the reason for the change")
             if not _text(approval):
-                raise QaError("approval_required", "modifying a file git tracks needs the user's approval quote (§12.4)")
+                raise QaError("approval_required", "modifying a file git tracks needs the user's approval quote")
         digests = {rel: sha256_bytes(_read(ws, rel)) for rel in rels}
         files = []
         for rel in rels:
             data: Dict[str, Any] = {"path": rel, "sha256": digests[rel], "grant": grants[rel], "testcase": testcase}
-            if kind == "modified":
-                data["tracked"] = tracked[rel]
+            if kind == "modified" and tracked[rel]:  # flags are written only when true (absent means false)
+                data["tracked"] = True
                 if git_unknown:
                     data["git_unknown"] = True
             event = ledger.append(ws, actor, "file." + kind, data)
@@ -263,12 +264,12 @@ def list_changes(ws: Workspace, st: dict) -> List[dict]:
         except QaError:
             current = None
         for rec in records:
-            required = rec["kind"] == "modified" and rec["tracked"]
+            required = rec["kind"] == "modified" and rec.get("tracked", False)
             approval = rec["approval"]
             rows.append({
                 "path": path, "kind": rec["kind"], "event": rec["event"], "grant": rec["grant"], "testcase": rec["testcase"],
                 "recorded_sha256": rec["sha256"], "current_sha256": current, "changed_since": current != rec["sha256"],
-                "git_unknown": rec["git_unknown"], "approval_required": required, "approved": (not required) or approval is not None,
+                "git_unknown": rec.get("git_unknown", False), "approval_required": required, "approved": (not required) or approval is not None,
                 "approval_event": None if approval is None else approval["event"],
                 "justification": None if approval is None else approval["justification"],
             })

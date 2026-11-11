@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -1721,3 +1722,68 @@ def test_the_gate_reads_the_target_commit_from_its_context(traced, actor):
     _trace_run(traced, actor, "A", "passed")
     r = gate.evaluate_criterion(_crit("release", "requirements_verified"), state.load(traced), _context(target_commit=None, git_limitation="no git"))
     assert r["outcome"] == "NO_EVIDENCE" and "no target commit" in r["detail"]
+
+
+# --------------------------------------------------------------------------- K1: runs that did not conclude, and the tree filter
+
+@pytest.mark.parametrize("execution_status,reason", [
+    ("inconclusive", "exit_code_mismatch"), ("inconclusive", "timeout"), ("inconclusive", "network_not_isolated"),
+    ("blocked", "dependency_unavailable"), ("not_run", "all_skipped"),
+])
+def test_rows_that_read_passed_in_a_run_that_did_not_conclude_verify_nothing(traced, actor, execution_status, reason):
+    """A structured run whose rows all read passed, but which neither passed nor failed, is no evidence about its tests."""
+    records.add(traced, actor, "testcase", test_records.tc(criticality="critical", links=("AC-001.1",)))   # TC-002
+    trace.link(traced, actor, "TC-002", "automated_by", TEST_ID)
+    _trace_run(traced, actor, "A", "passed", execution_status=execution_status, reason=reason)
+    assert _rv(traced)["outcome"] == "NO_EVIDENCE"
+    critical = _critical(traced)
+    if execution_status == "not_run":
+        assert critical["outcome"] == "NO_EVIDENCE" and "TC-002" in critical["detail"]
+    else:
+        assert (critical["outcome"], critical["detail"]) == ("NOT_MET", "TC-002 last_%s" % execution_status)
+
+
+def test_a_later_inconclusive_run_withdraws_an_earlier_pass(traced, actor):
+    _trace_run(traced, actor, "A", "passed", minute=1)
+    assert _rv(traced)["outcome"] == "MET"
+    _trace_run(traced, actor, "B", "passed", minute=2, execution_status="inconclusive", reason="timeout")
+    assert _rv(traced)["outcome"] == "NO_EVIDENCE"
+
+
+def test_a_run_on_another_tree_at_the_same_commit_does_not_verify_when_the_tree_is_evaluated(traced, actor):
+    _trace_run(traced, actor, "A", "passed")   # recorded on TREE
+    here = "sha256:" + "2" * 64
+    st = state.load(traced)
+    assert gate.evaluate_criterion(_crit("release", "requirements_verified"), st, _context(diff_hash=TREE))["outcome"] == "MET"
+    r = gate.evaluate_criterion(_crit("release", "requirements_verified"), st, _context(diff_hash=here))
+    assert r["outcome"] == "NO_EVIDENCE" and "this working tree" in r["detail"] and "AC-001.1" in r["detail"]
+
+
+def test_a_critical_run_on_another_tree_is_not_evidence_when_the_tree_is_evaluated(trusted, actor):
+    _critical_chain(trusted, actor)
+    _trace_run(trusted, actor, "A", "passed")
+    st = state.load(trusted)
+    crit = _crit("release", "no_blocked_critical")
+    assert gate.evaluate_criterion(crit, st, _context(diff_hash=TREE))["outcome"] == "MET"
+    r = gate.evaluate_criterion(crit, st, _context(diff_hash="sha256:" + "2" * 64))
+    assert r["outcome"] == "NO_EVIDENCE" and "TC-001" in r["detail"]
+
+
+def test_the_two_details_hold_no_bare_status_word(traced, actor):
+    """K2: a rendered report shows these details, and its checker reads a bare status word as a claim needing a run ID."""
+    records.add(traced, actor, "testcase", test_records.tc(criticality="critical", links=("AC-001.1",)))   # TC-002
+    trace.link(traced, actor, "TC-002", "automated_by", TEST_ID)
+    _trace_run(traced, actor, "A", "failed", execution_status="failed", reason="assertion")
+    rv, critical = _rv(traced), _critical(traced)
+    assert (rv["outcome"], critical["outcome"]) == ("NOT_MET", "NOT_MET")
+    assert rv["detail"] == "a verifying test case has a failing last result: AC-001.1"
+    assert critical["detail"] == "TC-002 last_failed"
+    for detail in (rv["detail"], critical["detail"]):
+        assert not re.search(r"(?<!\w)(passed|failed|blocked|inconclusive|not\s+run)(?!\w)", detail, re.IGNORECASE)
+
+
+def test_the_met_detail_of_no_blocked_critical_holds_no_bare_status_word(trusted, actor):
+    _critical_chain(trusted, actor)
+    _trace_run(trusted, actor, "A", "passed")
+    r = _critical(trusted)
+    assert (r["outcome"], r["detail"]) == ("MET", "1 critical test case with a passing last result on commit %s" % COMMIT)

@@ -669,7 +669,7 @@ def _copy_reports(run: _Run, directory: Path, produced: List[List[str]]) -> Tupl
         if data is None:
             continue
         name = _stored_name(run.redactor, source, taken)  # manifest keys stay clean
-        clean, count = run.redactor.bytes_(data)
+        clean, count = redacted_report(run.redactor, formats[source], data)
         try:
             manifest["reports/" + name] = _store_file(directory, "reports/" + name, clean, _MEDIA_TYPES[formats[source]], count)
         except OSError as exc:  # for example, a directory the tool left under that name
@@ -677,6 +677,17 @@ def _copy_reports(run: _Run, directory: Path, produced: List[List[str]]) -> Tupl
             continue
         names[source] = name
     return names, manifest
+
+
+def redacted_report(redactor: redact.Redactor, fmt: str, data: bytes) -> Tuple[bytes, int]:
+    """A declared report's bytes as stored, and the number of redactions. A JSON report that parses is redacted value by
+    value and serialised again, so a match cannot cut through one of its strings and leave a report that no longer parses
+    (the byte-level pass did that to mutant source text holding a secret-like assignment); anything else is redacted as bytes."""
+    if _MEDIA_TYPES[fmt].endswith("json"):
+        done = redactor.json_document(data)
+        if done is not None:
+            return done
+    return redactor.bytes_(data)
 
 
 def _parse_copy(run: _Run, fmt: str, copy: Path) -> Optional[ingest.ReportSummary]:
@@ -1002,7 +1013,7 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     summary = ingest.parse_bytes(fmt, original)
     strength = _ingest_strength(ws, record, sha256_bytes(original))
     redactor = redact.load_redactor(ws)
-    clean = redactor.bytes_(original)[0]
+    clean = redacted_report(redactor, fmt, original)[0]
     digest = sha256_bytes(clean)
     if ingest.is_measurement(fmt):  # what the event records derives from the redacted copy, as a run's does: a path is a dict key
         summary = ingest.parse_bytes(fmt, clean)

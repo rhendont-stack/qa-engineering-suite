@@ -139,10 +139,12 @@ _FILE_APPROVALS = "_file_approvals"
 def _file_recorded(kind: str) -> Callable[[dict, dict], None]:
     def reduce(state: dict, event: dict) -> None:
         data = event["data"]
-        state["files"].setdefault(data["path"], []).append({
-            "kind": kind, "sha256": data["sha256"], "event": event["id"], "grant": data["grant"],
-            "testcase": data["testcase"], "tracked": data.get("tracked", False),
-            "git_unknown": data.get("git_unknown", False), "approval": None})
+        record = {"kind": kind, "sha256": data["sha256"], "event": event["id"], "grant": data["grant"],
+                  "testcase": data["testcase"], "approval": None}
+        for flag in ("tracked", "git_unknown"):  # stored only when true: a false flag carries nothing into the state hash
+            if data.get(flag) is True:
+                record[flag] = True
+        state["files"].setdefault(data["path"], []).append(record)
     return reduce
 
 
@@ -154,7 +156,7 @@ def _settle_file_approvals(state: dict) -> None:
     for event in state.pop(_FILE_APPROVALS, []):
         data = event["data"]
         matches = [r for r in state["files"].get(data["path"], [])
-                   if r["kind"] == "modified" and r["tracked"] and r["sha256"] == data["sha256"]]
+                   if r["kind"] == "modified" and r.get("tracked") and r["sha256"] == data["sha256"]]
         if not matches:
             _violation(state, event, "stale_approval")
         for record in matches:

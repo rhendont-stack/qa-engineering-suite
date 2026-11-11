@@ -330,3 +330,44 @@ def test_a_case_variant_in_git_is_another_file_unless_the_filesystem_says_it_is_
     write(project, "tests/test_old.py", "changed\n")
     changes.record(project, actor, ["tests/test_old.py"], kind="created", testcase=None)  # a distinct file: not tracked
     assert file_events(project)[0]["type"] == "file.created"
+
+
+def test_a_repository_git_refuses_fails_closed_for_a_created_file(project, actor):
+    """K5: git refusing the repository is not "nothing is tracked", so a tracked file cannot pass as created."""
+    grant(project, actor)
+    write(project, "tests/test_old.py", "changed\n")   # git tracks it
+    shutil.rmtree(str(project.root / ".git"))
+    (project.root / ".git").write_text("gitdir: %s\n" % (project.root.parent / "gone"))
+    caught = refused("tracked_unknown", changes.record, project, actor, ["tests/test_old.py"], kind="created", testcase=None)
+    assert "cannot say whether" in caught.message and file_events(project) == []
+    changes.record(project, actor, ["tests/test_old.py"], kind="modified", testcase=None, justification="j", approval="a")
+    event = file_events(project)[0]["data"]
+    assert (event["tracked"], event["git_unknown"]) == (True, True)
+
+
+def test_the_file_record_stores_its_flags_only_when_true(project, actor):
+    """K4: a false flag carries no information, so neither the event nor the folded record holds one."""
+    grant(project, actor)
+    write(project, "tests/test_new.py", "a")
+    changes.record(project, actor, ["tests/test_new.py"], kind="created", testcase=None)
+    write(project, "tests/test_new.py", "b")
+    changes.record(project, actor, ["tests/test_new.py"], kind="modified", testcase=None)
+    write(project, "tests/test_old.py", "changed\n")
+    changes.record(project, actor, ["tests/test_old.py"], kind="modified", testcase=None, justification="j", approval="a")
+    events = [e["data"] for e in file_events(project) if e["type"] != "file.modification_approved"]
+    assert ["tracked" in e for e in events] == [False, False, True] and not any("git_unknown" in e for e in events)
+    files = state.load(project)["files"]
+    assert [set(r) for r in files["tests/test_new.py"]] == [{"kind", "sha256", "event", "grant", "testcase", "approval"}] * 2
+    (old,) = files["tests/test_old.py"]
+    assert old["tracked"] is True and "git_unknown" not in old and old["approval"] is not None
+    rows = changes.list_changes(project, state.load(project))
+    assert [(r["approval_required"], r["git_unknown"]) for r in rows] == [(False, False), (False, False), (True, False)]
+
+
+def test_an_older_event_with_a_false_flag_still_folds_to_the_same_record(project, actor):
+    grant(project, actor)
+    write(project, "tests/test_new.py", "a")
+    ledger.append(project, actor, "file.modified", {"path": "tests/test_new.py", "sha256": sha256_bytes(b"a"), "grant": "AUTH-001",
+                                                    "testcase": None, "tracked": False})
+    (record,) = state.load(project)["files"]["tests/test_new.py"]
+    assert "tracked" not in record and state.load(project)["violations"] == []

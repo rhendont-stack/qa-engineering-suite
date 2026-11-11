@@ -5,7 +5,8 @@ import sys
 
 import pytest
 
-from qa import execution, gate, ingest, state
+from qa import execution, gate, ingest, redact, state
+from qa.canonical import sha256_bytes
 from qa.ingest import mutation
 
 STATUSES = ("Killed", "Survived", "NoCoverage", "Timeout", "CompileError", "RuntimeError", "Ignored", "Pending")
@@ -312,3 +313,64 @@ def test_a_secret_shaped_path_never_reaches_the_ledger_through_ingest_or_run(tru
     assert KEY not in ledger_text(trusted)
     item = record(trusted, r)["ingested"][0]
     assert item["totals"]["mutants"] == 1 and len(item["totals"]["by_file"]) == 1
+
+
+# --------------------------------------------------------------------------- K3: a stored JSON report still parses after redaction
+
+SECRET = "Zq8LmW4pR9" + "xTv"   # built at runtime
+SECRET_TEXT = json.dumps(report({"src/a.js": {"language": "javascript", "source": "x", "mutants": [
+    mutant("1", replacement='token = os.environ["API_TOKEN_VALUE"]'),
+    mutant("2", "Survived", replacement='api_key = "%s"' % SECRET)]}}))
+
+
+COPY = "import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2])"
+
+
+def copy_run(ws, actor, py, source, out, reports, exit_code=0):
+    """A run that copies ``source`` to ``out``: the secret-shaped text stays out of the command's arguments, which the guard reads."""
+    code = COPY if exit_code == 0 else COPY + "; sys.exit(%d)" % exit_code
+    return execution.execute(ws, actor, execution.RunRequest(command=py.argv(code, str(source), out), reports=tuple(reports)))
+
+
+def test_a_secret_shaped_assignment_in_a_mutant_is_redacted_and_the_stored_report_still_parses(trusted, actor, py, tmp_path):
+    cut, _ = redact.load_redactor(trusted).bytes_(SECRET_TEXT.encode("utf-8"))
+    with pytest.raises(ValueError):
+        json.loads(cut)   # the byte-level pass alone would have left a report_invalid copy
+    source = tmp_path / "source.json"
+    source.write_text(SECRET_TEXT)
+    r = copy_run(trusted, actor, py, source, "{evidence}/m.json", (("mutation", "{evidence}/m.json"),))
+    assert (r["status"], r["reason"]) == ("passed", None)
+    entry = record(trusted, r)["measurements"][0]
+    assert entry["totals"]["by_file"] == {"src/a.js": {"Killed": 1, "Survived": 1}}
+    stored = trusted.path("evidence", r["execution"], "reports", "m.json").read_bytes()
+    assert SECRET.encode() not in stored and b"[REDACTED:secret_assignment:" in stored
+    assert ingest.parse_bytes("mutation", stored).kind == "mutants"
+    manifest = json.loads(trusted.path("evidence", r["execution"], "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["reports/m.json"]["redactions"] == 2 and manifest["reports/m.json"]["sha256"] == sha256_bytes(stored)
+    assert record(trusted, r)["redactions"] >= 2
+
+
+def test_an_ingested_mutation_report_holding_a_secret_is_stored_parsed_and_redacted(trusted, actor, py, tmp_path):
+    r = execution.execute(trusted, actor, execution.RunRequest(command=py.argv("pass")))
+    path = tmp_path / "mutation.json"
+    path.write_text(SECRET_TEXT)
+    out = execution.ingest_file(trusted, actor, "mutation", path, from_execution=r["execution"], category="functional")
+    assert (out["kind"], out["total"]) == ("mutants", 2)
+    item = record(trusted, r)["ingested"][0]
+    stored = (trusted.path("evidence", r["execution"]) / item["file"]).read_bytes()
+    assert SECRET.encode() not in stored and ingest.parse_bytes("mutation", stored).kind == "mutants"
+
+
+def test_a_sarif_snippet_holding_a_secret_is_stored_redacted_and_still_parses(trusted, actor, py, tmp_path):
+    sarif = json.dumps({"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "scanner", "rules": [{"id": "R1"}]}}, "results": [
+        {"ruleId": "R1", "level": "error", "message": {"text": "hard-coded secret"}, "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": "a.py"}, "region": {"startLine": 1, "snippet": {"text": 'my_token: "%s\\"' % SECRET}}}}]}]}]})
+    cut, _ = redact.load_redactor(trusted).bytes_(sarif.encode("utf-8"))
+    with pytest.raises(ValueError):
+        json.loads(cut)
+    source = tmp_path / "source.sarif"
+    source.write_text(sarif)
+    r = copy_run(trusted, actor, py, source, "{evidence}/r.sarif", (("sarif", "{evidence}/r.sarif"),), exit_code=1)
+    assert (r["status"], r["reason"]) == ("failed", "assertion")   # an alert, read from the stored copy: not report_invalid
+    stored = trusted.path("evidence", r["execution"], "reports", "r.sarif").read_bytes()
+    assert SECRET.encode() not in stored and json.loads(stored)["runs"][0]["results"][0]["ruleId"] == "R1"

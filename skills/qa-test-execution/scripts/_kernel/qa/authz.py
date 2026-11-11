@@ -163,7 +163,7 @@ def _read_target(target: Any) -> Tuple[Optional[str], str]:
         if not parts.hostname:
             return None, "a URL target must name a host"
         if "@" in parts.netloc:
-            return None, "a URL target must not carry userinfo: secrets stay out of arguments (§12.5)"
+            return None, "a URL target must not carry userinfo: secrets stay out of arguments"
         return parts.hostname, ""
     match = _BARE_NAME.fullmatch(target)
     if match:
@@ -259,7 +259,7 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     _check_activities(env, activities)
     per_target = [a for a in activities if a in vocab.PER_TARGET_ACTIVITIES]
     if per_target and not targets:
-        raise QaError("targets_required", "%s needs a grant that lists its targets (§12.2)" % per_target[0],
+        raise QaError("targets_required", "%s needs a grant that lists its targets" % per_target[0],
                       activity=per_target[0])
     _check_targets(cfg, environment_id, targets)
     _check_limits(env, activities, limits)

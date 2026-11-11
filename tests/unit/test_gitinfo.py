@@ -409,3 +409,33 @@ def test_a_promisor_remote_counts_unless_it_is_explicitly_false(repo, monkeypatc
             gitinfo._program_overrides("git", repo)
     else:
         assert gitinfo._program_overrides("git", repo) == []
+
+
+# --------------------------------------------------------------------------- K5: a repository git refuses is not "nothing tracked"
+
+def _no_repository_above(path):
+    here = path.resolve()
+    return not any((parent / ".git").exists() for parent in (here, *here.parents))
+
+
+def test_tracked_files_outside_any_repository_is_the_empty_set(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    if not _no_repository_above(plain):
+        pytest.skip("the temporary directory lies inside a git repository")
+    assert gitinfo.tracked_files(plain) == set()
+
+
+def test_tracked_files_of_a_repository_git_refuses_is_unknown(tmp_path):
+    root = tmp_path / "broken"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "a.txt").write_text("1")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-q", "-m", "c")
+    assert gitinfo.tracked_files(root) == {"a.txt"}
+    shutil.rmtree(str(root / ".git"))
+    (root / ".git").write_text("gitdir: %s\n" % (tmp_path / "gone"))   # a repository is there, and git cannot read it
+    assert gitinfo.tracked_files(root) is None
+    (root / "sub").mkdir()
+    assert gitinfo.tracked_files(root / "sub") is None   # a .git entry above the root counts too

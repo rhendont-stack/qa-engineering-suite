@@ -28,7 +28,6 @@ project file, never follows a symlink, and never leaves the root. ``matrix`` is 
 from __future__ import annotations
 
 import ast
-import json
 import os
 import re
 import stat
@@ -36,8 +35,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from . import gitinfo, ledger, records, schema, state
+from .canonical import loads as canonical_loads
 from .errors import QaError
-from .workspace import Workspace, write_atomic
+from .workspace import Workspace, config_bytes, write_atomic
 
 # QaError codes raised here: invalid_link, unknown_record, red_check_refused, trace_map_invalid, scan_root_invalid, target_required,
 # target_invalid, target_unknown, target_ambiguous, target_unavailable;
@@ -325,9 +325,9 @@ def _read_map(ws: Workspace) -> Tuple[Dict[str, Set[str]], List[dict]]:
     if raw is None:
         raise QaError("trace_map_invalid", "the test map is a symlink, not a regular file, or too large to read", path=shown)
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise QaError("trace_map_invalid", "the test map is not JSON", path=shown, error=str(exc))
+        data = canonical_loads(raw)  # a repeated test case key is refused, not silently reduced to its last value
+    except QaError as exc:
+        raise QaError("trace_map_invalid", "the test map is not JSON, or repeats a key", path=shown, error=exc.message)
     problems = schema.errors(data, schema.load_schema("test-map.schema.json"), base="test-map.schema.json")
     if problems:
         raise QaError("trace_map_invalid", "the test map does not fit its schema", path=shown, errors=problems)
@@ -425,17 +425,34 @@ def target_facts(ws: Workspace, st: dict, target: Optional[str]) -> dict:
                   target=target, candidates=found)
 
 
-def _latest(st: dict, test_id: str, target: str) -> Optional[Tuple[dict, str]]:
-    """The state's entry for the test's latest result on ``target`` (the full commit, matched exactly)."""
+def _latest(st: dict, test_id: str, target: str, diff_hash: Optional[str] = None) -> Optional[Tuple[dict, str]]:
+    """The state's entry for the test's latest result on ``target`` (the full commit, matched exactly).
+
+    With ``diff_hash``, only a run on that working tree counts: a run on another uncommitted tree at the same commit is
+    evidence about different code."""
     best: Optional[Tuple[Tuple[str, str], dict]] = None
     for entry in st["tests"].get(test_id, {}).values():
         execution = st["executions"].get(entry["execution"], {})
-        if (execution.get("git") or {}).get("commit") != target:
+        git = execution.get("git") or {}
+        if git.get("commit") != target or (diff_hash is not None and git.get("diff_hash") != diff_hash):
             continue
         key = (execution.get("started_at", ""), entry["execution"])
         if best is None or key > best[0]:
             best = (key, entry)
     return (best[1], target) if best else None
+
+
+_CONCLUDED = ("passed", "failed")
+
+
+def _row_status(st: dict, entry: dict) -> str:
+    """The test's status on its matrix row. A run that neither passed nor failed (blocked, inconclusive, not run: a timeout,
+    an exit code that contradicts the report, a downgraded isolation) says nothing about its tests, whatever its per-test
+    rows read, so the row takes the run's status."""
+    run_status = st["executions"].get(entry["execution"], {}).get("status")
+    if run_status is not None and run_status not in _CONCLUDED:
+        return run_status
+    return entry["status"]
 
 
 def _test_case_status(tests: List[dict]) -> Optional[str]:
@@ -458,8 +475,11 @@ def _by_source(st: dict, relation: str) -> Dict[str, List[str]]:
     return out
 
 
-def matrix(st: dict, target_commit: str, *, target_source: Optional[str] = None, tree_dirty: Optional[bool] = None) -> dict:
-    """The traceability matrix over ``st`` for one full commit: no clock, no file, no write; the same state gives the same matrix."""
+def matrix(st: dict, target_commit: str, *, target_source: Optional[str] = None, tree_dirty: Optional[bool] = None,
+           diff_hash: Optional[str] = None) -> dict:
+    """The traceability matrix over ``st`` for one full commit: no clock, no file, no write; the same state gives the same matrix.
+
+    ``diff_hash`` (the gate passes it when it evaluates the working tree itself) keeps only the runs on that tree."""
     if not isinstance(target_commit, str) or not _FULL_COMMIT.match(target_commit):
         raise QaError("target_required", "the matrix is about one full commit id; resolve_target gives it", target=target_commit)
     verified = _by_source(st, "verified_by")
@@ -479,12 +499,12 @@ def matrix(st: dict, target_commit: str, *, target_source: Optional[str] = None,
     for tc in sorted(tcs, key=_order):
         tests = []
         for test_id in sorted(set(automated.get(tc, []))):
-            found = _latest(st, test_id, target_commit)
+            found = _latest(st, test_id, target_commit, diff_hash)
             entry = found[0] if found else None
             git = (st["executions"].get(entry["execution"], {}).get("git") or {}) if entry else {}
             tests.append({"test_id": test_id, "commit": target_commit if entry else None,
                           "dirty": bool(git.get("dirty")) if entry else None,
-                          "status": entry["status"] if entry else None, "flaky": bool(entry and entry["flaky"]),
+                          "status": _row_status(st, entry) if entry else None, "flaky": bool(entry and entry["flaky"]),
                           "result": entry["result"] if entry else None, "execution": entry["execution"] if entry else None})
             if tests[-1]["dirty"]:
                 tests[-1]["diff_hash"] = git.get("diff_hash")
@@ -561,5 +581,5 @@ def write_matrix(ws: Workspace, st: dict, target_commit: str, *, target_source: 
         raise QaError("matrix_invalid", "the matrix does not fit its schema", errors=problems)
     path = ws.path(*_MATRIX_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_atomic(path, (json.dumps(result, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    write_atomic(path, config_bytes(result))
     return result, path

@@ -9,6 +9,7 @@ import test_compare
 from helpers import base
 from qa import findings, fixes, ledger, records, schema, state, trace
 from qa.errors import QaError
+from qa.workspace import config_bytes
 from test_records import ac, req, rsk, tc
 
 TEST_ID = "tests.test_discount::test_cap"
@@ -267,6 +268,17 @@ def test_a_map_that_does_not_fit_its_schema_is_refused(ws, actor, tmp_path):
     refused("trace_map_invalid", trace.scan, ws, actor, tmp_path)
     ws.path("trace", "test-map.json").write_text("{")
     refused("trace_map_invalid", trace.scan, ws, actor, tmp_path)
+
+
+def test_a_map_that_repeats_a_test_case_key_is_refused(ws, actor, tmp_path):
+    """K7: the map is read with the kernel's canonical JSON reader, so a repeated key is refused, not reduced to its last value."""
+    several_cases(ws, actor, 1)
+    path = ws.path("trace", "test-map.json")
+    path.parent.mkdir(exist_ok=True)
+    path.write_text('{"TC-001": ["tests.test_a::test_b"], "TC-001": ["tests.test_a::test_c"]}')
+    error = refused("trace_map_invalid", trace.scan, ws, actor, tmp_path)
+    assert "duplicate key" in error.details["error"]
+    assert [l for l in state.load(ws)["links"] if l["relation"] == "automated_by"] == []
 
 
 def test_scan_never_follows_symlinks_or_executes(ws, actor, tmp_path):
@@ -531,6 +543,62 @@ def test_the_head_default_reports_whether_the_tree_is_dirty(ws, actor, monkeypat
     assert "target_source" not in trace.matrix(st, COMMIT_A)
 
 
+def run_with_status(ws, actor, letter, run_status, row_status, minute, *, reason=None, diff_hash="sha256:" + "0" * 64, commit=COMMIT_A):
+    """An execution of ``run_status`` on ``commit`` holding one result of TEST_ID that reads ``row_status``."""
+    data = test_compare._execution(exe_id(letter))
+    data.update(status=run_status, reason=reason)
+    data["started_at"] = data["ended_at"] = "2026-11-10T10:%02d:00.000Z" % minute
+    data["git"] = {"commit": commit, "branch": None, "dirty": diff_hash != "sha256:" + "0" * 64, "diff_hash": diff_hash}
+    ledger.append(ws, actor, "execution.recorded", data)
+    ledger.append(ws, actor, "result.recorded", test_compare._result(minute * 100, exe_id(letter), TEST_ID, row_status))
+    return exe_id(letter)
+
+
+@pytest.mark.parametrize("run_status,reason,gap", [
+    ("inconclusive", "exit_code_mismatch", "tc_last_blocked_or_inconclusive"),
+    ("inconclusive", "timeout", "tc_last_blocked_or_inconclusive"),
+    ("inconclusive", "network_not_isolated", "tc_last_blocked_or_inconclusive"),
+    ("blocked", "policy_denied", "tc_last_blocked_or_inconclusive"),
+    ("not_run", "all_skipped", "tc_never_executed"),
+])
+def test_a_run_that_did_not_conclude_gives_its_status_to_every_row(ws, actor, run_status, reason, gap):
+    """K1: rows that read passed in a run that neither passed nor failed say nothing about the tests."""
+    chain(ws, actor)
+    record_run(ws, actor, "A", COMMIT_A, [(TEST_ID, "passed", {})], 1)
+    run_with_status(ws, actor, "B", run_status, "passed", 2, reason=reason)
+    result = trace.matrix(state.load(ws), COMMIT_A)
+    case = result["testcases"][0]
+    assert case["tests"][0]["status"] == run_status and case["tests"][0]["execution"] == exe_id("B")
+    assert case["status"] == run_status and {"kind": gap, "id": "TC-001"} in result["gaps"]
+    assert schema.errors(result, schema.load_schema("trace-matrix.schema.json"), base="trace-matrix.schema.json") == []
+
+
+@pytest.mark.parametrize("run_status,row_status", [("passed", "passed"), ("failed", "failed"), ("failed", "passed"), ("passed", "failed")])
+def test_a_run_that_concluded_keeps_the_rows_own_status(ws, actor, run_status, row_status):
+    chain(ws, actor)
+    run_with_status(ws, actor, "A", run_status, row_status, 1, reason="assertion" if run_status == "failed" else None)
+    assert trace.matrix(state.load(ws), COMMIT_A)["testcases"][0]["tests"][0]["status"] == row_status
+
+
+def test_a_failed_row_in_an_inconclusive_run_reads_inconclusive(ws, actor):
+    chain(ws, actor)
+    run_with_status(ws, actor, "A", "inconclusive", "failed", 1, reason="timeout")
+    assert trace.matrix(state.load(ws), COMMIT_A)["testcases"][0]["status"] == "inconclusive"
+
+
+def test_with_a_diff_hash_only_runs_on_that_tree_count(ws, actor):
+    """K1: the gate evaluates the working tree itself; a run on another uncommitted tree at the same commit is not this code."""
+    chain(ws, actor)
+    here, there = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    run_with_status(ws, actor, "A", "failed", "failed", 1, reason="assertion", diff_hash=here)
+    run_with_status(ws, actor, "B", "passed", "passed", 2, diff_hash=there)
+    st = state.load(ws)
+    assert trace.matrix(st, COMMIT_A)["testcases"][0]["status"] == "passed"   # no tree filter: the latest run on the commit
+    assert trace.matrix(st, COMMIT_A, diff_hash=here)["testcases"][0]["status"] == "failed"
+    assert trace.matrix(st, COMMIT_A, diff_hash=there)["testcases"][0]["status"] == "passed"
+    assert trace.matrix(st, COMMIT_A, diff_hash="sha256:" + "3" * 64)["testcases"][0]["status"] is None
+
+
 def test_matrix_does_not_change_the_state_it_reads(ws, actor):
     chain(ws, actor)
     record_run(ws, actor, "A", COMMIT_A, [(TEST_ID, "passed", {})], 1)
@@ -550,6 +618,7 @@ def test_matrix_file_is_byte_stable(ws, actor):
     assert trace.write_matrix(ws, state.load(ws), COMMIT_A)[1].read_bytes() == data
     assert schema.errors(json.loads(data), schema.load_schema("trace-matrix.schema.json"), base="trace-matrix.schema.json") == []
     assert data.endswith(b"\n") and json.loads(data)["target"] == COMMIT_A
+    assert data == config_bytes(json.loads(data))   # K7: the kernel's own writer, as for the files under state/
 
 
 # --------------------------------------------------------------------------- the event, the state and the commands

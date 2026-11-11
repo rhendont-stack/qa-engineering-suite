@@ -254,11 +254,28 @@ def project_files(root: Path) -> Optional[List[str]]:
     return [os.fsdecode(path) for path in listed.stdout.split(b"\0") if path]
 
 
+def _repository_entry_at_or_above(root: Path) -> bool:
+    """Whether a ``.git`` entry (the directory, or the file a linked worktree or submodule has) is at or above ``root``, or
+    ``root`` is inside one: then a git that does not answer is refusing a repository, not reporting that there is none."""
+    here = Path(os.path.abspath(str(root)))
+    if ".git" in here.parts:
+        return True
+    while True:
+        try:
+            os.lstat(str(here / ".git"))
+            return True
+        except OSError:
+            pass
+        if here.parent == here:
+            return False
+        here = here.parent
+
+
 def tracked_files(root: Path) -> Optional[Set[str]]:
     """The paths git tracks under ``root`` (posix, relative to it); an empty set outside a git work tree.
 
-    ``None`` means git could not say (missing, or its configuration cannot be neutralised): a caller that must not guess
-    treats every path as tracked.
+    ``None`` means git could not say (missing, its configuration cannot be neutralised, or it refuses a repository that is
+    there, for example one it does not trust or cannot read): a caller that must not guess treats every path as tracked.
     """
     git = shutil.which("git")
     if git is None:
@@ -267,7 +284,7 @@ def tracked_files(root: Path) -> Optional[Set[str]]:
         session = _Git(git, Path(root))
         inside = session.run(["rev-parse", "--is-inside-work-tree"])
         if inside.returncode != 0 or inside.stdout.strip() != b"true":
-            return set()
+            return None if _repository_entry_at_or_above(Path(root)) else set()
         listed = session.run(["ls-files", "-z"])
     except _Unavailable:
         return None

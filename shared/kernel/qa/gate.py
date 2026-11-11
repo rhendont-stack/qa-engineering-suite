@@ -88,7 +88,7 @@ def _effective_criterion(criterion: dict, override: dict) -> dict:
     read = list(criterion["params"]) + [name for name in _OPTIONAL_PARAMS.get(criterion["type"], ()) if name in params]
     errors = schema.errors({name: params[name] for name in read}, _PARAMS)
     if "not_applicable" in override and _blank(override["not_applicable"]):
-        errors.append("not_applicable is blank: §11.2 requires a recorded justification")
+        errors.append("not_applicable is blank: a criterion is not applicable only with a recorded justification")
     if errors:
         raise QaError("config_invalid", "an accepted gate override cannot be applied", criterion=criterion["id"], errors=errors)
     effective = dict(criterion, params=params, blocking=override.get("blocking", criterion["blocking"]))
@@ -326,6 +326,15 @@ def _ac_state(st: dict, matrix: dict, links: List[str]) -> Tuple[str, List[str]]
     return ("verified" if verified else "unverified"), executions
 
 
+def _tree_matrix(st: dict, ctx: GateContext) -> dict:
+    """The matrix on the target commit; when the working tree itself is evaluated, only runs on this tree count (T16-R5)."""
+    return trace.matrix(st, ctx.target_commit, diff_hash=ctx.diff_hash)
+
+
+def _where(ctx: GateContext) -> str:
+    return "commit %s%s" % (ctx.target_commit, " and this working tree" if ctx.diff_hash is not None else "")
+
+
 def _requirements_verified(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     """§11.1, §6.4 B: every requirement at or above ``min_priority`` is verified by its acceptance criteria on the target commit.
 
@@ -342,7 +351,7 @@ def _requirements_verified(c: dict, st: dict, ctx: GateContext) -> _Outcome:
              if _PRIORITIES.index(st["requirements"][rid]["priority"]) <= _PRIORITIES.index(minimum)]
     if not scope:
         return _NO_EVIDENCE, "no requirement at priority %s or above" % minimum, []
-    matrix = trace.matrix(st, ctx.target_commit)
+    matrix = _tree_matrix(st, ctx)
     verified_by = trace._by_source(st, "verified_by")
     criteria_of: Dict[str, List[str]] = {}
     for ac in sorted(st["criteria"], key=trace._order):
@@ -365,10 +374,10 @@ def _requirements_verified(c: dict, st: dict, ctx: GateContext) -> _Outcome:
             if outcome != "verified":
                 (failed if outcome == "failed" else unverified).append(ac)
     parts = []
-    if failed:
-        parts.append("failed: " + ", ".join(failed))
+    if failed:  # no bare status word: a report renders this detail, and its checker reads one as a claim needing a run ID
+        parts.append("a verifying test case has a failing last result: " + ", ".join(failed))
     if unverified:
-        parts.append("not verified by a passing structured test on commit %s: %s" % (ctx.target_commit, ", ".join(unverified)))
+        parts.append("not verified by a passing structured test on %s: %s" % (_where(ctx), ", ".join(unverified)))
     if bare:
         parts.append("no acceptance criterion: " + ", ".join(bare))
     if unconfirmed:
@@ -385,15 +394,16 @@ def _no_blocked_critical(c: dict, st: dict, ctx: GateContext) -> _Outcome:
         return _NO_EVIDENCE, "no test case is linked to a critical component", []
     if ctx.target_commit is None:
         return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
-    cases = {case["id"]: case for case in trace.matrix(st, ctx.target_commit)["testcases"]}
+    cases = {case["id"]: case for case in _tree_matrix(st, ctx)["testcases"]}
     bad = [tc for tc in critical if cases[tc]["status"] in ("blocked", "inconclusive", "failed")]
     missing = [tc for tc in critical if cases[tc]["status"] in (None, "not_run")]
     evidence = sorted({test["execution"] for tc in critical for test in cases[tc]["tests"] if test["execution"]})
-    if bad:
-        return _NOT_MET, "; ".join("%s %s" % (tc, cases[tc]["status"]) for tc in bad), evidence
+    if bad:  # last_<status>: no bare status word, which a rendered report's checker would read as an uncited claim
+        return _NOT_MET, "; ".join("%s last_%s" % (tc, cases[tc]["status"]) for tc in bad), evidence
     if missing:
-        return _NO_EVIDENCE, "no executed result on commit %s for: %s" % (ctx.target_commit, ", ".join(missing)), evidence
-    return _MET, "%d critical test cases passed on commit %s" % (len(critical), ctx.target_commit), evidence
+        return _NO_EVIDENCE, "no executed result on %s for: %s" % (_where(ctx), ", ".join(missing)), evidence
+    return _MET, "%d critical test %s with a passing last result on %s" % (
+        len(critical), "case" if len(critical) == 1 else "cases", _where(ctx)), evidence
 
 
 def _glob(pattern: str) -> "re.Pattern[str]":

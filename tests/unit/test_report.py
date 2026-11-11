@@ -68,6 +68,24 @@ def test_rendered_report_passes_check(trusted, actor, py):
     assert report.check_markdown(report.render_markdown(st), st) == []
 
 
+def test_a_rendered_report_with_failing_criteria_and_critical_test_cases_passes_its_own_check(trusted, actor):
+    """K2: render, then check, on a gate whose requirements_verified and no_blocked_critical are NOT_MET."""
+    import test_gate
+    test_trace.chain(trusted, actor, criticality="critical")   # REQ-001, AC-001.1, TC-001 (critical) automated_by TEST_ID
+    records.add(trusted, actor, "testcase", test_records.tc(criticality="critical", links=("AC-001.1",)))   # TC-002
+    trace.link(trusted, actor, "TC-002", "automated_by", "tests.test_other::test_two")
+    test_gate._trace_run(trusted, actor, "A", "failed", execution_status="failed", reason="assertion", minute=1)
+    test_gate._trace_run(trusted, actor, "B", "passed", execution_status="inconclusive", reason="exit_code_mismatch", minute=2,
+                         test_id="tests.test_other::test_two")
+    g = gate.evaluate(trusted, actor, profile="release", target_commit=test_gate.COMMIT)["data"]
+    outcomes = {c["type"]: c["outcome"] for c in g["criteria"]}
+    assert (outcomes["requirements_verified"], outcomes["no_blocked_critical"]) == ("NOT_MET", "NOT_MET")
+    st = state.load(trusted)
+    md = report.render_markdown(st)
+    assert "TC-001 last\\_failed; TC-002 last\\_inconclusive" in md   # md_cell escapes the underscore
+    assert report.check_markdown(md, st) == []
+
+
 def test_check_problem_kinds(trusted, actor, py):
     exe = execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "fail"))["execution"]; st = state.load(trusted)
     text = f"All tests passed.\n{exe} passed.\nSee FND-999.\n```\nfailed in code is ignored\n```\n"
