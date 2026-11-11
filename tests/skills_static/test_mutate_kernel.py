@@ -17,6 +17,7 @@ from helpers import REPO
 
 TOOL = REPO / "tools" / "mutate_kernel.py"
 ALL = "status,gate,ledger,canonical,compare,report/check,trace"
+DEFAULT = "status,gate,ledger,canonical,compare,trace"
 
 
 def mutate(out, *args):
@@ -46,7 +47,15 @@ def test_config_names_only_the_listed_modules(tmp_path):
         assert (REPO / path.replace("src/qa/", "shared/kernel/qa/")).is_file(), path
 
 
-def test_every_default_module_has_its_own_source_and_test(tmp_path):
+def test_default_is_the_six_measurable_modules_and_report_check_stays_selectable(tmp_path):
+    code, summary, _ = mutate(tmp_path)
+    assert code == 0 and summary["modules"] == DEFAULT.split(",") and "report/check" not in summary["modules"]
+    code, summary, _ = mutate(tmp_path / "all", "--modules", ALL)
+    assert code == 0 and summary["modules"] == ALL.split(",")
+    assert "report_invalid" in subprocess.run([sys.executable, "-I", str(TOOL), "--help"], capture_output=True, text=True).stdout
+
+
+def test_every_listed_module_has_its_own_source_and_test(tmp_path):
     code, summary, _ = mutate(tmp_path, "--modules", ALL)
     assert code == 0 and summary["modules"] == ALL.split(",")
     cfg = config_of(tmp_path)
@@ -57,11 +66,18 @@ def test_every_default_module_has_its_own_source_and_test(tmp_path):
 
 def test_unknown_module_is_refused(tmp_path):
     out = tmp_path / "cfg"
-    for bad in ("status,nonesuch", "../status", "report", "status,status", ""):
+    for bad in ("status,nonesuch", "../status", "report", ""):
         code, summary, done = mutate(out, "--modules", bad)
         assert code == 2 and summary["ok"] is False and summary["error"] == "unknown_module", (bad, done.stdout, done.stderr)
         assert not out.exists(), "a refused request writes nothing"
-    assert "nonesuch" in mutate(out, "--modules", "status,nonesuch")[1]["modules"]
+    assert mutate(out, "--modules", "status,nonesuch")[1]["modules"] == ["nonesuch"]
+
+
+def test_duplicate_module_is_refused_once_per_name(tmp_path):
+    out = tmp_path / "cfg"
+    code, summary, _ = mutate(out, "--modules", "status,gate,status,gate,status")
+    assert code == 2 and summary["error"] == "duplicate_module" and summary["modules"] == ["status", "gate"]
+    assert not out.exists()
 
 
 def test_printed_command_pins_the_image_by_digest(tmp_path):
@@ -80,16 +96,27 @@ def test_printed_command_pins_the_image_by_digest(tmp_path):
     tail = argv[argv.index("--") + 1:]
     assert tail[:2] == ["sh", "-c"] and len(tail) == 3
     assert "mutmut run" in tail[2] and "mutmut_to_report.py" in tail[2] and "{evidence}/kernel-mutation.json" in tail[2]
-    assert "--role" in argv and "run" in argv
-    # the configuration the run uses is the one written to --out
-    for line in (tmp_path / "setup.cfg").read_text().splitlines():
-        assert shlex.quote(line) in tail[2]
+    assert argv[:2] == ["python3", "skills/qa-mutation/scripts/qa.py"]
+    assert argv[argv.index("--role") + 1] == "verifier" and argv.index("run") == argv.index("--skill") + 2
+    # everything the command names exists, so a rename is noticed here and not on the remote engine
+    named = [argv[1], "skills/qa-mutation/scripts/mutmut_to_report.py"] + re.findall(r"-r (\S+)", argv[argv.index("--install") + 1])
+    assert len(named) == 4 and all((REPO / path).is_file() for path in named), named
+    # the run writes no configuration: the one it reads is the untracked setup.cfg of the project copy
+    assert "setup.cfg" not in tail[2] and "tee" not in tail[2] and ">" not in tail[2].replace("{evidence}", "")
+    assert (tmp_path / "setup.cfg").is_file()
 
 
-def test_setup_cfg_is_written_without_a_shell_redirect(tmp_path):
-    """The guard denies a ``>`` onto a file outside ``.qa/work/`` before it can tell the file is in a container copy."""
-    tail = mutate(tmp_path)[1]["argv"][-1]
-    assert "tee setup.cfg" in tail and "> setup.cfg" not in tail and ">" not in tail.replace("{evidence}", "")
+def pins(path):
+    return dict(re.findall(r"^([A-Za-z0-9_.-]+)==(\S+)", (REPO / path).read_text(), re.M))
+
+
+def test_corpus_requirements_pin_the_same_versions_as_requirements_mutation():
+    """The kernel leg installs the corpus producer's file because requirements-mutation.txt holds macOS-arm64 hashes only."""
+    mutation = pins("requirements-mutation.txt")
+    assert len(mutation) >= 10 and mutation["mutmut"] and mutation["pytest"] and mutation["coverage"]
+    corpus = pins("tests/corpus/producers/mutmut_mutation/requirements.txt")
+    assert {name.lower().replace("_", "-"): v for name, v in corpus.items()} == \
+        {name.lower().replace("_", "-"): v for name, v in mutation.items()}
 
 
 def test_pytest_arguments_are_one_per_line(tmp_path):

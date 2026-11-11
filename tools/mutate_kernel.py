@@ -1,15 +1,20 @@
 """Configures mutation testing of the kernel's core modules and prints the command that measures it.
 
-Usage: python3 -I tools/mutate_kernel.py [--modules status,gate,ledger,canonical,compare,report/check,trace] --out DIR
+Usage: python3 -I tools/mutate_kernel.py [--modules status,gate,ledger,canonical,compare,trace] --out DIR
 
 Writes ``DIR/setup.cfg``, a mutmut 3.x configuration that mutates only the named modules of ``shared/kernel/qa/`` and runs
 only their unit test files, and prints one JSON object: ``ok``, ``config``, ``modules``, ``image``, ``argv`` and ``command``
 (``argv`` as one shell line). The command is a ``qa run --container`` of the suite's own launcher, to run from the repository
-root: it installs the pinned tools in a first container step (the only one with a network), writes the same configuration
-into the project copy, runs mutmut and then ``skills/qa-mutation/scripts/mutmut_to_report.py`` in that one execution, and
-declares the converted file as the run's ``mutation`` report. The score is therefore in that execution's evidence manifest, and
-it is read from there: this tool runs nothing and gates nothing. An unknown or repeated module is refused (exit 2) before
-anything is written.
+root with ``--out .``: the run's project copy holds the files git lists as tracked or as untracked and not ignored
+(``qa.gitinfo.project_files``), so the untracked ``setup.cfg`` reaches the container with no write at run time, and mutmut reads
+it from its working directory. Never commit it. The command installs the pinned tools in a first container step (the only one
+with a network), runs mutmut and then ``skills/qa-mutation/scripts/mutmut_to_report.py`` in that one execution, and declares
+the converted file as the run's ``mutation`` report. The score is therefore in that execution's evidence manifest, and it is
+read from there: this tool runs nothing and gates nothing.
+
+``report/check`` can be named, but is not in the default: a leg that includes it ends ``report_invalid``
+(EXE-01M75E9WGZFMNGNSTYSV67RH4N), because the kernel's redaction cuts through the stored report; that defect is parked for
+the final review. An unknown or repeated module is refused (exit 2) before anything is written.
 """
 from __future__ import annotations
 
@@ -31,33 +36,33 @@ MODULES: Dict[str, Tuple[str, str]] = {
     "report/check": (KERNEL + "report/check.py", "tests/unit/test_report.py"),
     "trace": (KERNEL + "trace.py", "tests/unit/test_trace.py"),
 }
-# python:3.12-slim (Python 3.12.16), the index digest the mutmut corpus capture was produced in; requirements-mutation.txt is
-# resolved for that interpreter (python:3-slim is 3.15, for which pyyaml 6.0.3 has no wheel).
+DEFAULT_MODULES = ("status", "gate", "ledger", "canonical", "compare", "trace")  # report/check: see the module docstring
+# python:3.12-slim (Python 3.12.16), the index digest the mutmut corpus capture was produced in (python:3-slim is 3.15, for
+# which pyyaml 6.0.3 has no wheel).
 IMAGE = "python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
 LAUNCHER = "skills/qa-mutation/scripts/qa.py"
 CONVERTER = "skills/qa-mutation/scripts/mutmut_to_report.py"
 REPORT = "{evidence}/kernel-mutation.json"
 TIMEOUT_SECONDS = 4 * 3600
-# The kernel's own test tools, then mutmut's: the same pins as requirements-mutation.txt, with the hash of every wheel PyPI
-# lists (that file holds the one wheel for macOS arm64, which a Linux container cannot use).
+# The kernel's own test tools, then mutmut's. requirements-mutation.txt holds one macOS-arm64 (cp312) wheel hash per package,
+# which the Linux container cannot install with --require-hashes; the corpus producer's file pins the same versions (a test
+# checks it) with the hash of every wheel PyPI lists.
 REQUIREMENTS = ("requirements-dev.txt", "tests/corpus/producers/mutmut_mutation/requirements.txt")
 # What the tests read next to the kernel: mutmut runs them in ``mutants/``, a copy of the paths it is told to take.
-# ``qa.resource_dir`` and ``integrity.kernel_integrity`` read ``src/qa`` as a source checkout when ``<kind>`` sits next to ``src``,
-# at the project root (``src/<kind>`` would make it look vendored, with its manifest missing).
+# ``qa.resource_dir`` and ``integrity.kernel_integrity`` read ``src/qa`` as a source checkout when ``<kind>`` sits next to
+# ``src``, at the project root (``src/<kind>`` would make it look vendored, with its manifest missing).
 RESOURCES = ("schemas", "policies", "templates")
-ALSO_COPY = (("pytest.ini", "fixtures", "shared/kernel", "shared/launcher", "shared/policies", "shared/schemas", "shared/templates")
-             + RESOURCES)
-VENV, HOME = "/work/venv", "/work/home"
-
-
-# mutmut names a mutant after its file's path with a leading ``src.`` removed, and the tests import the kernel as ``qa`` (pytest.ini
-# puts shared/kernel on the path), so the run mutates the kernel through ``src/qa``, a link made in the project copy. The
-# unmutated kernel stays in ``mutants/shared/kernel`` for the tests that start it in a subprocess.
+ALSO_COPY = (("pytest.ini", "fixtures", "shared/kernel", "shared/launcher", "shared/policies", "shared/schemas",
+              "shared/templates") + RESOURCES)
+# mutmut names a mutant after its file's path with a leading ``src.`` removed, and the tests import the kernel as ``qa``
+# (pytest.ini puts shared/kernel on the path), so the run mutates the kernel through ``src/qa``, a link made in the project
+# copy. The unmutated kernel stays in ``mutants/shared/kernel`` for the tests that start it in a subprocess.
 LINK_SOURCE, LINK_TARGET = "src/qa/", "../shared/kernel/qa"
-PYTEST_ARGS = ("-o", "pythonpath=tests")  # the ini's own pythonpath would put the unmutated kernel before mutmut's copy
-
-
+# The ini's own pythonpath would put the unmutated kernel before mutmut's copy.
+PYTEST_ARGS = ("-o", "pythonpath=tests")
+VENV, HOME = "/work/venv", "/work/home"
 # The converter takes ``mutants/src`` only: ``mutants/`` also holds the corpus captures of ``tests/``, which are not this run's.
+CONVERTED_FROM = "--root src --mutants mutants/src"
 
 
 class Refused(Exception):
@@ -69,8 +74,11 @@ class Refused(Exception):
 def parse_modules(text: str) -> List[str]:
     names = text.split(",")
     unknown = [name for name in names if name not in MODULES]
-    if unknown or len(set(names)) != len(names):
-        raise Refused("unknown_module", modules=unknown or [n for n in names if names.count(n) > 1], known=list(MODULES))
+    if unknown:
+        raise Refused("unknown_module", modules=unknown, known=list(MODULES))
+    repeated = list(dict.fromkeys(name for name in names if names.count(name) > 1))
+    if repeated:
+        raise Refused("duplicate_module", modules=repeated)
     return names
 
 
@@ -94,25 +102,33 @@ def install_command() -> str:
             "--only-binary=:all: %s" % (VENV, VENV, " ".join("-r " + path for path in REQUIREMENTS)))
 
 
-def run_script(lines: List[str]) -> str:
-    """What runs in the container after the install: the configuration, mutmut, then the converter, in one shell."""
-    write = "printf '%%s\\n' %s | tee setup.cfg" % " ".join(shlex.quote(line) for line in lines)
+def run_script() -> str:
+    """What runs in the container after the install: links that give the kernel its layout, mutmut, then the converter. The
+    configuration is not written here: it is the untracked ``setup.cfg`` the project copy already holds."""
     return " && ".join([
-        "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME), "mkdir -p %s src" % HOME, "ln -s %s %s" % (LINK_TARGET, LINK_SOURCE.rstrip("/")),
-        " && ".join("ln -s shared/%s %s" % (kind, kind) for kind in RESOURCES), write,
-        "python -m mutmut run", "python3 %s --root src --mutants mutants/src --out %s" % (CONVERTER, REPORT)])
+        "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME),
+        "mkdir -p %s src" % HOME,
+        "ln -s %s %s" % (LINK_TARGET, LINK_SOURCE.rstrip("/")),
+        " && ".join("ln -s shared/%s %s" % (kind, kind) for kind in RESOURCES),
+        "python -m mutmut run",
+        "python3 %s %s --out %s" % (CONVERTER, CONVERTED_FROM, REPORT)])
 
 
-def command(lines: List[str]) -> List[str]:
+def command() -> List[str]:
     return ["python3", LAUNCHER, "--role", "verifier", "--skill", "qa-mutation", "run", "--container", IMAGE,
             "--install", install_command(), "--timeout", str(TIMEOUT_SECONDS), "--report", "mutation:" + REPORT,
-            "--", "sh", "-c", run_script(lines)]
+            "--", "sh", "-c", run_script()]
 
 
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="mutate_kernel.py", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--modules", default=",".join(MODULES), metavar="LIST", help="comma-separated; default: all of them")
-    parser.add_argument("--out", required=True, metavar="DIR", help="where setup.cfg is written")
+    parser.add_argument("--modules", default=",".join(DEFAULT_MODULES), metavar="LIST",
+                        help="comma-separated; default: %s. report/check can be named, but a leg with it currently ends "
+                             "report_invalid (EXE-01M75E9WGZFMNGNSTYSV67RH4N): a kernel redaction defect, parked for the "
+                             "final review"
+                             % ",".join(DEFAULT_MODULES))
+    parser.add_argument("--out", required=True, metavar="DIR",
+                        help="where setup.cfg is written; the repository root (.) for the run to pick it up")
     args = parser.parse_args(argv)
     try:
         modules = parse_modules(args.modules)
@@ -123,7 +139,7 @@ def main(argv: List[str]) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "setup.cfg").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    words = command(lines)
+    words = command()
     print(json.dumps(dict(ok=True, config=str(out / "setup.cfg"), modules=modules, image=IMAGE, argv=words,
                           command=" ".join(shlex.quote(word) for word in words)), sort_keys=True))
     return 0
