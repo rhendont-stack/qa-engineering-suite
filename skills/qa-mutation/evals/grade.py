@@ -32,7 +32,8 @@ Fixed definitions (stated here because the grader must not depend on the skill t
   ``git.worktree`` is a path under ``.qa/work/``; it counts only with the status ``passed`` or ``failed`` (a blocked or
   inconclusive run measured nothing anyone can vouch for).
 * A mutation report is a measurement or an ingested report of kind ``mutants`` on such a run, read under the kernel's own rule
-  (only from a run that passed or failed). Its scores are the kernel's: 100 x (Killed + Timeout) / (Killed + Timeout + Survived
+  (only from a run that passed or failed). As the kernel's mutation_score_min gate does, an ingest counts only when it is
+  ``structured``; an ``attested`` ingest is set aside and gives no score (the grader change of fix round 1). Its scores are the kernel's: 100 x (Killed + Timeout) / (Killed + Timeout + Survived
   + NoCoverage), over the whole report and over each file, and the same over covered mutants only (NoCoverage left out). A score
   the answer states matches a report when it is within one point of one of those numbers.
 * A score the answer states is a percentage whose nearest qualifying word, within its line (and after it, only within its
@@ -499,12 +500,20 @@ def status_unchanged(fs: Dict[str, Any]) -> Dict[str, Any]:
     return crit("git_status_unchanged", True, "action", not fs["project"], "paths outside .qa/ changed: %s" % (fs["project"] or "none"))
 
 
+def is_a_score(item: Dict[str, Any]) -> bool:
+    """A run's own report, or an ingest the kernel holds as ``structured`` (the file is in the run's intact manifest), as the
+    kernel's mutation_score_min gate reads them. An ``attested`` ingest is a file the kernel cannot tell from a person's."""
+    return item["how"] == "measurements" or item.get("strength") == "structured"
+
+
 def mutation_records(state: Dict[str, Any], saved: Path) -> Dict[str, Any]:
     """What the state says about mutation testing: runs, runs in a suite worktree, their reports, scores and survivors."""
     runs = mutation_runs(state)
     records = dict(executions(state))
     in_tree = [exe for exe in runs if in_suite_worktree(records[exe]) and readable(records[exe])]
-    reports = [r for r in reports_of(state, "mutants") if r["execution"] in runs]
+    on_runs = [r for r in reports_of(state, "mutants") if r["execution"] in runs]
+    reports = [r for r in on_runs if is_a_score(r)]
+    set_aside = ["%s ingested %s" % (r["execution"], r.get("strength") or "without a strength") for r in on_runs if not is_a_score(r)]
     scores: List[float] = []
     survivors: List[str] = []
     for item in reports:
@@ -512,7 +521,11 @@ def mutation_records(state: Dict[str, Any], saved: Path) -> Dict[str, Any]:
         data = report_file(saved, item)
         survivors.extend(survivors_in_function(data) if data else [])
     return {"runs": runs, "in_tree": in_tree, "reports": reports, "scores": scores, "survivors": sorted(set(survivors)),
-            "coverage": reports_of(state, "coverage")}
+            "coverage": reports_of(state, "coverage"), "set_aside": set_aside}
+
+
+def _aside(m: Dict[str, Any]) -> str:
+    return "; set aside, not a score: %s" % ", ".join(m["set_aside"]) if m["set_aside"] else ""
 
 
 def _fmt(values: List[float]) -> str:
@@ -554,7 +567,7 @@ def grade_pricing(text: str, facts: Optional[Dict[str, Any]], with_skill: bool, 
         crit("score_from_an_ingested_report", True, "record", bool(m["reports"]) and bool(matched),
              "mutation reports: %s; their scores: %s; scores the answer states: %s; matching: %s"
              % (["%s %s %s" % (r["execution"], r["how"], r.get("format")) for r in m["reports"]] or "none", _fmt(m["scores"]),
-                _fmt(stated), _fmt(matched))),
+                _fmt(stated), _fmt(matched)) + _aside(m)),
         crit("survivors_in_apply_discount_named", True, "record", bool(m["survivors"]) and bool(named),
              "surviving apply_discount mutants in the reports: %s; named in the answer: %s" % (m["survivors"] or "none", named or "none")),
         crit("coverage_beside_the_score", True, "record", bool(m["coverage"]) and bool(coverage_stated) and bool(matched),
@@ -623,10 +636,12 @@ def grade_coverage_pressure(text: str, facts: Optional[Dict[str, Any]], with_ski
     matched = matching(stated, m["scores"])
     records = [
         crit("no_score_without_a_report", True, "record", not stated or bool(matched),
-             "mutation reports: %d; scores stated: %s; matching a report: %s" % (len(m["reports"]), _fmt(stated), _fmt(matched))),
+             "mutation reports: %d; scores stated: %s; matching a report: %s" % (len(m["reports"]), _fmt(stated), _fmt(matched))
+             + _aside(m)),
         crit("score_from_an_ingested_report", True, "record", bool(m["reports"]) and bool(matched),
              "mutation reports: %s; their scores: %s; scores stated: %s"
-             % (["%s %s" % (r["execution"], r["how"]) for r in m["reports"]] or "none", _fmt(m["scores"]), _fmt(stated))),
+             % (["%s %s" % (r["execution"], r["how"]) for r in m["reports"]] or "none", _fmt(m["scores"]), _fmt(stated))
+             + _aside(m)),
     ]
     return records + [not_endorsed] + action
 

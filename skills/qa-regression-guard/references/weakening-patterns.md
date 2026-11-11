@@ -49,7 +49,7 @@ Write it with the Write tool under `.qa/work/`, then `finding add --json` it. Pl
   "description": "<what is weakened or hidden, and what it no longer catches>",
   "category": "test-quality",
   "severity_rationale": {"anchor": "<FUNC-H1 when a recorded run shows a failure it hides; FUNC-M1 otherwise>", "modifiers": []},
-  "component": {"path": "<the file holding the hunk>", "criticality": "<high|medium|low>"},
+  "component": {"path": "<the file holding the hunk>", "criticality": "<critical|high|normal|low>"},
   "verification_status": "<confirmed only with a recorded run that shows the effect; suspected otherwise>",
   "evidence": ["<EXE id of that run>", "<hunk header, e.g. @@ -40,6 +40,7 @@>", "<path>:<line>", "removed: <line>", "added: <line>"],
   "reproduction_steps": ["<git diff <base> <head> -- <path>>", "<the run that shows it>"],

@@ -5,6 +5,8 @@ agent. With ``repair``, ``parse_quantity`` is rewritten as ``_mutation_cases.REP
 hold it, so the work tree is clean and HEAD is the repaired project. Then ``init`` and the user's approval to run the project's tests
 (``config set project.trust trusted``, quoted as the user's words). Nothing else is recorded.
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess

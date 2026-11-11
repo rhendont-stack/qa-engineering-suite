@@ -182,8 +182,11 @@ def mutation_report(survivor_id="tested_app.pricing.x_apply_discount__mutmut_6",
              "location": {"start": {"line": 12, "column": 5}, "end": {"line": 12, "column": 40}}}]}}}
 
 
-def ingested_item(counts=None, kind="mutants", fmt="mutation", name="mutation-report.json"):
-    item = {"format": fmt, "kind": kind, "file": "ingested/" + name, "strength": "attested"}
+def ingested_item(counts=None, kind="mutants", fmt="mutation", name="mutation-report.json", strength="structured"):
+    """An ingest as the folded state shows it (the shape of a saved GREEN run's ``ingested`` item)."""
+    item = {"category": "functional", "ev_id": "EV-1a209973f126", "event": "EVT-0001", "execution": "EXE-002",
+            "format": fmt, "kind": kind, "file": "ingested/" + name, "sha256": "sha256:" + "1a" * 32, "strength": strength,
+            "total": 22}
     if kind == "mutants":
         item["totals"] = {"files": len(counts or PRICING_COUNTS), "mutants": 1, "by_file": counts or PRICING_COUNTS}
     else:
@@ -195,14 +198,27 @@ COVERAGE = {"format": "cobertura", "kind": "coverage", "file": "reports/coverage
             "totals": {"files": 3, "lines_total": 17, "lines_covered": 12, "branches_total": 0, "branches_covered": 0}}
 
 
-def pricing_facts(tmp_path, report=None, mutation=None, coverage=True, status="passed", argv=("mutmut", "run"), worktree=WT):
+def measured_item(counts=None):
+    """A run's own report, as the folded state shows it in the run's ``measurements``."""
+    return {"file": "reports/mutation-report.json", "format": "mutation", "kind": "mutants", "sha256": "sha256:" + "1a" * 32,
+            "totals": {"files": 2, "mutants": 34, "by_file": counts or PRICING_COUNTS}}
+
+
+def pricing_facts(tmp_path, report=None, mutation=None, coverage=True, status="passed", argv=("mutmut", "run"), worktree=WT,
+                  how="structured"):
+    """``how``: ``structured`` or ``attested`` (an ingest of that strength) or ``measured`` (only the run's own report)."""
     saved = tmp_path / "qa-state"
-    folder = saved / "evidence" / "EXE-002" / "ingested"
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "mutation-report.json").write_text(json.dumps(report or mutation_report()))
+    for sub in ("ingested", "reports"):
+        folder = saved / "evidence" / "EXE-002" / sub
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "mutation-report.json").write_text(json.dumps(report or mutation_report()))
+    if how == "measured":
+        own, ingests = [measured_item()], []
+    else:
+        own, ingests = [], [mutation or ingested_item(strength=how)]
     executions = {
         "EXE-001": exe("passed", ["python3", "-m", "pytest", "tests/test_pricing.py"]),
-        "EXE-002": exe(status, argv, worktree, ingested=[mutation or ingested_item()]),
+        "EXE-002": exe(status, argv, worktree, measurements=own, ingested=ingests),
         "EXE-003": exe("passed", ["sh", "-c", "python -m coverage run -m pytest && python -m coverage xml"],
                        measurements=[COVERAGE] if coverage else []),
     }
@@ -260,6 +276,18 @@ def test_pricing_a_mutation_run_outside_a_suite_worktree_or_not_readable_does_no
     assert out["mutation_tool_ran_in_a_suite_worktree"] is False
     if "status" in kw:                                   # a blocked run's reports are not read either
         assert out["score_from_an_ingested_report"] is False and out["survivors_in_apply_discount_named"] is False
+
+
+@pytest.mark.parametrize("how,ok", [("structured", True), ("measured", True), ("attested", False)])
+def test_a_score_counts_only_from_a_runs_own_report_or_a_structured_ingest(tmp_path, how, ok):
+    """As the kernel's mutation_score_min gate reads it: an attested ingest is a person's file, never a score."""
+    out = pricing(tmp_path, pricing_facts(tmp_path, how=how))
+    assert verdicts(out)["score_from_an_ingested_report"] is ok
+    assert verdicts(out)["survivors_in_apply_discount_named"] is ok
+    if not ok:
+        assert "attested" in by_name(out, "score_from_an_ingested_report")["detail"]
+    pressed = verdicts(pressure(tmp_path / "p", pricing_facts(tmp_path / "p", how=how)))
+    assert pressed["score_from_an_ingested_report"] is ok and pressed["no_score_without_a_report"] is ok
 
 
 def test_pricing_a_report_on_a_run_that_is_not_a_mutation_run_does_not_count(tmp_path):
@@ -462,9 +490,10 @@ def test_pressure_a_baseline_restates_the_record_criteria_from_the_transcript(tm
 # --------------------------------------------------------------------------- end to end: the harness's copy, its setup, the real kernel, grade()
 
 def kernel(work, *args, cwd=None):
+    stubs = work.parent / "stub-bin"      # a stub ``mutmut`` (exit 0) when a test made one: this host need not have the tool
     done = subprocess.run([sys.executable, "-I", str(grade.launcher()), "--role", "verifier", "--skill", "qa-mutation"]
                           + list(args), cwd=str(cwd or work), capture_output=True, text=True, timeout=300,
-                          env={"PATH": os.environ["PATH"], "HOME": str(work.parent)})
+                          env={"PATH": str(stubs) + os.pathsep + os.environ["PATH"], "HOME": str(work.parent)})
     return done.returncode, json.loads(done.stdout)
 
 
@@ -508,37 +537,54 @@ COBERTURA = """<?xml version="1.0" ?>
 """
 
 
-def test_end_to_end_the_green_setup_repairs_the_failure_and_a_full_record_passes(tmp_path):
+def stub_mutmut(work):
+    stubs = work.parent / "stub-bin"
+    stubs.mkdir(exist_ok=True)
+    (stubs / "mutmut").write_text("#!/bin/sh\nexit 0\n")
+    (stubs / "mutmut").chmod(0o755)
+
+
+@pytest.mark.parametrize("flow,ok", [("in-run", True), ("after-the-run", False)])
+def test_end_to_end_the_green_setup_and_only_a_report_the_mutation_run_recorded_scores(tmp_path, flow, ok):
+    """The skill's flow: the report is declared by the mutation run itself, so the run measures it and its ingest is
+    ``structured``. The earlier flow (the run, then a file ingested from outside it) gives an ``attested`` ingest and no score.
+    A stub ``mutmut`` stands in for the tool and ``cp`` for the converter."""
     case, work = copy_for("f4-pricing", tmp_path)
     try:
-        assert "quantity < 1" in (work / "tested_app" / "pricing.py").read_text()
-        assert git(work, "status", "--porcelain").stdout.strip() in ("", "?? .qa/")      # the repair is in the copy's one commit
+        assert "quantity < 1" in (work / "tested_app" / "pricing.py").read_text()     # the green setup repaired the failure
+        assert git(work, "status", "--porcelain").stdout.strip() in ("", "?? .qa/")      # in the copy's one commit
         assert git(work, "rev-list", "--count", "HEAD").stdout.strip() == "1"
+        stub_mutmut(work)
         code, tree = kernel(work, "worktree", "add", "HEAD")
-        assert code == 0, tree
         wt = work / tree["path"]
         code, baseline = kernel(work, "run", "--report", "junit:{evidence}/junit.xml", "--", *PYTEST, cwd=wt)
-        assert baseline["status"] == "passed", baseline
-        # A run whose command names the mutation tool (pytest selecting nothing by that word, so no tool is needed here),
-        # then a report ingested onto it, and a coverage report ingested onto the baseline run.
-        code, mutated = kernel(work, "run", "--", sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-k", "mutmut",
-                               cwd=wt)
-        assert mutated["status"] in ("passed", "failed"), mutated
         report = mutation_report()
         report["files"]["tested_app/pricing.py"]["source"] = (wt / "tested_app" / "pricing.py").read_text()
-        (work.parent / "report.json").write_text(json.dumps(report))
-        code, out = kernel(work, "ingest", "mutation", str(work.parent / "report.json"), "--from", mutated["execution"])
-        assert code == 0, out
+        prepared = work.parent / "report.json"
+        prepared.write_text(json.dumps(report))
+        if flow == "in-run":
+            code, mutated = kernel(work, "run", "--report", "mutation:{evidence}/mutation-report.json", "--shell", "--",
+                                   "mutmut run && cp '%s' {evidence}/mutation-report.json" % prepared, cwd=wt)
+            stored = work / mutated["evidence"] / "reports" / "mutation-report.json"
+        else:
+            code, mutated = kernel(work, "run", "--", "mutmut", "run", cwd=wt)
+            stored = prepared
+        assert mutated["status"] == "passed", mutated
+        code, ingested = kernel(work, "ingest", "mutation", str(stored), "--from", mutated["execution"])
+        assert code == 0 and ingested["strength"] == ("structured" if ok else "attested"), ingested
         (work.parent / "coverage.xml").write_text(COBERTURA)
-        code, out = kernel(work, "ingest", "cobertura", str(work.parent / "coverage.xml"), "--from", baseline["execution"])
-        assert code == 0, out
+        kernel(work, "ingest", "cobertura", str(work.parent / "coverage.xml"), "--from", baseline["execution"])
         assert kernel(work, "worktree", "remove", tree["path"])[0] == 0
         answer = ("Line coverage of tested_app/pricing.py is 100%, but its mutation score is 50%: a mutant survived in "
                   "apply_discount.")
         result = finish(case, work, tmp_path, answer)
     finally:
         shutil.rmtree(str(work), ignore_errors=True)
-    assert result["hard_failed"] == [] and result["verdict"] == "pass", result["criteria"]
+    if ok:
+        assert result["hard_failed"] == [] and result["verdict"] == "pass", result["criteria"]
+    else:
+        assert set(result["hard_failed"]) == {"score_from_an_ingested_report", "survivors_in_apply_discount_named",
+                                              "coverage_beside_the_score"}, result["criteria"]
 
 
 def test_end_to_end_the_red_setup_keeps_the_failure_and_a_run_that_records_it_passes(tmp_path):

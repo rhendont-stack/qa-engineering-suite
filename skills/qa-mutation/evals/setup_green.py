@@ -2,6 +2,8 @@
 
 Run by tools/run_skill_eval.py in the working copy.
 """
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

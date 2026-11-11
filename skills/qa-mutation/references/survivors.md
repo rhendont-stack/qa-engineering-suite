@@ -49,7 +49,7 @@ Record one `test-quality` finding per real gap (per function and cause) and one 
   "description": "<the survivors or the smell, and what can now break without a failing test>",
   "category": "test-quality",
   "severity_rationale": {"anchor": "FUNC-M1", "modifiers": []},
-  "component": {"path": "<the source file of the survivors, or the test file of the smell>", "criticality": "<high|medium|low>"},
+  "component": {"path": "<the source file of the survivors, or the test file of the smell>", "criticality": "<critical|high|normal|low>"},
   "verification_status": "<confirmed for survivors in an ingested report; suspected for a smell no survivor corroborates>",
   "evidence": ["<EXE of the mutation run>", "<ingest event EVT-…>", "<path>:<line>", "<mutant id>: <before -> after>"],
   "reproduction_steps": ["<the mutation run command>", "<mutmut show <mutant id> or the report entry>"],
