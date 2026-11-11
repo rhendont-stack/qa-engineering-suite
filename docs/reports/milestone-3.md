@@ -26,9 +26,9 @@ The milestone's deviations from the specification are numbers 42 to 63 in §22.3
 | F7 M2 at C3 through the orchestrator, `fix` template | fail: two calls in worktree-relative form were outside the case's allow-list and denied; no revalidation, no gate. In Task 18 the same scenario held every hard criterion in 3 of 3 runs |
 | F7 at C4 and C5, deterministic | Special-cased fix f7c4:FND-001 and runner hook f7c5:FND-001 are test-quality findings; f7c4:GATE-001 and f7c5:GATE-001 NOT_READY with `test_integrity` not met |
 | F7 at C2 (contract diff) | Open: no oasdiff image is pinned (deviation 62) |
-| Kernel legs on Linux 3.9 and 3.15 through `qa run --container` | Pending: awaiting the user's install grant |
+| Kernel legs on Linux 3.9 and 3.15 through `qa run --container` | project:EXE-01M75ZHFKB727AANEB8CC2HJ37 and project:EXE-01M75ZZ4MNTDZPXBF74N3SPZT6 failed: 4094 pass, 895 skip and 1 fail each; the one failure is a grader test without a git guard in an image without git |
 | Kernel legs on macOS | Left to the macOS CI job (deviation 63) |
-| Host as found | No `qa-` container, volume or network before or after the exit runs; the 51 other containers unchanged between the two listings |
+| Host as found | No `qa-` container, volume or network before or after the exit runs and the kernel legs; the 51 other containers unchanged across the three listings |
 | Evaluation spend | 28.9272 US$ of the 50 US$ cap (A2), 120 runs |
 | Kernel mutation score | Six modules, 84.93 over 4890 mutants (project:EXE-01M75H1KC6V22PRSFFPQZ6MMVY); `report/check` unmeasured |
 
@@ -135,7 +135,18 @@ F7's C2 (the renamed response field, answer-key entry F7-03) was not exercised: 
 
 ## Kernel legs
 
-Pending: awaiting the user's install grant. The legs (`qa run --container` on the remote engine, Linux with Python 3.9 and 3.15, a clean tree at one commit) need a new `install-dependencies` authorization recorded from the user's own words; project:AUTH-003 was granted for the Task 17 mutation leg only and is not reused. Until a grant arrives, no kernel leg of this milestone is recorded on the project ledger, and this section claims no result.
+Both legs ran on 2026-11-11 under `qa run --container` on the remote engine, one after the other, at commit `789250e8b1b549dd84062689c713fb094609e7ff` (the first commit of this report) with a clean tree; the only local difference, `.qa/config.json`, is marked skip-worktree and was never added. The command is the milestone 2 legs' command: the launcher of `qa-test-execution`, `--activity install-dependencies`, `--scope full`, `--timeout 3600`, the install step `python -m venv /work/.venv && /work/.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt` (the hash-pinned Linux requirements), then `/work/.venv/bin/python -m pytest -q -p no:cacheprovider -c pytest.ini --rootdir . --junitxml={evidence}/junit.xml tests` with that JUnit file declared as the report. The install step ran under project:AUTH-004 (`install-dependencies`, environment `local`, the user's answer of 2026-11-11 "Sí, 6 horas (Recomendado)", for these legs only).
+
+| Leg | Execution | Status | Reason | Total | Pass | Fail | Error | Skip | Wall time |
+|---|---|---|---|---|---|---|---|---|---|
+| `python:3.9-slim`, `python@sha256:2d97f6910b16bd338d3060f261f53f144965f755599aab1acda1e13cf1731b1b` | project:EXE-01M75ZHFKB727AANEB8CC2HJ37 | failed | `assertion` | 4990 | 4094 | 1 | 0 | 895 | 383 s |
+| `python:3-slim` (3.15), `python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928` | project:EXE-01M75ZZ4MNTDZPXBF74N3SPZT6 | failed | `assertion` | 4990 | 4094 | 1 | 0 | 895 | 367 s |
+
+Each leg: strength `structured`, exit code 1, network `none`, engine kind `ssh`, platform `linux-amd64`, `install_ran` true. `qa ledger verify` on the project ledger returned `ok: true` with no problems afterwards.
+
+The one failure is the same in both legs: `tests/skills_static/test_grade_qa_orchestrator.py::test_the_f7_commits_come_from_the_generator`, a test added with the exit grader in `7657b8f`, raised `FileNotFoundError` for `git` in images that ship no git. It has no "tool missing: git" guard, the same omission that made the milestone 2 legs' first attempts end with errors. The test exercises the grader, not the kernel. It is reported as measured; no test-only guard was added and no new leg was executed in this task.
+
+Skips per leg, from each JUnit file: 695 "tool missing: git" and 171 "git is not installed", 16 "tool missing: QA_TEST_CONTAINER_ENGINE is not set" (live engine tests, which run only from the Mac), and 13 others (directory and file modes that do not bind this user, unpublished design documents, file-system case and normalization behaviour, one generated history not scanned without git). No skip is a pass. The tests that need git were therefore not executed in these legs; the counts against milestone 2 (3543 tests, 309 skipped) grew because milestone 3 adds many tests that build git repositories.
 
 The kernel's tests ran during development through the remote test script, outside the kernel; those runs are development checks, not exit legs, and their counts are in the task reports.
 
@@ -204,11 +215,11 @@ Measured observations (not criteria):
 
 ## Host as found
 
-The remote engine was listed by name filter on 2026-11-11 at 18:03 UTC, while the first exit run was in progress, and again at 18:19 UTC, after the last one. The exit runs use the Mac only; no container was started for this task. Both times: no container, volume or network whose name starts with `qa-`. The only suite objects on the engine are the two test images of the remote test script.
+The remote engine was listed by name filter on 2026-11-11 at 18:03 UTC, while the first exit run was in progress, again at 18:19 UTC, after the last one, and a third time at 19:12 UTC, after the two kernel legs. The exit evaluation runs use the Mac only; the kernel legs started their own `qa-<execution id>` objects, which the kernel removes. All three times: no container, volume or network whose name starts with `qa-`. The only suite objects on the engine are the two test images of the remote test script.
 
 Other containers were compared by creation time and uptime only; none was stopped, removed, started or inspected. At the first listing 51 non-suite containers existed, 28 running and 23 exited, and every one was created before the exit runs began. Those created before 2026-11-11 03:00 UTC that were running all showed an uptime that began around that time, which reads as a restart of the engine or its host. The project ledger records no suite execution between 2026-11-10 03:00 UTC and 2026-11-11 12:27 UTC, so the restart is not attributable to the suite from its own records; its cause is not known.
 
-At the second listing the same 51 containers existed, with the same creation times, 28 running and 23 exited, and none had changed between running and exited.
+At the second and third listings the same 51 containers existed, with the same creation times, 28 running and 23 exited, and none had changed between running and exited.
 
 ## Spend
 
@@ -236,7 +247,7 @@ The per-task figures are the task reports' sums, rounded to four places; the tot
 | `.venv-eval` on the Mac | 19 hash-pinned packages from `requirements-mutation.txt` (mutmut 3.8.1, coverage 7.17.2, pytest 8.4.2 and their dependencies), CPython 3.12; used only as the evaluated agents' `runtime_venv` | 55M, measured at install time | A3(a) |
 | Corpus producers in containers (Tasks 7 and 8) | coverage.py, Vitest with V8 coverage, Gradle with JaCoCo and PIT, StrykerJS, each in a short-lived container that was removed with `--rm` | Not measured | A3(b) |
 | Kernel mutation leg (Task 17) | `requirements-dev.txt` and the mutmut corpus requirements in a venv inside the run's own container volume, removed with the run's objects | Not measured | project:AUTH-003 |
-| Kernel legs (this task) | Pending: awaiting the user's install grant | | |
+| Kernel legs (this task) | `requirements-dev.txt`, hash-pinned, in a venv inside each leg's container volume, removed with the leg's own objects | Not measured | project:AUTH-004 |
 
 Nothing else was installed. The oasdiff image approved under A3(c) was not pulled.
 
@@ -265,7 +276,7 @@ Exit evidence:
 - The exit runs gave the harness a `--timeout` (5400 s for F5, 3600 s for the F7 runs), so that a long run could not end without a cost record, which would stop every later run. No run came near its timeout.
 - The kernel's own rendered report fails the kernel's own check. In the `report.md` of f5:RPT-001 the gate lines that list acceptance criteria and test cases carry a status word next to `AC-` and `TC-` IDs, which `qa report check` does not accept as citations, so it flags four `uncited_claim` lines the agent did not write. This is a kernel defect, parked for the final fix wave.
 - The kernel's rendered report gives the traceability gaps as counts per kind, without the IDs, and has no row for findings without a fix. This is why F5 missed `report_lists_every_gap`; the answer gave both counts.
-- F7's C2 leg is open (deviation 62), and the kernel legs are pending.
+- F7's C2 leg is open (deviation 62). In the Linux kernel legs the tests that need git skip (866 per leg), and one grader test without a git guard is the only failure.
 - The deterministic C4 and C5 checks exercise the scan and the gate, not an agent: whether an agent records those hits as findings in one run is measured only by the Task 15 runs.
 
 Evaluated agent and harness:
@@ -301,7 +312,7 @@ Spend and billing:
 
 - A2, A3 and A4 (the user, 2026-11-10, answering the plan questions): the plan with a 50 US$ evaluation cap ("Aprobar con 50 US$ (Recomendado)"); installs "mutmut y coverage en Mac", "Herramientas JS/Java en contenedor", "oasdiff (opcional)"; "Contenedores remotos".
 - project:AUTH-003, `install-dependencies`, environment `local`: the user's answer of 2026-11-11 "Sí, autorizo por 6 horas (Recomendado)", for the Task 17 mutation leg only.
-- The kernel legs of this task: no grant yet (pending).
+- project:AUTH-004, `install-dependencies`, environment `local`: the user's answer of 2026-11-11 "Sí, 6 horas (Recomendado)", for this task's kernel legs only.
 - Trust in each exit evaluation run: recorded, or not, by the agent from the user's words in that run's prompt.
 - The deterministic F7 workspaces record no trust and no approval.
 
