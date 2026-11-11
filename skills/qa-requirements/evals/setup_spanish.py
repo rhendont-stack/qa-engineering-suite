@@ -4,6 +4,8 @@ Run by tools/run_skill_eval.py with the copy as working directory, never by an a
 requirements.md, so the Spanish file is the only requirements source in the copy, and amending the harness's single commit keeps
 the history the shape every other copy has (one commit, nothing untracked).
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

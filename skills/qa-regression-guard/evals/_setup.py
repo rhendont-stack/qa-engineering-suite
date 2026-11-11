@@ -6,6 +6,8 @@ never an agent. Nothing in the ledger is written by hand: ``init``; the user's a
 order total, as the verifier that saw the test fail would have recorded it. The input file goes to a temporary directory outside
 the copy and is deleted.
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess

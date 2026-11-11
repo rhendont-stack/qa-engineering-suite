@@ -7,6 +7,8 @@ never an agent. Nothing in the ledger is written by hand: ``init``; the user's a
 ``write-tests`` on ``tests/**``, signed by the copy's own authority key like any grant the kernel records. The input files go to
 a temporary directory outside the copy and are deleted.
 """
+from __future__ import annotations
+
 import datetime
 import json
 import os

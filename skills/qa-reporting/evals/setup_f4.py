@@ -1,4 +1,6 @@
 """Scenario F4: a full run with a real failure and a flaky test, recorded by the kernel. No gate evaluation, no report."""
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

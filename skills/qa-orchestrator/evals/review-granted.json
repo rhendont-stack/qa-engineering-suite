@@ -14,6 +14,7 @@
   ],
   "bash_allow": [
     "python3 .claude/skills/qa-orchestrator/scripts/qa.py",
+    "python3 .claude/skills/qa-orchestrator/scripts/git_read.py",
     "python3 .claude/skills/qa-codebase-intelligence/scripts/qa.py",
     "python3 .claude/skills/qa-codebase-intelligence/scripts/git_hotspots.py",
     "python3 .claude/skills/qa-codebase-intelligence/scripts/import_graph.py",

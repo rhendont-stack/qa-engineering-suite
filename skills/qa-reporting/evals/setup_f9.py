@@ -1,4 +1,6 @@
 """Scenario F9: the project's zero-tests runner exits 0 and its report holds no tests; the kernel records that run."""
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

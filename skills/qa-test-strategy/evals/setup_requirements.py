@@ -5,6 +5,8 @@ qa-requirements would have, so nothing in the ledger is written by hand: ``init`
 criterion. The input files go to a temporary directory outside the copy and are deleted, so the copy holds only the kernel's own
 ``.qa/``. The record set is ``_requirements.py``; it adds nothing that requirements.md does not say.
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess
