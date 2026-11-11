@@ -350,19 +350,31 @@ def selection_state():
 
 
 def test_the_selection_prefers_the_tests_the_finding_names():
-    out = f2p.select(selection_state(), "FIX-001", "EXE-B", "EXE-H", changed_tests=set())
-    assert out["defect_tests"] == [ORDER_TOTAL] and out["source"] == "named by the fix's findings"
+    out = f2p.select(selection_state(), "FIX-001", "EXE-B", "EXE-H", changed_tests={"t.a::other_bug"})
+    assert out["defect_tests"] == [ORDER_TOTAL] and out["source"] == "named by the fix's findings" and out["status"] == "proposed"
     assert {"test": "t.a::other_bug", "base": "failed", "head": "passed"} in out["other_base_failures"]
 
 
-def test_without_a_named_test_the_selection_takes_base_failures_the_fix_touches_then_all_base_failures():
+@pytest.mark.parametrize("changed", [{"t.a::other_bug", "t.a::new"}, set()])
+def test_without_a_named_test_nothing_is_proposed_and_the_fix_is_unverified(changed):
+    """A base failure the fix changed, or any base failure, is not evidence about the finding: no fallback picks one."""
     st = selection_state()
     st["findings"]["FND-001"]["key_attributes"] = {}
-    out = f2p.select(st, "FIX-001", "EXE-B", "EXE-H", changed_tests={"t.a::other_bug", "t.a::new"})
-    assert out["defect_tests"] == ["t.a::other_bug"] and out["source"] == "failed on the base run and changed by the fix"
-    assert {"test": "t.a::new", "why": "absent from the base run"} in out["not_proposed"]
-    out = f2p.select(st, "FIX-001", "EXE-B", "EXE-H", changed_tests=set())
-    assert out["defect_tests"] == sorted([ORDER_TOTAL, "t.a::other_bug"]) and out["source"] == "failed on the base run"
+    out = f2p.select(st, "FIX-001", "EXE-B", "EXE-H", changed_tests=changed)
+    assert out["status"] == "unverified" and out["defect_tests"] == [] and out["command"] is None and out["source"] is None
+    assert "unverified" in out["note"] and "key_attributes.test" in out["note"]
+    assert any("name no recorded test" in w for w in out["warnings"])
+    assert {o["test"] for o in out["other_base_failures"]} == {ORDER_TOTAL, "t.a::other_bug"}
+    if changed:
+        assert {"test": "t.a::new", "why": "absent from the base run"} in out["not_proposed"]
+
+
+def test_a_named_test_that_did_not_fail_at_the_base_leaves_the_fix_unverified_even_with_other_base_failures():
+    st = selection_state()
+    st["findings"]["FND-001"]["key_attributes"] = {"test": "t.a::ok"}
+    out = f2p.select(st, "FIX-001", "EXE-B", "EXE-H", changed_tests={"t.a::other_bug"})
+    assert out["status"] == "unverified" and out["command"] is None and out["defect_tests"] == []
+    assert {"test": "t.a::ok", "why": "did not fail on the base run (passed), so it cannot show the defect"} in out["not_proposed"]
 
 
 def test_the_selection_prints_the_kernels_command_and_no_outcome():
@@ -381,7 +393,24 @@ def test_the_selection_warns_about_commits_the_kernel_will_refuse_and_proposes_n
         r["status"], r["failure_kind"] = "passed", None
     st["findings"]["FND-001"]["key_attributes"] = {}
     out = f2p.select(st, "FIX-001", "EXE-B", "EXE-H", changed_tests=set())
-    assert out["defect_tests"] == [] and out["command"] is None and "no test failed" in out["note"]
+    assert out["defect_tests"] == [] and out["command"] is None and out["status"] == "unverified"
+
+
+@pytest.mark.parametrize("named, code", [(ORDER_TOTAL, 0), (None, 1)])
+def test_the_command_line_exits_one_and_prints_no_command_when_the_fix_is_unverified(monkeypatch, capsys, named, code):
+    st = selection_state()
+    st["findings"]["FND-001"]["key_attributes"] = {"test": named} if named else {}
+
+    def no_repo(_root):
+        raise f2p.ChangeError("git_unavailable", "not here")
+
+    monkeypatch.setattr(f2p, "read_state", lambda _launcher: st)
+    monkeypatch.setattr(f2p._change, "Repo", no_repo)
+    assert f2p.main(["--fix", "FIX-001", "--base-run", "EXE-B", "--head-run", "EXE-H"]) == code
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True and out["status"] == ("proposed" if named else "unverified")
+    assert (out["command"] is None) is (named is None)
+    assert any(isinstance(v, str) and v.startswith("python3 ") for v in out.values()) is (named is not None)
 
 
 def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
@@ -410,7 +439,7 @@ def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
         runs.append(qa("run", "--report", "junit:{evidence}/junit.xml", "--", sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
                        "-o", "junit_family=xunit2", "--junitxml={evidence}/junit.xml", cwd=root / tree)["execution"])
     code, out, err = run("fail_to_pass.py", "--fix", "FIX-001", "--base-run", runs[0], "--head-run", runs[1], cwd=root)
-    assert code == 0 and out["ok"] is True, err
+    assert code == 0 and out["ok"] is True and out["status"] == "proposed", err
     assert out["defect_tests"] == [ORDER_TOTAL] and out["fix_commits"] == {"base": c[2], "fix": c[3]}
     assert "tests.test_pricing.PricingTests::test_discount_on_a_larger_odd_total" in [n["test"] for n in out["not_proposed"]]
     words = out["command"].split()

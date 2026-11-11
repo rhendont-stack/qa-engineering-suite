@@ -24,7 +24,7 @@ Inside a suite worktree:
 
 ## Python: mutmut 3.x
 
-mutmut copies the code under test into `mutants/` in the directory where it runs, rewrites it, and runs pytest there against each mutant. Run it only inside a suite worktree. Run in the user's checkout, it would leave `mutants/`, a config file and caches in their `git status`.
+mutmut copies the code under test into `mutants/` in the directory where it runs, rewrites it, and runs pytest there against each mutant. Run it only inside a suite worktree. Run in the user's checkout, it would leave `mutants/`, a config file and caches in their working tree.
 
 Configure it in the worktree's own `setup.cfg`, written with the Write tool. If the worktree already has a `setup.cfg`, add the section to it with the Edit tool. Never touch the root's copy.
 

@@ -7,7 +7,8 @@
 - A fix record from `fix add --json FILE` with `{"findings": [...], "base_commit": "<40 hex>", "fix_commit": "<40 hex>", "description": "..."}` and an optional `ref`. Its findings must be `open`, `reopened` or `fix_submitted`; they become `fix_submitted`.
 - `--f2p BASE:HEAD`: the run of the defect tests at `base_commit`, then at `fix_commit`.
 - `--p2p BASE:HEAD`: the regression-set runs at the same two commits. The full-suite runs of the base and head worktrees serve for both pairs.
-- `--defect-test ID`, once per defect test: the tests that show the defect. `scripts/fail_to_pass.py` proposes them in this order: the tests the fix's findings name, then tests that failed on the base run and that the fix changes, then every test that failed on the base run. It prints the full command; run it as printed.
+- `--defect-test ID`, once per defect test: the tests that show the defect. `scripts/fail_to_pass.py` proposes only the recorded tests the fix's findings name (`key_attributes.test`, or the evidence) that failed by assertion on the base run. Then its `status` is `proposed` and it prints the full command: run it as printed.
+- When the findings name no such test, `fail_to_pass.py` prints `status` `unverified`, no command, and exits 1. A test that merely failed on the base run, or that the fix changed, is not evidence about the finding: it may be unrelated, flaky or loosened by the fix. The fix is unverified until a test that shows the defect at the base is named in the finding. Say so in the answer; never pass a `--defect-test` you chose yourself.
 
 The kernel refuses (nothing recorded) when an execution is unknown, is not at the fix's base or fix commit (`commit_mismatch`), or chains attempts across commits.
 

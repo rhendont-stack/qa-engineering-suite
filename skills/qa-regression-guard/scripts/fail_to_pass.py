@@ -5,14 +5,19 @@ Usage (from the project root, after ``fix add`` and a recorded run at the fix's 
 
 Prints one JSON object:
 
-    defect_tests         the proposed FAIL_TO_PASS tests
-    source               why those: "named by the fix's findings", else "failed on the base run and changed by the fix",
-                         else "failed on the base run"
+    status               "proposed" when the fix's findings name a recorded test that failed by assertion on the base run;
+                         otherwise "unverified", and the script exits 1
+    defect_tests         the proposed FAIL_TO_PASS tests: only tests the fix's findings name, never a test chosen another way
+    source               "named by the fix's findings", or None
     other_base_failures  [{test, base, head}]  tests that failed on the base run and were not proposed
     not_proposed         [{test, why}]  tests the fix names or changes that cannot show the defect, with the reason
     fix_commits          {base, fix}  the fix record's commits
-    command              the ``revalidate`` call to run, written out; None when no test can be proposed
+    command              the ``revalidate`` call to run, written out; None when status is "unverified"
     warnings, note
+
+A test that merely failed on the base run, or that the fix changed, is not evidence about the finding: an unrelated or flaky
+test, or one the fix loosened, would then verify a finding it never exercised. So with no test tied to the finding there is no
+command: the fix stays unverified until a test that shows the defect is named in the finding (``key_attributes.test``).
 
 The script judges nothing. It reads the state through the launcher's ``state show`` and the fix's diff through the kernel's
 neutralised git, and only proposes: the outcome is what the kernel's ``revalidate`` derives from the recorded runs. It records
@@ -32,8 +37,11 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import _change  # noqa: E402
 from _change import ChangeError, is_test_file, language_of, parse_diff, python_module, test_function_ranges  # noqa: E402
 
-SOURCES = ("named by the fix's findings", "failed on the base run and changed by the fix", "failed on the base run")
+SOURCE = "named by the fix's findings"
 NOTE = "a proposal only: the kernel's revalidate derives the outcome from the recorded runs"
+UNVERIFIED = ("the fix is unverified: no recorded test that the fix's findings name failed by assertion on the base run, so no "
+              "test is tied to the defect and there is nothing to revalidate. Record a test that shows the defect at the base "
+              "commit and name it in the finding (key_attributes.test), then run this again")
 
 
 # --------------------------------------------------------------------------- the recorded runs
@@ -108,15 +116,11 @@ def select(st: Dict[str, Any], fix_id: str, base_exe: str, head_exe: str, change
             if test not in defect:
                 not_proposed[test] = _why_not(base.get(test))
         if defect:
-            source = SOURCES[0]
+            source = SOURCE
         else:
             warnings.append("the tests the findings name did not fail by assertion on the base run, so they cannot show the defect")
-    if not defect:
-        defect = [t for t in base_failures if t in changed]
-        source = SOURCES[1] if defect else None
-    if not defect:
-        defect = list(base_failures)
-        source = SOURCES[2] if defect else None
+    else:
+        warnings.append("the fix's findings name no recorded test")
     for test in sorted(changed - set(defect)):
         if test not in not_proposed and test not in base_failures:
             not_proposed[test] = _why_not(base.get(test))
@@ -127,6 +131,7 @@ def select(st: Dict[str, Any], fix_id: str, base_exe: str, head_exe: str, change
               for t in sorted(t for t in base if base[t]["status"] == "failed" and t not in defect)]
     command = None
     note = NOTE
+    status = "proposed" if defect else "unverified"
     if defect:
         words = ["python3", launcher, "--role", "verifier", "--skill", "qa-regression-guard", "revalidate", fix_id,
                  "--f2p", "%s:%s" % (base_exe, head_exe), "--p2p", "%s:%s" % (base_exe, head_exe)]
@@ -134,9 +139,8 @@ def select(st: Dict[str, Any], fix_id: str, base_exe: str, head_exe: str, change
             words += ["--defect-test", test]
         command = " ".join(shlex.quote(w) for w in words)
     else:
-        note = ("no test failed by assertion on the base run, so no FAIL_TO_PASS test can be proposed: a test that shows the "
-                "defect at the base commit is needed first")
-    return {"fix": fix_id, "base_run": base_exe, "head_run": head_exe, "defect_tests": defect, "source": source,
+        note = UNVERIFIED
+    return {"fix": fix_id, "status": status, "base_run": base_exe, "head_run": head_exe, "defect_tests": defect, "source": source,
             "other_base_failures": others, "not_proposed": [{"test": t, "why": not_proposed[t]} for t in sorted(not_proposed)],
             "fix_commits": {"base": fix.get("base_commit"), "fix": fix.get("fix_commit")}, "command": command,
             "warnings": warnings, "note": note}
@@ -229,7 +233,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _change.refuse(error)
     out["warnings"] = warnings + out["warnings"]
     out["ok"] = True
-    return _change.emit(out)
+    _change.emit(out)
+    return 0 if out["status"] == "proposed" else 1
 
 
 if __name__ == "__main__":

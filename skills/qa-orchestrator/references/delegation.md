@@ -17,7 +17,11 @@ How a step reaches the skill that owns it. Read at step 6 of the procedure.
 
 The subagents' tool lists exclude file editing: they read and run commands through the kernel, and cannot write any file. So only the read-and-run seats above go to a subagent (`qa-codebase-intelligence`, `qa-test-execution`, `qa-reporting`); every skill that writes its own input files runs in your own context. When the Task tool and these subagents are listed, use them for those three. Otherwise run the step in your own context, following the skill, and report independence I1.
 
-A skill you run in your own context runs under its own role flag and its own literal launcher. Its project code runs only through that skill's `run` calls, under the grant the user gave, never directly; the JSON files it writes are the ones its own text names, under `.qa/work/` (and, for `qa-mutation`, the tool's configuration in its suite worktree).
+A skill you run in your own context runs under its own role flag and its own literal launcher. Its project code runs only through that skill's `run` calls, under the grant the user gave, never directly.
+
+- Command forms: the skill's own. Write each call exactly as its text writes it: its worktree form (`cd <root>/.qa/work/wt-<hex> && ` and its launcher or script with `../../../` before `.claude`), its return form (`cd <root> && ` and a call from the root), and any chain of literal calls its text allows. Nothing its text does not write.
+- Back to the root: a `cd` lasts from one Bash call to the next. After any call that went into a worktree, the next call from the root, the skill's or your own (`plan status`, `plan update`, the next step), is written `cd <root> && ` followed by that call, with `<root>` the absolute project root. Never leave a step with the shell inside a worktree, least of all one that has been removed.
+- Writes: only the files the skill's own text names, and nothing else. JSON input files, patches and mutants under `.qa/work/`; for `qa-mutation`, the tool's configuration inside its suite worktree; for `qa-test-generation`, test files only inside the paths of the `write-tests` grant the user gave.
 
 ## Foreground only
 
@@ -59,4 +63,4 @@ Run the steps in order yourself, each time as the role of its skill: load the sk
 
 ## Gate profile and independence
 
-The evaluator's gate profile is the mode's profile (`change` for a targeted review, `fix` for a fix verification). If the evaluator ran as an isolated subagent, report I2; if every step ran in one context, I1. A profile that requires more than the run reached is the gate's to report: copy what it says.
+The evaluator's gate profile is the mode's profile (`change` for a targeted review, `fix` for a fix verification). Report the lowest independence among the steps that decide the verdict. `qa-regression-guard` always runs in your own context, so a fix verification is I1 even when the evaluator ran as an isolated subagent; report I2 only when every deciding step ran as an isolated subagent. A profile that requires more than the run reached is the gate's to report: copy what it says.

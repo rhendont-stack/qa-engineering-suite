@@ -47,21 +47,21 @@ Hold a step only with the launcher call `python3 .claude/skills/qa-orchestrator/
 
 - The user descoped it in their own words. Quote them in the reason.
 - It cannot apply to this target. Example: S01 of a targeted review for a change that touches only documentation. Say what you saw that makes it inapplicable.
-- A `qa-regression-guard` step (installed, and `ready` or `pending`) with no base commit: `git rev-parse HEAD~1` fails. Reason: `no base commit to compare`.
+- A `qa-regression-guard` step (installed, and `ready` or `pending`) with no base commit: the head commit has an empty `parents` list in `python3 .claude/skills/qa-orchestrator/scripts/git_read.py log --count 1`, or that call fails. Reason: `no base commit to compare`.
 - The time or cost limit the user gave is used up: reason `out_of_budget`, lowest-priority steps first.
 
 Never hold a step because it is hard, slow, or because its skill is missing (that is `blocked`, by itself).
 
 ## Scope
 
-- "Scoped" means the paths the change touches. Pass them to the mapping step. With a base branch, the paths are what `git diff --name-only <base>...HEAD` lists.
+- "Scoped" means the paths the change touches. Pass them to the mapping step. With a base branch, the paths are the `files` that `python3 .claude/skills/qa-orchestrator/scripts/git_read.py diff --base <base> --head HEAD --merge-base --name-only` lists.
 - With a single commit, or with no base to compare against, the scope is the whole tree at `HEAD`. State that as an assumption in the first answer. It is not a reason to ask the user anything.
 - A dirty tree is noted in the summary: results are tied to the commit and to the working-tree diff the kernel recorded.
 
 ## Skills outside a template
 
-The full catalog is larger than what a template names. `catalog list` shows what is installed. A skill for an area the change touches (requirements, API, database, security, performance, front end, mobile, mutation, test generation, release) is not added as a step of these templates. Name the area in the answer's "Not available here" line when it is not installed, so the user knows it was not covered. A plan step may name only a skill the template names.
+The full catalog is larger than what a template names. `catalog list` shows what is installed. In this release only the skills a template names are plan steps. A skill for another area the change touches (requirements, test design, API, database, security, performance, front end, mobile, mutation, test generation, release) is never added as a step:
 
-## Conditional skills
-
-A step for another skill is added only if its trigger holds: tickets or stories exist (requirements), the change touches HTTP routes (API), schemas or queries (database), authentication or input handling (security), or critical code (mutation). Test generation is added only when the user authorized writing tests. Write the extended template under `.qa/plan/` and create the plan from it; never edit a file under `assets/`. Which subagent runs each of these skills: `references/delegation.md`.
+- Never write a plan file by hand, under `.qa/plan/` or anywhere else, never add an improvised step, and never edit a file under `assets/`. A plan is created only from a template, with `plan create`.
+- Nothing outside `.qa/` is edited by a plan.
+- Name such an area in the answer: in the "Not available here" line when its skill is not installed, otherwise as an area the plan did not cover, which the user can ask that skill for on its own.

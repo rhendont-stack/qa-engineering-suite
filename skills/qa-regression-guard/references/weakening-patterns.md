@@ -1,6 +1,6 @@
 # Weakening patterns
 
-`scripts/test_weakening_scan.py` flags each hunk below. A hit is a lead, not a verdict: read the hunk (`git diff <base> <head> -- <path>`), decide whether the change is legitimate, and either record a `test-quality` finding or clear it in the answer with the reason. Contents: the rules, switching a mechanism off, the finding template.
+`scripts/test_weakening_scan.py` flags each hunk below. A hit is a lead, not a verdict: read the hunk (`python3 .claude/skills/qa-regression-guard/scripts/git_read.py diff --base <base> --head <head> --path <path>`), decide whether the change is legitimate, and either record a `test-quality` finding or clear it in the answer with the reason. Contents: the rules, switching a mechanism off, the finding template.
 
 ## The rules
 
@@ -52,7 +52,7 @@ Write it with the Write tool under `.qa/work/`, then `finding add --json` it. Pl
   "component": {"path": "<the file holding the hunk>", "criticality": "<critical|high|normal|low>"},
   "verification_status": "<confirmed only with a recorded run that shows the effect; suspected otherwise>",
   "evidence": ["<EXE id of that run>", "<hunk header, e.g. @@ -40,6 +40,7 @@>", "<path>:<line>", "removed: <line>", "added: <line>"],
-  "reproduction_steps": ["<git diff <base> <head> -- <path>>", "<the run that shows it>"],
+  "reproduction_steps": ["<git_read.py diff --base <base> --head <head> --path <path>>", "<the run that shows it>"],
   "impact": "<what can now break without a failing test>",
   "probable_cause": "<path>:<line> <one sentence>",
   "recommendation": "<what the author should restore; nothing was changed here>",

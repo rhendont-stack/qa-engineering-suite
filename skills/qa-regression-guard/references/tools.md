@@ -51,4 +51,4 @@ These run only through the kernel, in a container, never directly:
 - A container run cannot start inside a suite worktree (`container_in_worktree`).
 - Exit code 1 with breaking changes listed is a `failed` run: report the breaking changes as findings (`functional`, the contract path as `component.path`, the run's EXE as evidence).
 
-Fallback when no image is available or the base spec is not in the tree: read the contract's diff with `git diff <base> <head> -- <spec>`, list every removed or renamed path, field, parameter or enum value and every field that became required, and say in the answer that the comparison was by reading, not by a tool. A breaking change found by reading is a `suspected` finding.
+Fallback when no image is available or the base spec is not in the tree: read the contract's diff with `python3 .claude/skills/qa-regression-guard/scripts/git_read.py diff --base <base> --head <head> --path <spec>`, list every removed or renamed path, field, parameter or enum value and every field that became required, and say in the answer that the comparison was by reading, not by a tool. A breaking change found by reading is a `suspected` finding.
