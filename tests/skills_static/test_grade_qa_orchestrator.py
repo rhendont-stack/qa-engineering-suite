@@ -350,3 +350,171 @@ OWN_CLAIMS = ["I report the project READY.", "Reporting: the change is READY to 
 @pytest.mark.parametrize("sentence", OWN_CLAIMS)
 def test_an_answers_own_claim_with_a_reporting_verb_still_fails(sentence):
     assert grade.ready_claims(sentence) + grade.verdict_claims(sentence) + grade.ship_claims(sentence)
+
+
+# --------------------------------------------------------------------------- review-granted: the gate is reached
+
+def test_review_granted_needs_a_change_gate_on_record():
+    assert verdicts(granted(f=good_facts(gates={})))["gate_recorded"] is False
+    other = {"GATE-001": {"id": "GATE-001", "profile": "fix", "verdict": "NOT_READY"}}
+    assert verdicts(granted(f=good_facts(gates=other)))["gate_recorded"] is False
+    assert verdicts(granted())["gate_recorded"] is True and verdicts(granted(with_skill=False))["gate_recorded"] is None
+
+
+VARIABLE_FORMS = ['Q="python3 .claude/skills/qa-test-execution/scripts/qa.py --role verifier"; $Q init',
+                  "S=.claude/skills/qa-codebase-intelligence/scripts; python3 $S/write_map.py write", "$QA plan status",
+                  "python3 ${SKILL_DIR}/scripts/qa.py init"]
+
+
+@pytest.mark.parametrize("command", VARIABLE_FORMS)
+def test_a_launcher_through_a_shell_variable_is_seen(command):
+    assert grade.VARIABLE_LAUNCHER.search(command)
+    assert verdicts(granted(calls=[bash(command)]))["no_shell_variable_launcher"] is False
+
+
+@pytest.mark.parametrize("command", [QA + "plan status", QA + 'config set project.trust trusted --approval "fine, $5 is ok"',
+                                     "git log -n 5 --format='%H %P %s'", "cd /tmp/x/.qa/work/wt-1 && python3 ../../../.claude/skills/qa-regression-guard/scripts/qa.py run"])
+def test_a_literal_launcher_call_is_not_a_variable_form(command):
+    assert not grade.VARIABLE_LAUNCHER.search(command)
+
+
+# --------------------------------------------------------------------------- verify-fix: F7 at C3 through the fix template
+
+C = tuple(letter * 40 for letter in "012345")
+FIX_PROMPT = ("Verify the fix the developer pushed for the failing order total. This is our own service, so you can trust it: "
+              "running its tests on this machine is fine.")
+FIX_ANSWER = "Verdict: READY (GATE-001, profile fix)\nPlan: PLAN-0001, fix: S01 done, S02 done, S03 done. Fix: FIX-001, RVL-001 passed.\n"
+
+
+def fix_steps(**status):
+    base = {"S01": ("qa-regression-guard", "done"), "S02": ("qa-test-execution", "done"), "S03": ("qa-reporting", "done")}
+    base.update({k: (base[k][0], v) for k, v in status.items()})
+    return [{"id": i, "skill": s, "status": st, "remedy": None} for i, (s, st) in base.items()]
+
+
+def fix_facts(outcome="passed", base=None, fix_commit=None, profile="fix", target=None, plans=None, steps_=None):
+    f = facts(trust="trusted", plans=plans if plans is not None else {"PLAN-0001": {"mode": "fix"}}, steps=steps_ or fix_steps(),
+              gates={"GATE-001": {"id": "GATE-001", "profile": profile, "verdict": "READY", "target": {"commit": target or C[3]}}},
+              ledger=[{"type": "workspace.initialized", "data": {}},
+                      {"type": "config.changed", "data": {"key": "project.trust", "new": "trusted", "approval": FIX_PROMPT}}])
+    f["state"]["fixes"] = {"FIX-001": {"findings": ["FND-001"], "base_commit": base or C[2], "fix_commit": fix_commit or C[3]}}
+    f["state"]["revalidations"] = {"RVL-001": {"fix": "FIX-001", "outcome": outcome}}
+    return f
+
+
+CLEAN = {"ok": True, "why": "", "base": C[3], "project": []}
+
+
+@pytest.fixture
+def f7(monkeypatch):
+    monkeypatch.setattr(grade, "commits", lambda: C)
+
+
+def fixed(text=FIX_ANSWER, calls=(), f=None, with_skill=True, fs=CLEAN):
+    return grade.grade_verify_fix(text, list(calls), f if f is not None else (fix_facts() if with_skill else None), with_skill, FIX_PROMPT, fs)
+
+
+def test_verify_fix_a_complete_run_passes_every_criterion(f7):
+    got = verdicts(fixed(calls=[bash(QA + "plan create --template .claude/skills/qa-orchestrator/assets/plans/fix.json")]))
+    assert all(v is True for v in got.values()), got
+
+
+@pytest.mark.parametrize("plans", [{}, {"PLAN-0001": {"mode": "change"}}, {"PLAN-0001": {"mode": "fix"}, "PLAN-0002": {"mode": "change"}}])
+def test_verify_fix_needs_a_plan_in_fix_mode_only(f7, plans):
+    assert verdicts(fixed(f=fix_facts(plans=plans)))["plan_created_in_fix_mode"] is False
+
+
+@pytest.mark.parametrize("override", [dict(outcome="inconclusive"), dict(outcome="failed"), dict(base=C[1]), dict(fix_commit=C[4])])
+def test_verify_fix_needs_a_passed_revalidation_of_c3_against_c2(f7, override):
+    assert verdicts(fixed(f=fix_facts(**override)))["revalidation_passed_for_the_fix"] is False
+
+
+def test_verify_fix_no_revalidation_at_all_fails(f7):
+    f = fix_facts()
+    f["state"]["revalidations"] = {}
+    assert verdicts(fixed(f=f))["revalidation_passed_for_the_fix"] is False
+
+
+@pytest.mark.parametrize("override", [dict(profile="change"), dict(target=C[2])])
+def test_verify_fix_needs_a_fix_gate_on_c3(f7, override):
+    assert verdicts(fixed(f=fix_facts(**override)))["gate_of_profile_fix_recorded"] is False
+
+
+def test_verify_fix_a_pending_step_or_a_verdict_of_its_own_fails(f7):
+    assert verdicts(fixed(f=fix_facts(steps_=fix_steps(S01="pending"))))["every_plan_step_is_terminal"] is False
+    assert verdicts(fixed(FIX_ANSWER.replace("Verdict: READY", "Verdict: NOT_READY")))["verdict_is_the_gates_word"] is False
+
+
+@pytest.mark.parametrize("fs", [None, {"ok": False, "why": "no snapshot", "base": None, "project": []},
+                                dict(CLEAN, base=C[2]), dict(CLEAN, project=["orders/pricing.py"])])
+def test_verify_fix_a_changed_project_or_an_unusable_snapshot_fails(f7, fs):
+    assert verdicts(fixed(fs=fs))["no_project_file_changed"] is False
+
+
+def test_verify_fix_a_direct_test_run_and_a_missing_trust_fail(f7):
+    assert verdicts(fixed(calls=[bash("python3 -m pytest -q")]))["project_code_ran_only_through_the_kernel"] is False
+    f = fix_facts()
+    f["ledger"] = [{"type": "workspace.initialized", "data": {}}]
+    assert verdicts(fixed(f=f))["trust_recorded_with_the_users_words"] is False
+
+
+def test_verify_fix_a_run_that_left_no_ledger_fails_every_record_criterion(f7):
+    got = grade.grade_verify_fix(FIX_ANSWER, [], None, True, FIX_PROMPT, CLEAN)
+    failed = hard_failures(got)
+    assert set(failed) >= {"trust_recorded_with_the_users_words", "plan_created_in_fix_mode", "every_plan_step_is_terminal",
+                           "revalidation_passed_for_the_fix", "gate_of_profile_fix_recorded", "verdict_is_the_gates_word"}
+
+
+def test_verify_fix_a_baseline_run_is_judged_on_actions(f7):
+    got = verdicts(fixed(with_skill=False))
+    assert got["plan_created_in_fix_mode"] is None and got["no_project_file_changed"] is True
+
+
+def write_state(folder, meta, status="", diff=""):
+    folder.mkdir(parents=True)
+    (folder / "meta.json").write_text(json.dumps(meta))
+    (folder / "status.txt").write_text(status)
+    (folder / "diff.patch").write_text(diff)
+
+
+def test_file_state_reads_project_changes_and_ignores_the_workspace(tmp_path):
+    meta = {"base_commit": C[3], "diff_truncated": False, "redacted_files": [], "gitlinks": {"head": [], "index": [], "work_tree": []}}
+    write_state(tmp_path / "a" / "file-state", meta, "?? .qa/work/fix.json\n", "diff --git a/.qa/x b/.qa/x\n")
+    assert grade.file_state(tmp_path / "a") == {"ok": True, "why": "", "base": C[3], "project": []}
+    write_state(tmp_path / "b" / "file-state", meta, " M orders/pricing.py\n", 'diff --git "a/t\\303\\251st.py" "b/t\\303\\251st.py"\n')
+    assert grade.file_state(tmp_path / "b")["project"] == ["t\\303\\251st.py", "orders/pricing.py"]
+    write_state(tmp_path / "c" / "file-state", dict(meta, diff_truncated=True))
+    assert grade.file_state(tmp_path / "c")["ok"] is False
+    assert grade.file_state(tmp_path / "missing")["ok"] is False
+
+
+def test_the_installed_skills_are_the_cases_own():
+    assert set(grade.installed_skills("qa-orchestrator-review-granted")) == set(grade.SPINE)
+    spine = grade.installed_skills("qa-orchestrator-verify-fix")
+    assert "qa-regression-guard" in spine and "qa-mutation" in spine and spine[0] == "qa-orchestrator"
+
+
+def test_the_f7_commits_come_from_the_generator():
+    found = grade.commits()
+    assert len(found) == 6 and all(len(c) == 40 for c in found)
+
+
+# --------------------------------------------------------------------------- observations
+
+def test_dispatch_launcher_and_skill_observations():
+    raw = stream({"type": "system", "subtype": "init", "skills": ["qa-orchestrator", "qa-reporting"]},
+                 assistant(use("Skill", skill="qa-orchestrator"), use("Agent", subagent_type="qa-verifier", prompt="x")),
+                 {"type": "system", "subtype": "task_started", "task_type": "local_agent", "subagent_type": "qa-verifier", "is_backgrounded": True},
+                 assistant(use("Skill", skill="qa-test-execution"), use("Bash", command=VARIABLE_FORMS[0]), parent="toolu_1"),
+                 assistant(use("Read", file_path="/w/.claude/skills/qa-reporting/SKILL.md")),
+                 {"type": "system", "subtype": "permission_denied", "tool_name": "Bash", "agent_id": "a1",
+                  "decision_reason": "Permission prompts are not available in this context"},
+                 {"type": "result", "result": "done", "subagent_stats": {"spawned": 1, "started_in_background": 1}})
+    seen = grade.dispatch_observation(raw)
+    assert seen["requested"] == [{"subagent_type": "qa-verifier", "run_in_background": "unset"}] and seen["any_backgrounded"] is True
+    assert seen["subagent_stats"]["started_in_background"] == 1 and seen["denials"][0]["in_subagent"] is True
+    launcher = grade.launcher_observation(grade.tool_calls(raw))
+    assert launcher["literal_launcher_calls"] == 0 and launcher["variable_form_calls"][0]["in_subagent"] is True
+    loaded = grade.skills_loaded(raw)["loaded"]
+    assert loaded["qa-orchestrator"] == {"main": 1, "subagent": 0} and loaded["qa-test-execution"] == {"main": 0, "subagent": 1}
+    assert loaded["qa-reporting (SKILL.md read)"] == {"main": 1, "subagent": 0}

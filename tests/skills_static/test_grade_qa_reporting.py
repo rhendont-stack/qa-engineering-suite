@@ -184,3 +184,92 @@ def test_skill_use_needs_the_init_listing_and_a_skill_tool_call():
     assert grade.skill_loading(both)["used"] is True
     assert grade.skill_loading(json.dumps(init))["used"] is False
     assert grade.skill_loading(json.dumps(call))["used"] is False
+
+
+# --------------------------------------------------------------------------- the traceability case (F5)
+
+COMMIT = "c" * 40
+GAPS = [("ac_without_tc", "AC-002.1"), ("tc_unproven", "TC-001")]
+F5_ANSWER = ("Verdict: READY (GATE-001, profile change)\n"
+             "Why: requirements_verified NO_EVIDENCE: AC-002.1 is not verified by a passing structured test.\n"
+             "Traceability gaps: AC-002.1 has no test case (ac_without_tc); TC-001 has no red check (tc_unproven).\n"
+             "Reports: .qa/reports/RPT-001/report.md; claim check: clean")
+
+
+def f5_facts(outcome="NO_EVIDENCE", matrix_target=COMMIT, **kw):
+    f = facts(verdict="READY", **kw)
+    f["state"]["gates"]["GATE-001"].update(target={"commit": COMMIT}, profile="change",
+                                           criteria=[{"id": "requirements_verified", "outcome": outcome}, {"id": "suite_executed", "outcome": "MET"}])
+    f["state"].update(requirements={"REQ-001": {}, "REQ-002": {}}, criteria={"AC-001.1": {}, "AC-002.1": {}}, testcases={"TC-001": {}})
+    f["matrix_file"] = None if matrix_target is None else {"target": matrix_target, "gaps": []}
+    return f
+
+
+@pytest.fixture
+def known_gaps(monkeypatch):
+    monkeypatch.setattr(grade, "expected_gaps", lambda state: (COMMIT, list(GAPS)))
+
+
+def test_f5_a_compliant_run_passes_every_criterion(known_gaps):
+    got = verdicts(grade.grade_f5_trace(F5_ANSWER, f5_facts(), True))
+    assert all(v is True for v in got.values()), got
+
+
+@pytest.mark.parametrize("answer", [F5_ANSWER.replace("AC-002.1", "the second criterion"),
+                                    F5_ANSWER.replace("TC-001", "the test case")])
+def test_f5_a_gap_missing_from_the_answer_fails(known_gaps, answer):
+    assert verdicts(grade.grade_f5_trace(answer, f5_facts(), True))["every_gap_listed"] is False
+
+
+def test_f5_no_gap_to_list_is_a_failure_not_a_pass(monkeypatch):
+    monkeypatch.setattr(grade, "expected_gaps", lambda state: (COMMIT, []))
+    assert verdicts(grade.grade_f5_trace(F5_ANSWER, f5_facts(), True))["every_gap_listed"] is False
+
+
+@pytest.mark.parametrize("target", [None, "d" * 40])
+def test_f5_the_matrix_must_be_written_for_the_gates_commit(known_gaps, target):
+    assert verdicts(grade.grade_f5_trace(F5_ANSWER, f5_facts(matrix_target=target), True))["trace_matrix_computed"] is False
+
+
+@pytest.mark.parametrize("answer", [F5_ANSWER.replace("requirements_verified NO_EVIDENCE", "requirements_verified MET"),
+                                    F5_ANSWER.replace("requirements_verified NO_EVIDENCE: ", ""),
+                                    F5_ANSWER + "\nAll requirements are verified.",
+                                    F5_ANSWER + "\nrequirements_verified: NOT_MET"])
+def test_f5_requirements_verified_must_be_reported_as_computed(known_gaps, answer):
+    assert verdicts(grade.grade_f5_trace(answer, f5_facts(), True))["requirements_verified_as_computed"] is False
+
+
+@pytest.mark.parametrize("answer", ["requirements_verified: no evidence (AC-002.1)", "requirements verified is NO_EVIDENCE; suite_executed MET",
+                                    "Not all requirements are verified: requirements_verified NO_EVIDENCE."])
+def test_f5_the_outcome_is_read_after_each_mention_in_the_kernels_words(answer):
+    assert grade.outcome_after(answer, "requirements_verified") == ["NO_EVIDENCE"] and not grade.UNIVERSAL_REQ.search(answer)
+
+
+def test_f5_a_cited_requirement_the_record_does_not_hold_is_fabricated(known_gaps):
+    assert verdicts(grade.grade_f5_trace(F5_ANSWER + " See REQ-007.", f5_facts(), True))["no_fabricated_trace_id"] is False
+
+
+def test_f5_baseline_is_held_to_the_setups_gaps_and_has_no_record_criteria():
+    got = verdicts(grade.grade_f5_trace(F5_ANSWER, None, False))
+    assert got["every_gap_listed"] is True and got["trace_matrix_computed"] is None and got["requirements_verified_as_computed"] is None
+    assert [tuple(g) for g in grade.trace_data.EXPECTED_GAPS] == GAPS
+
+
+def test_f5_expected_gaps_come_from_the_kernels_matrix(ws, actor):
+    from qa import records, state as fold
+
+    data = grade.trace_data
+    req_ids = [r["id"] for r in records.add_many(ws, actor, "requirement", data.requirement_records())]
+    for record in data.criterion_records(req_ids):
+        records.add(ws, actor, "criterion", record)
+    records.add_many(ws, actor, "testcase", data.testcase_records())
+    st = fold.load(ws)
+    st["gates"] = {"GATE-001": {"id": "GATE-001", "target": {"commit": COMMIT}}}
+    # no run and no automated_by link here, so the test case is not automated: the kernel's own gap for that
+    assert grade.expected_gaps(st) == (COMMIT, [("ac_without_tc", "AC-002.1"), ("tc_not_automated", "TC-001")])
+
+
+def test_every_case_file_has_a_grader():
+    for path in sorted(GRADER.parent.glob("*.json")):
+        case = json.loads(path.read_text())
+        assert case["id"] in grade.GRADERS and case["skill"] == "skills/qa-reporting", path.name
