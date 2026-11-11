@@ -275,15 +275,41 @@ def under_qa(path: str) -> bool:
     return bool(parts) and parts[0] == ".qa"
 
 
+def _clean_git_env(into: Path) -> Dict[str, str]:
+    return {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(into.parent), "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CEILING_DIRECTORIES": str(into.parent)}
+
+
+def tree_of(into: Path) -> Optional[str]:
+    """The git tree id of the files under ``into``, as a commit of them would record it; None when git cannot say. The
+    repository it uses sits beside ``into``, never inside it."""
+    git_dir = into.parent / (into.name + ".tree-git")
+    env = dict(_clean_git_env(into), GIT_DIR=str(git_dir), GIT_WORK_TREE=str(into))
+    out = ""
+    for args in (["init", "-q"], ["add", "-A"], ["write-tree"]):
+        done = subprocess.run(["git"] + args, cwd=str(into), env=env, capture_output=True, text=True, timeout=120)
+        if done.returncode != 0:
+            return None
+        out = done.stdout.strip()
+    return out or None
+
+
 def rebuild(fs: Dict[str, Any], into: Path) -> Optional[str]:
-    """Writes the final tree (the fixture plus the diff) into ``into``; returns None, or why it could not."""
+    """Writes the final tree (the fixture plus the diff) into ``into``; returns None, or why it could not. When the run's
+    evidence records the fixture's tree (``fixture_tree`` in ``meta.json``, the base commit's tree), the repository's fixture
+    must still have that tree, or the run is not re-graded against another base; older evidence without it is rebuilt as
+    before."""
     shutil.copytree(str(FIXTURE), str(into), ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".git"))
+    recorded = (fs.get("meta") or {}).get("fixture_tree")
+    if recorded:
+        found = tree_of(into)
+        if found != recorded:
+            return "the fixture is not the one the run started from: tree %s, recorded %s" % (found, recorded)
     if not fs["diff"].strip():
         return None
     patch = into.parent / (into.name + ".patch")
     patch.write_text(fs["diff"], encoding="utf-8")
-    env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(into.parent), "GIT_CONFIG_NOSYSTEM": "1",
-           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CEILING_DIRECTORIES": str(into.parent)}
+    env = _clean_git_env(into)
     done = subprocess.run(["git", "apply", "--binary", "--whitespace=nowarn", str(patch)], cwd=str(into), env=env,
                           capture_output=True, text=True, timeout=120)
     return None if done.returncode == 0 else "the diff does not apply to the fixture: %s" % done.stderr.strip()[-200:]

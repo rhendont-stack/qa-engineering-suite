@@ -97,7 +97,7 @@ def evidence_for(tmp_path, files=None, deleted=(), patches=None, meta=None, comm
         git(work, "add", "-A")
         git(work, "commit", "-qm", "the agent commits")
     evidence = tmp_path / "out" / "runs" / "R1"
-    assert harness.save_file_state(work, evidence / "file-state", base, {}, "") is None
+    assert harness.save_file_state(work, evidence / "file-state", base, {}, "", harness.base_tree(work, base)) is None
     for name, text in (patches or {}).items():
         path = evidence / "qa-state" / "work" / "patches" / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +210,32 @@ def test_the_final_tree_is_the_fixture_with_the_diff_applied_even_after_a_commit
     assert problem is None and fs["project"] == ["pytest.ini", "shop/cart.py", "tests/test_cases.py"]
     assert (tree / "tests" / "test_cases.py").read_text() == GOOD_TESTS and (tree / "shop" / "cart.py").read_text() == "changed\n"
     assert not (tree / "pytest.ini").exists()
+
+
+def test_the_fixture_tree_the_harness_commits_is_the_one_rebuild_checks(tmp_path):
+    work = harness.build_workdir({"id": "t", "prompt": "p", "fixture": "fixtures/seeded-defects"}, "baseline")
+    try:
+        recorded = harness.base_tree(work, harness.base_commit(work))
+    finally:
+        shutil.rmtree(str(work), ignore_errors=True)
+    tree = tmp_path / "tree"
+    shutil.copytree(str(grade.FIXTURE), str(tree), ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".git"))
+    assert recorded and grade.tree_of(tree) == recorded
+
+
+def test_rebuild_refuses_a_fixture_that_is_not_the_recorded_one_and_rebuilds_older_evidence(tmp_path):
+    files = {"tests/test_cases.py": GOOD_TESTS}
+    evidence = evidence_for(tmp_path / "a", files=files)
+    assert grade.file_state(evidence)["meta"]["fixture_tree"]
+    assert state_of(evidence, tmp_path / "a")[2] is None                              # the recorded tree is the fixture's
+    evidence = evidence_for(tmp_path / "b", files=files, meta={"fixture_tree": "0" * 40})
+    fs, _tree, problem = state_of(evidence, tmp_path / "b")
+    assert problem and "not the one the run started from" in problem
+    out = grade.grade_implement("", complete_facts(), True, fs, None, problem, evidence)
+    assert all(c["pass"] is False for c in out if c["hard"] and c["kind"] == "action")
+    evidence = evidence_for(tmp_path / "c", files=files, meta={"fixture_tree": None})  # evidence from before the tree was kept
+    fs, tree, problem = state_of(evidence, tmp_path / "c")
+    assert problem is None and (tree / "tests" / "test_cases.py").read_text() == GOOD_TESTS
 
 
 # --------------------------------------------------------------------------- F5: implement TC-001..TC-003
