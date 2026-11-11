@@ -1106,6 +1106,24 @@ def test_allow_write_is_scoped_to_the_copy_and_denied_everywhere_else(world):
     assert "Edit(//%s/**)" % os.path.realpath(calls(world)[1]["cwd"]).lstrip("/") in _allowed(world, 1)
 
 
+@pytest.mark.parametrize("config", ["with-skill", "baseline"])
+@pytest.mark.parametrize("allow_write", [True, False])
+def test_the_allow_list_is_the_boundary_no_unsandboxed_retry_and_prompts_are_denied(world, config, allow_write):
+    spec = json.loads(world.case.read_text())
+    if allow_write:
+        spec["allow_write"] = True
+        world.case.write_text(json.dumps(spec))
+    assert run(world, config=config).returncode == 0
+    settings = json.loads(calls(world)[0]["settings"])
+    assert settings["sandbox"]["autoAllowBashIfSandboxed"] is False
+    assert settings["sandbox"]["allowUnsandboxedCommands"] is False
+    assert settings["permissions"]["denyInsteadOfPrompting"] is True
+    sandbox = {k: v for k, v in settings["sandbox"].items() if k not in ("autoAllowBashIfSandboxed", "allowUnsandboxedCommands")}
+    assert sorted(sandbox) == ["enabled", "failIfUnavailable", "filesystem", "network"]
+    assert sorted(settings["permissions"]) == ["deny", "denyInsteadOfPrompting"]
+    assert sorted(settings) == ["apiKeyHelper", "permissions", "sandbox"]
+
+
 def test_without_allow_write_no_write_rules_are_added(world):
     run(world)
     settings = json.loads(calls(world)[0]["settings"])

@@ -17,7 +17,10 @@ commands, and always passes a settings file that denies reading the repository, 
 home and the key helper's directory. Real confinement depends on the CLI's sandbox, which is always required (``failIfUnavailable``), with no network
 domains allowed. ``--bare`` is not used: it removes the Skill tool and the skill listing, so a skill could never be found by
 its description. Bash is limited to read-only prefixes plus the narrow prefixes a case
-lists in ``bash_allow``; never allow a bare interpreter there.
+lists in ``bash_allow``; never allow a bare interpreter there. The ``--allowedTools`` list is the Bash allow-list: the settings
+turn off ``sandbox.autoAllowBashIfSandboxed`` (being sandboxed approves nothing by itself), turn off
+``sandbox.allowUnsandboxedCommands`` (no unsandboxed retry) and set ``permissions.denyInsteadOfPrompting`` (an unanswered
+prompt is a denial). The sandbox then confines what an allowed command can reach.
 
 ``setup_script`` (optional case field) is a repository-relative path to a Python file inside the case's own skill ``evals/``
 directory (the case must name its ``skill``); a path anywhere else, a symlink out of that directory or a file that is not a
@@ -583,7 +586,13 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
 
     Raises ``Refused`` when an essential flag is missing. Confirmed from the CLI's help and docs: flag names, the ``Bash(prefix *)``
     pattern form, ``//`` for an absolute path in a permission rule, and the ``sandbox`` settings. Only a paid run can confirm
-    that the ``--settings`` denies are honored. ``runtime_venv`` (an already validated real path) is added to ``allowRead`` only.
+    that the ``--settings`` denies are honored.
+
+    The boundary, precisely: the ``--allowedTools`` list is the Bash allow-list. ``autoAllowBashIfSandboxed: false`` means a
+    sandboxed command is not approved merely for being sandboxed, so every Bash command goes through the permission flow and only
+    those matching an allow rule (or the CLI's built-in read-only set) run. The sandbox confines what an allowed command can reach.
+    ``allowUnsandboxedCommands: false`` turns off unsandboxed retries (the ``dangerouslyDisableSandbox`` parameter is ignored), and
+    ``denyInsteadOfPrompting: true`` denies whatever would otherwise wait on a prompt nobody answers. ``runtime_venv`` (an already validated real path) is added to ``allowRead`` only.
     """
     missing = [f for f in ESSENTIAL_FLAGS if f not in help_text]
     if missing:
@@ -612,8 +621,9 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
     # Built-in file tools run outside the sandbox, so both the permission denies and the sandbox denies are needed. The
     # sandbox is always required: if the CLI cannot start it, the run fails rather than running unconfined.
     settings: Dict[str, Any] = {
-        "permissions": {"deny": denied},
+        "permissions": {"deny": denied, "denyInsteadOfPrompting": True},
         "sandbox": {"enabled": True, "failIfUnavailable": True,
+                    "autoAllowBashIfSandboxed": False, "allowUnsandboxedCommands": False,
                     "filesystem": {"denyRead": deny_read, "allowRead": [keep] + ([runtime_venv] if runtime_venv else [])},
                     "network": {"allowedDomains": []}}}
     if helper_command:
