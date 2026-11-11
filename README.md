@@ -1,6 +1,6 @@
 # QA Engineering Suite
 
-> **Status: pre-release, not ready for use.** The evidence kernel and the four spine skills exist. Twelve of the 16 skills have not been built, there is no install path, and no version has been released.
+> **Status: pre-release, not ready for use.** The evidence kernel and nine skills exist. Seven of the 16 skills have not been built, there is no install path, and no version has been released.
 
 An open-source suite of [Agent Skills](https://agentskills.io) meant to let an AI agent act as an independent QA team. Its rule is simple: a result counts only when reproducible evidence backs it. A test that did not run is never reported as passing.
 
@@ -12,11 +12,12 @@ An open-source suite of [Agent Skills](https://agentskills.io) meant to let an A
 | JSON Schemas, gate profiles, command-guard rules | `shared/schemas/`, `shared/policies/` | Built and tested |
 | Test suite and repository checks | `tests/`, `tools/` | Built |
 | Spine skills: `qa-orchestrator`, `qa-test-execution`, `qa-codebase-intelligence`, `qa-reporting`, and three Claude Code subagents | `skills/`, `agents/` | Built, evaluated on a pilot basis; see the [milestone 2 report](docs/reports/milestone-2.md) |
+| Analysis and change skills: `qa-requirements`, `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard`, `qa-mutation` | `skills/` | Built, evaluated on a pilot basis; see the [milestone 3 report](docs/reports/milestone-3.md) |
 | Container runs (`qa run --container`) | `shared/kernel/qa/container.py` | Built, tested against a remote engine |
-| The other 12 skills | none yet | Not started |
+| The other 7 skills | none yet | Not started |
 | Packaging and host manifests | none yet | Not started |
 
-The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports, and records LCOV, Cobertura and JaCoCo coverage and mutation-testing reports as measurements that never decide a status. It also tracks findings, evaluates release gates, renders reports and checks the claims those reports make.
+The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports, and records LCOV, Cobertura and JaCoCo coverage and mutation-testing reports as measurements that never decide a status. It also records requirements, acceptance criteria, risks and test cases with the links between them, computes a traceability matrix with its gaps, records fixes and revalidates them (FAIL_TO_PASS and PASS_TO_PASS), runs a change in a suite worktree, records the files the suite writes, tracks findings, evaluates release gates, renders reports and checks the claims those reports make.
 
 ## Verification so far
 
@@ -40,6 +41,18 @@ Milestone 2 adds the following. Its numbers, evidence IDs and limitations are in
 | Fixture F8 in a container with no network | Two runs, isolation `container`, network `none` |
 | Kernel tests on Linux x86_64 in containers, 3.9 and 3.15 | First runs failed on tests that need `git` in an image without it; after a test-only guard both re-runs passed (3234 passed, 309 skipped, 0 failed) |
 | Kernel tests on macOS arm64 for milestone 2 | Not run locally; left to the macOS CI job |
+
+Milestone 3 adds the following. Its run IDs, evidence IDs, grader changes and limitations are in the [milestone 3 report](docs/reports/milestone-3.md).
+
+| Check | Result |
+|---|---|
+| Fixture F5 through the whole chain (requirements to report), one run | Records, written tests with red checks, runs and gate `NOT_READY` reached; all nine seeded issues are in its records; the report did not list every traceability gap, so the run failed that criterion |
+| F7 at C1, review of a "feature done" commit through the orchestrator (`change` template), one run | Regression step done, the regression and the weakened test recorded, gate `NOT_READY` |
+| F7 at C3, verification of a fix through the orchestrator (`fix` template), one run | Did not finish: two helper calls written relative to a worktree were outside the evaluation's allow-list and refused, so no revalidation and no gate were recorded (the same scenario held in 3 of 3 runs during development) |
+| F7 at C4 and C5, deterministic, no agent | Special-cased fix and runner hook each recorded as a test-quality finding; gate `NOT_READY` with `test_integrity` not met |
+| Kernel mutation score, six modules, one container run | 84.93 over 4890 mutants (79.42 to 95.79 per module); `report/check` unmeasured |
+| Kernel tests on Linux in containers through the kernel | Pending the user's install grant |
+| Kernel tests on macOS arm64 for milestone 3 | Not run locally; left to the macOS CI job |
 
 GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
 
@@ -65,7 +78,7 @@ A new project starts as `untrusted`. In that state `qa run` records a command on
 |---|---|---|
 | 1 | Kernel foundations | Done |
 | 2 | `qa-orchestrator`, `qa-test-execution`, `qa-codebase-intelligence`, `qa-reporting`; container runs | Built; exit evidence has open items, see the milestone 2 report |
-| 3 | `qa-requirements`, `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard`, `qa-mutation` | Planned |
+| 3 | `qa-requirements`, `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard`, `qa-mutation` | Built; exit evidence has open items, see the milestone 3 report |
 | 4 | `qa-api-testing`, `qa-database`, `qa-security`, `qa-frontend`, `qa-performance`, `qa-release`, `qa-mobile` | Planned |
 | 5 | Packaging, per-skill evaluations, pilot benchmark | Planned |
 | 6 | Full benchmark, internal audit, documentation, v0.1.0 release candidate | Planned |
@@ -76,9 +89,10 @@ A skill that fabricates a claim, violates a safety rule, misreports a status or 
 
 - **The command guard is defense in depth, not a security boundary.** It cannot see commands inside scripts or opaque programs. The [milestone 1 report](docs/reports/milestone-1.md) lists the classes it does not cover.
 - **The kernel does not sandbox a host run.** Only `qa run --container` isolates the program under test, and only as far as the container engine does.
-- **Mutation testing of the kernel** is deferred to milestone 3.
-- **The orchestrator's delegation is fragile under background dispatch.** Subagent launcher calls written with shell variables are denied there, and the fix is not yet applied or measured. See the milestone 2 report.
-- **Evaluation results are small and in-sample.** Three runs per scenario, with descriptions tuned on the same prompts.
+- **Mutation testing of the kernel is partial.** One mutmut run in a Linux container measured six core modules: canonical 95.79, compare 81.34, gate 84.64, ledger 94.54, status 94.57 and trace 79.42 (4145 killed and 8 timed out of 4890 mutants, 84.93 over the six). `report/check` is not measured: its stored mutation report is cut by the secret redaction rule and no longer parses, a kernel defect not yet fixed. Tests that start the kernel in a subprocess run the unmutated copy, so the surviving counts are an upper bound. See the milestone 3 report.
+- **The orchestrator's delegation is not yet reliable in every run.** Milestone 3 wrote every launcher call literally and dispatches subagents in the foreground; on the final text the review scenario held every hard criterion in 2 of 3 runs (the miss is a grader pattern that read a sentence about a flaky test as a pass claim) and the fix-verification scenario in 3 of 3, but its single exit run stopped when the agent, still inside a suite worktree, wrote two helper calls in a relative form the evaluation's allow-list did not cover. Skills that write their own input files run in the orchestrator's own context, because the subagents cannot write files; most of those delegation rows have no evaluated run. See the milestone 3 report.
+- **Evaluation results are small and in-sample.** Three runs per scenario, with descriptions tuned on the same prompts; the milestone 3 exit runs are one run each.
+- **Coverage XML with a DOCTYPE** must be in an ASCII-compatible encoding, and a literal `&` in its comments or CDATA is refused.
 - **Evidence IDs in the report** resolve against local ledgers that are kept out of git, so a fresh clone cannot resolve them. An extra `--ledger` that verifies proves only that its hash chain is internally consistent, not where it came from.
 - **An evidence bundle carries the configured engine string.** `qa config set container.engine` records the value in the ledger, and `qa report bundle` ships the ledger, so an `ssh <alias> docker` engine puts that host alias in every bundle. Use an alias you are willing to share before you export one.
 - **Repository git configuration is neutralised, not trusted.** Before each kernel git call, the repository's own value of these keys is replaced by your user-level value, or blanked when you have none: filter and diff programs; `lfs.extension.<name>.clean|smudge`, `lfs.customtransfer.<name>.path|args` and `lfs.standalonetransferagent` (which only selects an agent by name); `credential.helper` (also per URL), `core.sshCommand`, `core.askPass` and `remote.<name>.vcs`. Git keeps the first value of `remote.<name>.uploadpack`, `remote.<name>.receivepack` and `core.gitProxy`, and a repository's value comes before a command-line one, so a blank cannot replace it: while the repository sets one of these, every kernel git call refuses to run (reads report `git_unavailable`; `qa worktree add` and `qa worktree remove` report `git_config_refused` with the key names; `qa run --container` cannot list the project's files and reports `project_unlistable`); remove the key from the repository's configuration to continue. The same keys in your own git config do not cause a refusal. Submodules are never entered, terminal prompts are off (`GIT_TERMINAL_PROMPT=0`), and lazy fetch of missing partial-clone objects is switched off with `GIT_NO_LAZY_FETCH=1` on a git that supports it (2.44 or later, detected by running git). On an older git, a partial clone (`extensions.partialClone`, or a `remote.<name>.promisor` that is not explicitly false) is refused in the same way, because a checkout or a diff there could fetch missing objects. A value in your own user-level git config (for example git-lfs or a credential helper) still applies. `qa worktree add` and `qa worktree remove` use this same session. Not enforced: other repository keys that can name a program (for example `diff.external`, `core.pager`, or `url.<base>.insteadOf` rewrites to a helper transport) are not blanked, although no kernel git call uses a pager or an external diff, and a repository's `.gitattributes` can still select a driver you configured. Whether a real git-lfs honours the overrides the kernel passes is untested, because the tests use a stand-in for git-lfs. This needs git 2.26 or later (`git config --show-scope`); with an older git every kernel git read reports `git_unavailable` and fails closed.
