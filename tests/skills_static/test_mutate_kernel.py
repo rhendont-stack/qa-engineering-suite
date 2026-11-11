@@ -36,14 +36,14 @@ def test_config_names_only_the_listed_modules(tmp_path):
     code, summary, _ = mutate(tmp_path, "--modules", "status,report/check")
     assert code == 0 and summary["ok"] is True and summary["modules"] == ["status", "report/check"]
     cfg = config_of(tmp_path)
-    assert cfg["only_mutate"] == ["shared/kernel/qa/status.py", "shared/kernel/qa/report/check.py"]
+    assert cfg["only_mutate"] == ["src/qa/status.py", "src/qa/report/check.py"]
     assert cfg["pytest_add_cli_args_test_selection"] == ["tests/unit/test_status.py", "tests/unit/test_report.py"]
-    assert cfg["source_paths"] == ["shared/kernel/qa/"]
+    assert cfg["source_paths"] == ["src/qa/"]
     for name in ("gate", "ledger", "canonical", "compare", "trace"):
         assert name not in " ".join(sum(cfg.values(), [])).replace("test_report", "")
     # what the config names exists, so a renamed module or test is noticed here and not after hours of mutation testing
     for path in cfg["only_mutate"] + cfg["pytest_add_cli_args_test_selection"]:
-        assert (REPO / path).is_file(), path
+        assert (REPO / path.replace("src/qa/", "shared/kernel/qa/")).is_file(), path
 
 
 def test_every_default_module_has_its_own_source_and_test(tmp_path):
@@ -51,7 +51,8 @@ def test_every_default_module_has_its_own_source_and_test(tmp_path):
     assert code == 0 and summary["modules"] == ALL.split(",")
     cfg = config_of(tmp_path)
     assert len(cfg["only_mutate"]) == 7 and len(set(cfg["only_mutate"])) == 7
-    assert all((REPO / path).is_file() for path in cfg["only_mutate"] + cfg["pytest_add_cli_args_test_selection"])
+    assert all((REPO / path.replace("src/qa/", "shared/kernel/qa/")).is_file()
+               for path in cfg["only_mutate"] + cfg["pytest_add_cli_args_test_selection"])
 
 
 def test_unknown_module_is_refused(tmp_path):

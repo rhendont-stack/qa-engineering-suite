@@ -42,8 +42,15 @@ TIMEOUT_SECONDS = 4 * 3600
 # lists (that file holds the one wheel for macOS arm64, which a Linux container cannot use).
 REQUIREMENTS = ("requirements-dev.txt", "tests/corpus/producers/mutmut_mutation/requirements.txt")
 # What the tests read next to the kernel: mutmut runs them in ``mutants/``, a copy of the paths it is told to take.
-ALSO_COPY = ("pytest.ini", "fixtures", "shared/launcher", "shared/policies", "shared/schemas", "shared/templates")
+ALSO_COPY = ("pytest.ini", "fixtures", "shared/kernel", "shared/launcher", "shared/policies", "shared/schemas", "shared/templates")
 VENV, HOME = "/work/venv", "/work/home"
+
+
+# mutmut names a mutant after its file's path with a leading ``src.`` removed, and the tests import the kernel as ``qa`` (pytest.ini
+# puts shared/kernel on the path), so the run mutates the kernel through ``src/qa``, a link made in the project copy. The
+# unmutated kernel stays in ``mutants/shared/kernel`` for the tests that start it in a subprocess.
+LINK_SOURCE, LINK_TARGET = "src/qa/", "../shared/kernel/qa"
+PYTEST_ARGS = ("-o pythonpath=tests",)  # the ini's own pythonpath would put the unmutated kernel before mutmut's copy
 
 
 class Refused(Exception):
@@ -66,8 +73,9 @@ def config_lines(modules: List[str]) -> List[str]:
     def listed(key: str, values: List[str]) -> List[str]:
         return ["%s =" % key] + ["    " + value for value in values]
 
-    return (["[mutmut]", "source_paths = " + KERNEL]
-            + listed("only_mutate", [MODULES[name][0] for name in modules])
+    return (["[mutmut]", "source_paths = " + LINK_SOURCE]
+            + listed("only_mutate", [LINK_SOURCE + MODULES[name][0][len(KERNEL):] for name in modules])
+            + listed("pytest_add_cli_args", list(PYTEST_ARGS))
             + listed("pytest_add_cli_args_test_selection", [MODULES[name][1] for name in modules])
             + listed("also_copy", list(ALSO_COPY)))
 
@@ -83,7 +91,7 @@ def run_script(lines: List[str]) -> str:
     """What runs in the container after the install: the configuration, mutmut, then the converter, in one shell."""
     write = "printf '%%s\\n' %s | tee setup.cfg" % " ".join(shlex.quote(line) for line in lines)
     return " && ".join([
-        "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME), "mkdir -p " + HOME, write,
+        "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME), "mkdir -p %s src" % HOME, "ln -s %s %s" % (LINK_TARGET, LINK_SOURCE.rstrip("/")), write,
         "python -m mutmut run", "python3 %s --root . --out %s" % (CONVERTER, REPORT)])
 
 
