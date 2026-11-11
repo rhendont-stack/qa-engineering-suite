@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 
 import pytest
 
@@ -494,6 +495,7 @@ def test_the_installed_skills_are_the_cases_own():
     assert "qa-regression-guard" in spine and "qa-mutation" in spine and spine[0] == "qa-orchestrator"
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="tool missing: git")
 def test_the_f7_commits_come_from_the_generator():
     found = grade.commits()
     assert len(found) == 6 and all(len(c) == 40 for c in found)
