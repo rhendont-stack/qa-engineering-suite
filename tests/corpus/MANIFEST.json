@@ -147,5 +147,29 @@
     "normalizations": ["container path"],
     "expected": {"files": 2, "mutants": 28, "killed": 19, "timeout": 0, "survived": 1, "no_coverage": 8, "errors": 0, "percent": {"total": 67.86, "covered": 95.0}},
     "console": "All files | 67.86 | 95.00 | 19 | 0 | 1 | 8 | 0 | label.mjs | 0.00 | 0.00 | 0 | 0 | 0 | 8 | 0 | shipping.mjs | 95.00 | 95.00 | 19 | 0 | 1 | 0 | 0 (columns: % Mutation score total, covered, # killed, # timeout, # survived, # no cov, # errors)"
+    },
+  {
+    "file": "mutation/mutmut-3.8.1-shipping.json",
+    "format": "mutation",
+    "producer": "mutmut",
+    "version": "3.8.1",
+    "command": "python3 tests/corpus/producers/mutmut_mutation/generate.py, run on the remote Docker host (runs in container python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b, python:3.12-slim, Python 3.12.16: pip install --require-hashes --only-binary=:all: -r requirements.txt with a network, then with --network=none mutmut run, mutmut results --all true, mutmut export-cicd-stats and mutmut show per mutant; pytest 8.4.2, coverage 7.17.2), which keeps mutmut's own output in tests/corpus/producers/mutmut_mutation/captured/; then python3 skills/qa-mutation/scripts/mutmut_to_report.py --root tests/corpus/producers/mutmut_mutation --mutants tests/corpus/producers/mutmut_mutation/captured/mutants --out tests/corpus/mutation/mutmut-3.8.1-shipping.json",
+    "date": "2026-11-11",
+    "kind": "mutants",
+    "normalizations": [],
+    "expected": {"files": 2, "mutants": 26, "killed": 15, "timeout": 0, "survived": 4, "no_coverage": 7, "errors": 0},
+    "console": "26/26 killed 15, no tests 7, timeout 0, suspicious 0, survived 4, skipped 0, caught by type check 0 (mutmut run's final count line, its emoji spelled out; mutmut-cicd-stats.json: killed 15, survived 4, total 26, no_tests 7, skipped 0, suspicious 0, timeout 0, check_was_interrupted_by_user 0, segfault 0). mutmut prints no score; no tests is the schema's NoCoverage"
+  },
+  {
+    "file": "mutation/pit-1.30.2-shipping.json",
+    "format": "mutation",
+    "producer": "PIT",
+    "version": "1.30.2",
+    "command": "python3 tests/corpus/producers/gradle_pitest/generate.py, run on the remote Docker host (runs in container gradle@sha256:dfb52c9c5247cf6129770cd60597bbc1e67cdcfb7fd3691ed450d1c60737ea9e, gradle:9.5.0-jdk17, Eclipse Temurin 17.0.19, Gradle 9.5.0, info.solidsoft.pitest 1.19.0, pitest-junit5-plugin 1.2.3, JUnit 5.14.4: gradle --no-daemon test pitest with a network, then the same with --offline and --network=none), which keeps PIT's mutations.xml and statistics in tests/corpus/producers/gradle_pitest/captured/; then, from tests/corpus/producers/gradle_pitest, python3 ../../../../skills/qa-mutation/scripts/pit_to_report.py --xml captured/mutations.xml --source-root src/main/java --out ../../mutation/pit-1.30.2-shipping.json",
+    "date": "2026-11-11",
+    "kind": "mutants",
+    "normalizations": [],
+    "expected": {"files": 2, "mutants": 13, "killed": 9, "timeout": 0, "survived": 1, "no_coverage": 3, "errors": 0, "percent": {"total": 69, "covered": 90}},
+    "console": ">> Generated 13 mutations Killed 9 (69%) | >> Mutations with no coverage 3. Test strength 90% | per mutator, summed: KILLED 9 SURVIVED 1 NO_COVERAGE 3, every other status 0 (PIT's statistics block)"
   }
 ]

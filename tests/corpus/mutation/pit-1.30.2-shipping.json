@@ -1,0 +1,269 @@
+{
+  "files": {
+    "src/main/java/corpus/Label.java": {
+      "language": "java",
+      "mutants": [
+        {
+          "description": "negated conditional (corpus.Label.of)",
+          "id": "11",
+          "location": {
+            "end": {
+              "column": 36,
+              "line": 8
+            },
+            "start": {
+              "column": 1,
+              "line": 8
+            }
+          },
+          "mutatorName": "NegateConditionalsMutator",
+          "status": "NoCoverage",
+          "statusReason": "PIT: NO_COVERAGE"
+        },
+        {
+          "description": "replaced return value with \"\" for corpus/Label::of (corpus.Label.of)",
+          "id": "12",
+          "location": {
+            "end": {
+              "column": 31,
+              "line": 9
+            },
+            "start": {
+              "column": 1,
+              "line": 9
+            }
+          },
+          "mutatorName": "EmptyObjectReturnValsMutator",
+          "status": "NoCoverage",
+          "statusReason": "PIT: NO_COVERAGE"
+        },
+        {
+          "description": "replaced return value with \"\" for corpus/Label::of (corpus.Label.of)",
+          "id": "13",
+          "location": {
+            "end": {
+              "column": 32,
+              "line": 11
+            },
+            "start": {
+              "column": 1,
+              "line": 11
+            }
+          },
+          "mutatorName": "EmptyObjectReturnValsMutator",
+          "status": "NoCoverage",
+          "statusReason": "PIT: NO_COVERAGE"
+        }
+      ],
+      "source": "package corpus;\n\npublic final class Label {\n    private Label() {\n    }\n\n    public static String of(String country) {\n        if (\"ES\".equals(country)) {\n            return \"domestic\";\n        }\n        return \"international\";\n    }\n}\n"
+    },
+    "src/main/java/corpus/Shipping.java": {
+      "language": "java",
+      "mutants": [
+        {
+          "description": "changed conditional boundary (corpus.Shipping.cost)",
+          "id": "1",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aWeightOfZeroOrLessIsRefused()]"
+          ],
+          "location": {
+            "end": {
+              "column": 29,
+              "line": 8
+            },
+            "start": {
+              "column": 1,
+              "line": 8
+            }
+          },
+          "mutatorName": "ConditionalsBoundaryMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "changed conditional boundary (corpus.Shipping.cost)",
+          "id": "2",
+          "location": {
+            "end": {
+              "column": 29,
+              "line": 12
+            },
+            "start": {
+              "column": 1,
+              "line": 12
+            }
+          },
+          "mutatorName": "ConditionalsBoundaryMutator",
+          "status": "Survived",
+          "statusReason": "PIT: SURVIVED"
+        },
+        {
+          "description": "Replaced double subtraction with addition (corpus.Shipping.cost)",
+          "id": "3",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aHeavyParcelPaysPerExtraKilo()]"
+          ],
+          "location": {
+            "end": {
+              "column": 43,
+              "line": 13
+            },
+            "start": {
+              "column": 1,
+              "line": 13
+            }
+          },
+          "mutatorName": "MathMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "Replaced double multiplication with division (corpus.Shipping.cost)",
+          "id": "4",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aHeavyParcelPaysPerExtraKilo()]"
+          ],
+          "location": {
+            "end": {
+              "column": 43,
+              "line": 13
+            },
+            "start": {
+              "column": 1,
+              "line": 13
+            }
+          },
+          "mutatorName": "MathMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "Replaced double addition with subtraction (corpus.Shipping.cost)",
+          "id": "5",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aHeavyParcelPaysPerExtraKilo()]"
+          ],
+          "location": {
+            "end": {
+              "column": 43,
+              "line": 13
+            },
+            "start": {
+              "column": 1,
+              "line": 13
+            }
+          },
+          "mutatorName": "MathMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "Replaced double multiplication with division (corpus.Shipping.cost)",
+          "id": "6",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:expressDoublesTheCost()]"
+          ],
+          "location": {
+            "end": {
+              "column": 23,
+              "line": 16
+            },
+            "start": {
+              "column": 1,
+              "line": 16
+            }
+          },
+          "mutatorName": "MathMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "negated conditional (corpus.Shipping.cost)",
+          "id": "7",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aLightParcelCostsTheBaseRate()]"
+          ],
+          "location": {
+            "end": {
+              "column": 29,
+              "line": 8
+            },
+            "start": {
+              "column": 1,
+              "line": 8
+            }
+          },
+          "mutatorName": "NegateConditionalsMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "negated conditional (corpus.Shipping.cost)",
+          "id": "8",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aLightParcelCostsTheBaseRate()]"
+          ],
+          "location": {
+            "end": {
+              "column": 29,
+              "line": 12
+            },
+            "start": {
+              "column": 1,
+              "line": 12
+            }
+          },
+          "mutatorName": "NegateConditionalsMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "negated conditional (corpus.Shipping.cost)",
+          "id": "9",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aLightParcelCostsTheBaseRate()]"
+          ],
+          "location": {
+            "end": {
+              "column": 23,
+              "line": 15
+            },
+            "start": {
+              "column": 1,
+              "line": 15
+            }
+          },
+          "mutatorName": "NegateConditionalsMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        },
+        {
+          "description": "replaced double return with 0.0d for corpus/Shipping::cost (corpus.Shipping.cost)",
+          "id": "10",
+          "killedBy": [
+            "corpus.ShippingTest.[engine:junit-jupiter]/[class:corpus.ShippingTest]/[method:aLightParcelCostsTheBaseRate()]"
+          ],
+          "location": {
+            "end": {
+              "column": 21,
+              "line": 18
+            },
+            "start": {
+              "column": 1,
+              "line": 18
+            }
+          },
+          "mutatorName": "PrimitiveReturnsMutator",
+          "status": "Killed",
+          "statusReason": "PIT: KILLED"
+        }
+      ],
+      "source": "package corpus;\n\npublic final class Shipping {\n    private Shipping() {\n    }\n\n    public static double cost(double weightKg, boolean express) {\n        if (weightKg <= 0) {\n            throw new IllegalArgumentException(\"weight must be positive\");\n        }\n        double cost = 5.0;\n        if (weightKg > 10) {\n            cost += (weightKg - 10) * 0.5;\n        }\n        if (express) {\n            cost *= 2;\n        }\n        return cost;\n    }\n}\n"
+    }
+  },
+  "schemaVersion": "1.0",
+  "thresholds": {
+    "high": 80,
+    "low": 60
+  }
+}

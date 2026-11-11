@@ -1,0 +1,331 @@
+Python 3.12.16
+
+    done in 79ms (3 files mutated, 0 ignored, 0 unmodified)
+
+    done
+
+    done
+
+    done
+Running mutation testing
+
+26/26  🎉 15 🫥 7  ⏰ 0  🤔 0  🙁 4  🔇 0  🧙 0
+161.84 mutations/second
+mutmut run exit 0
+=====RESULTS=====
+    shipping.label.x_label__mutmut_1: no tests
+    shipping.label.x_label__mutmut_2: no tests
+    shipping.label.x_label__mutmut_3: no tests
+    shipping.label.x_label__mutmut_4: no tests
+    shipping.label.x_label__mutmut_5: no tests
+    shipping.label.x_label__mutmut_6: no tests
+    shipping.label.x_label__mutmut_7: no tests
+    shipping.cost.x_shipping_cost__mutmut_1: killed
+    shipping.cost.x_shipping_cost__mutmut_2: killed
+    shipping.cost.x_shipping_cost__mutmut_3: survived
+    shipping.cost.x_shipping_cost__mutmut_4: killed
+    shipping.cost.x_shipping_cost__mutmut_5: survived
+    shipping.cost.x_shipping_cost__mutmut_6: killed
+    shipping.cost.x_shipping_cost__mutmut_7: killed
+    shipping.cost.x_shipping_cost__mutmut_8: killed
+    shipping.cost.x_shipping_cost__mutmut_9: survived
+    shipping.cost.x_shipping_cost__mutmut_10: survived
+    shipping.cost.x_shipping_cost__mutmut_11: killed
+    shipping.cost.x_shipping_cost__mutmut_12: killed
+    shipping.cost.x_shipping_cost__mutmut_13: killed
+    shipping.cost.x_shipping_cost__mutmut_14: killed
+    shipping.cost.x_shipping_cost__mutmut_15: killed
+    shipping.cost.x_shipping_cost__mutmut_16: killed
+    shipping.cost.x_shipping_cost__mutmut_17: killed
+    shipping.cost.x_shipping_cost__mutmut_18: killed
+    shipping.cost.x_shipping_cost__mutmut_19: killed
+=====CICD=====
+Saved CI/CD stats to mutants/mutmut-cicd-stats.json
+{
+    "killed": 15,
+    "survived": 4,
+    "total": 26,
+    "no_tests": 7,
+    "skipped": 0,
+    "suspicious": 0,
+    "timeout": 0,
+    "check_was_interrupted_by_user": 0,
+    "segfault": 0
+}
+=====SHOW=====
+# shipping.label.x_label__mutmut_1: no tests
+--- shipping/label.py
++++ shipping/label.py
+@@ -1,4 +1,4 @@
+ def label(country):
+-    if country == "ES":
++    if country != "ES":
+         return "domestic"
+     return "international"
+# shipping.label.x_label__mutmut_2: no tests
+--- shipping/label.py
++++ shipping/label.py
+@@ -1,4 +1,4 @@
+ def label(country):
+-    if country == "ES":
++    if country == "XXESXX":
+         return "domestic"
+     return "international"
+# shipping.label.x_label__mutmut_3: no tests
+--- shipping/label.py
++++ shipping/label.py
+@@ -1,4 +1,4 @@
+ def label(country):
+-    if country == "ES":
++    if country == "es":
+         return "domestic"
+     return "international"
+# shipping.label.x_label__mutmut_4: no tests
+--- shipping/label.py
++++ shipping/label.py
+@@ -1,4 +1,4 @@
+ def label(country):
+     if country == "ES":
+-        return "domestic"
++        return "XXdomesticXX"
+     return "international"
+# shipping.label.x_label__mutmut_5: no tests
+--- shipping/label.py
++++ shipping/label.py
+@@ -1,4 +1,4 @@
+ def label(country):
+     if country == "ES":
+-        return "domestic"
++        return "DOMESTIC"
+     return "international"
+# shipping.label.x_label__mutmut_6: no tests
+--- shipping/label.py
++++ shipping/label.py
+@@ -1,4 +1,4 @@
+ def label(country):
+     if country == "ES":
+         return "domestic"
+-    return "international"
++    return "XXinternationalXX"
+# shipping.label.x_label__mutmut_7: no tests
+--- shipping/label.py
++++ shipping/label.py
+@@ -1,4 +1,4 @@
+ def label(country):
+     if country == "ES":
+         return "domestic"
+-    return "international"
++    return "INTERNATIONAL"
+# shipping.cost.x_shipping_cost__mutmut_1: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,4 +1,4 @@
+-def shipping_cost(weight_kg, express=False):
++def shipping_cost(weight_kg, express=True):
+     if weight_kg <= 0:
+         raise ValueError("weight must be positive")
+     cost = 5.0
+# shipping.cost.x_shipping_cost__mutmut_2: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,5 +1,5 @@
+ def shipping_cost(weight_kg, express=False):
+-    if weight_kg <= 0:
++    if weight_kg < 0:
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+# shipping.cost.x_shipping_cost__mutmut_3: survived
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,5 +1,5 @@
+ def shipping_cost(weight_kg, express=False):
+-    if weight_kg <= 0:
++    if weight_kg <= 1:
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+# shipping.cost.x_shipping_cost__mutmut_4: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,6 +1,6 @@
+ def shipping_cost(weight_kg, express=False):
+     if weight_kg <= 0:
+-        raise ValueError("weight must be positive")
++        raise ValueError(None)
+     cost = 5.0
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+# shipping.cost.x_shipping_cost__mutmut_5: survived
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,6 +1,6 @@
+ def shipping_cost(weight_kg, express=False):
+     if weight_kg <= 0:
+-        raise ValueError("weight must be positive")
++        raise ValueError("XXweight must be positiveXX")
+     cost = 5.0
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+# shipping.cost.x_shipping_cost__mutmut_6: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,6 +1,6 @@
+ def shipping_cost(weight_kg, express=False):
+     if weight_kg <= 0:
+-        raise ValueError("weight must be positive")
++        raise ValueError("WEIGHT MUST BE POSITIVE")
+     cost = 5.0
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+# shipping.cost.x_shipping_cost__mutmut_7: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,7 +1,7 @@
+ def shipping_cost(weight_kg, express=False):
+     if weight_kg <= 0:
+         raise ValueError("weight must be positive")
+-    cost = 5.0
++    cost = None
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+     if express:
+# shipping.cost.x_shipping_cost__mutmut_8: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -1,7 +1,7 @@
+ def shipping_cost(weight_kg, express=False):
+     if weight_kg <= 0:
+         raise ValueError("weight must be positive")
+-    cost = 5.0
++    cost = 6.0
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+     if express:
+# shipping.cost.x_shipping_cost__mutmut_9: survived
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -2,7 +2,7 @@
+     if weight_kg <= 0:
+         raise ValueError("weight must be positive")
+     cost = 5.0
+-    if weight_kg > 10:
++    if weight_kg >= 10:
+         cost += (weight_kg - 10) * 0.5
+     if express:
+         cost *= 2
+# shipping.cost.x_shipping_cost__mutmut_10: survived
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -2,7 +2,7 @@
+     if weight_kg <= 0:
+         raise ValueError("weight must be positive")
+     cost = 5.0
+-    if weight_kg > 10:
++    if weight_kg > 11:
+         cost += (weight_kg - 10) * 0.5
+     if express:
+         cost *= 2
+# shipping.cost.x_shipping_cost__mutmut_11: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -3,7 +3,7 @@
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+-        cost += (weight_kg - 10) * 0.5
++        cost = (weight_kg - 10) * 0.5
+     if express:
+         cost *= 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_12: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -3,7 +3,7 @@
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+-        cost += (weight_kg - 10) * 0.5
++        cost -= (weight_kg - 10) * 0.5
+     if express:
+         cost *= 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_13: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -3,7 +3,7 @@
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+-        cost += (weight_kg - 10) * 0.5
++        cost += (weight_kg - 10) / 0.5
+     if express:
+         cost *= 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_14: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -3,7 +3,7 @@
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+-        cost += (weight_kg - 10) * 0.5
++        cost += (weight_kg + 10) * 0.5
+     if express:
+         cost *= 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_15: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -3,7 +3,7 @@
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+-        cost += (weight_kg - 10) * 0.5
++        cost += (weight_kg - 11) * 0.5
+     if express:
+         cost *= 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_16: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -3,7 +3,7 @@
+         raise ValueError("weight must be positive")
+     cost = 5.0
+     if weight_kg > 10:
+-        cost += (weight_kg - 10) * 0.5
++        cost += (weight_kg - 10) * 1.5
+     if express:
+         cost *= 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_17: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -5,5 +5,5 @@
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+     if express:
+-        cost *= 2
++        cost = 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_18: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -5,5 +5,5 @@
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+     if express:
+-        cost *= 2
++        cost /= 2
+     return cost
+# shipping.cost.x_shipping_cost__mutmut_19: killed
+--- shipping/cost.py
++++ shipping/cost.py
+@@ -5,5 +5,5 @@
+     if weight_kg > 10:
+         cost += (weight_kg - 10) * 0.5
+     if express:
+-        cost *= 2
++        cost *= 3
+     return cost
+=====END=====
