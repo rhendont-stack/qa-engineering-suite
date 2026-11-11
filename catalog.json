@@ -3,6 +3,7 @@
   "skills": [
     "qa-codebase-intelligence",
     "qa-orchestrator",
+    "qa-regression-guard",
     "qa-reporting",
     "qa-requirements",
     "qa-test-execution",
@@ -37,6 +38,10 @@
     {
       "key": "implement-recorded-test-cases",
       "owner": "qa-test-generation"
+    },
+    {
+      "key": "guard-changes-against-regressions",
+      "owner": "qa-regression-guard"
     }
   ]
 }
