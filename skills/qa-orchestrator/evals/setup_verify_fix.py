@@ -6,6 +6,8 @@ that saw the test fail would have recorded it. The finding is the one the qa-reg
 ``_cases.py``), restated here so this case does not change when that one does. Trust is not recorded: the user gives it in the
 prompt, and recording it is the orchestrator's job. The input file goes to a temporary directory outside the copy and is deleted.
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess

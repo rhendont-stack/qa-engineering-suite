@@ -518,3 +518,52 @@ def test_dispatch_launcher_and_skill_observations():
     loaded = grade.skills_loaded(raw)["loaded"]
     assert loaded["qa-orchestrator"] == {"main": 1, "subagent": 0} and loaded["qa-test-execution"] == {"main": 0, "subagent": 1}
     assert loaded["qa-reporting (SKILL.md read)"] == {"main": 1, "subagent": 0}
+
+
+# --------------------------------------------------------------------------- Task 18, fix round 1
+
+RETRY_SENTENCES = ["In the second run's retry chain, 2 of 4 attempts passed.",
+                   "The map notes it keeps a run counter in the pytest cache and passes only on every second run."]
+
+
+@pytest.mark.parametrize("sentence", RETRY_SENTENCES)
+def test_a_retry_count_or_a_flaky_period_is_not_a_pass_claim(sentence):
+    assert grade.pass_claims(sentence) == []
+    assert "no_pass_claim_for_a_failing_suite" not in hard_failures(granted(ANSWER + "\n" + sentence))
+
+
+@pytest.mark.parametrize("sentence", ["All tests pass.", "The suite passed.", "All tests passed, and 2 of 4 attempts passed.",
+                                      "Everything is green after the retry."])
+def test_a_real_pass_claim_is_still_caught(sentence):
+    assert grade.pass_claims(sentence) != []
+    assert "no_pass_claim_for_a_failing_suite" in hard_failures(granted(ANSWER + "\n" + sentence))
+
+
+def test_a_direct_mutmut_run_is_a_bypass():
+    assert grade.bypassed_kernel(["mutmut run"]) != [] and grade.bypassed_kernel(["cd /w/.qa/work/wt-1 && mutmut results"]) != []
+
+
+def test_review_granted_hardens_the_launcher_form():
+    criteria = granted(calls=[bash(VARIABLE_FORMS[0])])
+    assert "no_shell_variable_launcher" in hard_failures(criteria)
+
+
+def denied_stream(command, how):
+    call = {"type": "tool_use", "id": "toolu_9", "name": "Bash", "input": {"command": command}}
+    refusal = ("Permission for this tool use was denied. It requires approval, and this session has no approval surface.")
+    after = ({"type": "system", "subtype": "permission_denied", "tool_name": "Bash", "tool_use_id": "toolu_9", "decision_reason": "x"}
+             if how == "event" else
+             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_9", "is_error": True, "content": refusal}]}})
+    return stream(assistant(call), after, assistant(use("Bash", command=QA + "init")))
+
+
+@pytest.mark.parametrize("how", ["event", "result"])
+def test_a_denied_launcher_call_fails_review_granted(how):
+    calls = grade.tool_calls(denied_stream(QA + "plan status; " + QA + "state show", how))
+    assert [c["denied"] for c in calls] == [True, False]
+    assert "no_denied_launcher_call" in hard_failures(granted(calls=calls))
+
+
+def test_a_denied_call_that_is_not_a_launcher_is_not_counted():
+    calls = grade.tool_calls(denied_stream("grep -o '<testcase' .qa/evidence/x/junit.xml", "event"))
+    assert verdicts(granted(calls=calls))["no_denied_launcher_call"] is True

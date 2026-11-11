@@ -21,7 +21,8 @@ depend on the skill text they grade:
 * ``trace_matrix_computed``: the run left ``.qa/trace/matrix.json`` (only the kernel's ``trace matrix`` writes it, and the setup
   refuses to start a run that already holds one) and its ``target`` is the latest gate's target commit.
 * ``every_gap_listed``: every gap of the matrix the kernel's own pure function computes from the run's state, for the latest
-  gate's commit (else the newest execution's), names its record ID in the answer. No gap to list is a failure, never a pass.
+  gate's commit (else the newest execution's), is named in the answer by its kind and its record ID together: both on one line,
+  at most 60 characters apart, in either order (Task 18, fix round 1; before it, the ID alone counted). No gap to list is a failure, never a pass.
   A baseline run, with no state of its own, is held to the gaps the setup records (``EXPECTED_GAPS``).
 * ``requirements_verified_as_computed``: the answer gives the ``requirements_verified`` criterion (its id, or its words) the
   outcome the latest gate recorded for it (the first outcome word after each mention, before the next criterion id or the end of
@@ -283,6 +284,22 @@ def outcome_after(text: str, name: str) -> List[str]:
     return said
 
 
+GAP_PAIR_SPAN = 60
+
+
+def gap_named(text: str, kind: str, gid: str) -> bool:
+    """The gap's kind (``ac_without_tc``, or with spaces or hyphens) and its record ID on one line, at most ``GAP_PAIR_SPAN``
+    characters apart, in either order. An ID alone does not name the gap: the Traceability line lists every ID anyway."""
+    kind_re = re.compile(r"(?<![\w-])%s(?![\w-])" % r"[ _-]".join(re.escape(w) for w in kind.split("_")), re.I)
+    id_re = re.compile(r"(?<![\w.-])%s(?![\w-]|\.\d)" % re.escape(gid))
+    for line in text.splitlines():
+        kinds = [m.span() for m in kind_re.finditer(line)]
+        for i in id_re.finditer(line):
+            if any(max(i.start() - k_end, k_start - i.end()) <= GAP_PAIR_SPAN for k_start, k_end in kinds):
+                return True
+    return False
+
+
 def grade_f5_trace(text: str, facts: Optional[Dict[str, Any]], with_skill: bool) -> List[Dict[str, Any]]:
     """F5 traced: the matrix was computed with ``trace matrix``, every gap is in the answer, ``requirements_verified`` as computed."""
     state = facts["state"] if with_skill and facts else None
@@ -290,7 +307,7 @@ def grade_f5_trace(text: str, facts: Optional[Dict[str, Any]], with_skill: bool)
         commit, gaps = expected_gaps(state)
     else:
         commit, gaps = None, [tuple(g) for g in trace_data.EXPECTED_GAPS]
-    missing = [gid for _kind, gid in gaps if not re.search(r"(?<![\w.-])%s(?![\w-]|\.\d)" % re.escape(gid), text)]
+    missing = ["%s %s" % (kind, gid) for kind, gid in gaps if not gap_named(text, kind, gid)]
     out = [crit("every_gap_listed", True, "substance", bool(gaps) and not missing,
                 "gaps the kernel computes%s: %s; not in the answer: %s"
                 % (" for %s" % commit[:12] if commit else "", ["%s %s" % g for g in gaps] or "none (nothing to list is a failure)",

@@ -12,6 +12,8 @@ never starts and nothing is spent) unless the gaps are exactly ``EXPECTED_GAPS``
 ``trace matrix`` writes that file, and whether the agent runs it is what the case measures. Input files go to a temporary
 directory outside the copy and are deleted.
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess

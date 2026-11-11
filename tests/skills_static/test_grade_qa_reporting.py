@@ -221,6 +221,26 @@ def test_f5_a_gap_missing_from_the_answer_fails(known_gaps, answer):
     assert verdicts(grade.grade_f5_trace(answer, f5_facts(), True))["every_gap_listed"] is False
 
 
+def test_f5_an_id_without_its_gap_kind_does_not_list_the_gap(known_gaps):
+    # The Traceability line names every ID anyway; a gap is listed only with its kind next to its ID.
+    answer = F5_ANSWER.replace(" (ac_without_tc)", "").replace(" (tc_unproven)", "")
+    answer += "\nTraceability: REQ-001 with AC-001.1 and TC-001; REQ-002 with AC-002.1."
+    got = grade.grade_f5_trace(answer, f5_facts(), True)
+    assert verdicts(got)["every_gap_listed"] is False
+    assert "ac_without_tc AC-002.1" in got[0]["detail"] and "tc_unproven TC-001" in got[0]["detail"]
+
+
+def test_f5_a_kind_paired_with_another_gaps_id_does_not_count(known_gaps):
+    answer = F5_ANSWER.replace("TC-001 has no red check (tc_unproven)", "TC-001 is linked") + "\nGaps: tc_unproven AC-002.1."
+    assert verdicts(grade.grade_f5_trace(answer, f5_facts(), True))["every_gap_listed"] is False
+
+
+@pytest.mark.parametrize("line", ["Gaps: `ac_without_tc` AC-002.1, `tc_unproven` TC-001.",
+                                  "Gaps: AC-002.1 (ac without tc) and TC-001 (tc-unproven)."])
+def test_f5_a_gap_is_named_by_kind_and_id_in_either_order(line):
+    assert grade.gap_named(line, "ac_without_tc", "AC-002.1") and grade.gap_named(line, "tc_unproven", "TC-001")
+
+
 def test_f5_no_gap_to_list_is_a_failure_not_a_pass(monkeypatch):
     monkeypatch.setattr(grade, "expected_gaps", lambda state: (COMMIT, []))
     assert verdicts(grade.grade_f5_trace(F5_ANSWER, f5_facts(), True))["every_gap_listed"] is False
