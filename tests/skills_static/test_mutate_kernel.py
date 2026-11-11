@@ -129,3 +129,40 @@ def test_converter_reads_only_the_mutated_kernel(tmp_path):
     """``mutants/`` holds a copy of ``tests/``, with the corpus captures' own .meta files: the converter must not scan them."""
     script = mutate(tmp_path)[1]["argv"][-1]
     assert "mutmut_to_report.py --root src --mutants mutants/src --out {evidence}/kernel-mutation.json" in script
+
+
+# --------------------------------------------------------------------------- K8: an existing setup.cfg is never overwritten by accident
+
+def test_a_different_setup_cfg_is_refused_without_force(tmp_path):
+    target = tmp_path / "setup.cfg"
+    target.write_text("[metadata]\nname = theirs\n")
+    code, summary, _ = mutate(tmp_path)
+    assert code == 2 and summary["ok"] is False and summary["error"] == "config_exists"
+    assert target.read_text() == "[metadata]\nname = theirs\n"
+    code, summary, _ = mutate(tmp_path, "--force")
+    assert code == 0 and summary["ok"] is True and config_of(tmp_path)["source_paths"] == ["src/qa/"]
+
+
+def test_the_same_setup_cfg_again_is_not_a_refusal(tmp_path):
+    assert mutate(tmp_path)[0] == 0
+    first = (tmp_path / "setup.cfg").read_bytes()
+    assert mutate(tmp_path)[0] == 0 and (tmp_path / "setup.cfg").read_bytes() == first
+    code, summary, _ = mutate(tmp_path, "--modules", "status")   # another module list is another file
+    assert code == 2 and summary["error"] == "config_exists" and (tmp_path / "setup.cfg").read_bytes() == first
+
+
+def test_a_link_named_setup_cfg_is_never_written_through(tmp_path):
+    real = tmp_path / "elsewhere.cfg"
+    real.write_text("keep\n")
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "setup.cfg").symlink_to(real)
+    for extra in ((), ("--force",)):
+        code, summary, _ = mutate(tmp_path / "out", *extra)
+        assert code == 2 and summary["ok"] is False and real.read_text() == "keep\n"
+
+
+def test_the_output_and_the_help_say_the_file_is_untracked_and_temporary(tmp_path):
+    code, summary, _ = mutate(tmp_path)
+    assert code == 0 and "untracked" in summary["note"] and "must not be committed" in summary["note"] and "deleted" in summary["note"]
+    help_text = " ".join(subprocess.run([sys.executable, "-I", str(TOOL), "--help"], capture_output=True, text=True).stdout.split())
+    assert "untracked, must not be committed" in help_text and "deleted" in help_text and "--force" in help_text

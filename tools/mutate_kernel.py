@@ -12,9 +12,14 @@ with a network), runs mutmut and then ``skills/qa-mutation/scripts/mutmut_to_rep
 the converted file as the run's ``mutation`` report. The score is therefore in that execution's evidence manifest, and it is
 read from there: this tool runs nothing and gates nothing.
 
-``report/check`` can be named, but is not in the default: a leg that includes it ends ``report_invalid``
-(EXE-01M75E9WGZFMNGNSTYSV67RH4N), because the kernel's redaction cuts through the stored report; that defect is parked for
-the final review. An unknown or repeated module is refused (exit 2) before anything is written.
+``report/check`` can be named, but is not in the default: the leg that included it ended ``report_invalid``
+(EXE-01M75E9WGZFMNGNSTYSV67RH4N), because the kernel's byte-level redaction cut through the stored JSON report. The final
+review changed how a JSON report is redacted (value by value, then serialised again); that leg has not been run again. An
+unknown or repeated module is refused (exit 2) before anything is written.
+
+An existing ``DIR/setup.cfg`` that differs from the one this tool would write is refused (exit 2, ``config_exists``) unless
+``--force`` is given, so a tracked or hand-written file is never overwritten by accident. With ``--out .`` the file sits at the
+repository root, untracked: it must not be committed, and it should be deleted once the run is recorded.
 """
 from __future__ import annotations
 
@@ -120,28 +125,47 @@ def command() -> List[str]:
             "--", "sh", "-c", run_script()]
 
 
+UNTRACKED_NOTE = ("setup.cfg is written for this run only: at the repository root (--out .) it is untracked, must not be "
+                  "committed, and should be deleted once the run is recorded")
+
+
+def _refuse_existing(target: Path, data: bytes, force: bool) -> None:
+    """An existing file that differs, or anything there that is not a regular file, is kept unless ``force``."""
+    if not (target.exists() or target.is_symlink()):
+        return
+    same = target.is_file() and not target.is_symlink() and target.read_bytes() == data
+    if not same and not force:
+        raise Refused("config_exists", config=str(target),
+                      detail="a different setup.cfg is already there; it is never overwritten without --force")
+    if not same and (target.is_symlink() or not target.is_file()):
+        raise Refused("config_not_a_file", config=str(target), detail="setup.cfg there is a link or not a regular file")
+
+
 def main(argv: List[str]) -> int:
-    parser = argparse.ArgumentParser(prog="mutate_kernel.py", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="mutate_kernel.py", description=__doc__.split("\n\n")[0], epilog=UNTRACKED_NOTE + ".")
     parser.add_argument("--modules", default=",".join(DEFAULT_MODULES), metavar="LIST",
-                        help="comma-separated; default: %s. report/check can be named, but a leg with it currently ends "
-                             "report_invalid (EXE-01M75E9WGZFMNGNSTYSV67RH4N): a kernel redaction defect, parked for the "
-                             "final review"
+                        help="comma-separated; default: %s. report/check can be named, but the leg that included it ended "
+                             "report_invalid (EXE-01M75E9WGZFMNGNSTYSV67RH4N) through a redaction defect the final review "
+                             "fixed; that leg has not been run again"
                              % ",".join(DEFAULT_MODULES))
     parser.add_argument("--out", required=True, metavar="DIR",
                         help="where setup.cfg is written; the repository root (.) for the run to pick it up")
+    parser.add_argument("--force", action="store_true",
+                        help="overwrite a setup.cfg that is already there and differs")
     args = parser.parse_args(argv)
+    out = Path(args.out)
     try:
         modules = parse_modules(args.modules)
+        data = ("\n".join(config_lines(modules)) + "\n").encode("utf-8")
+        _refuse_existing(out / "setup.cfg", data, args.force)
     except Refused as refused:
         print(json.dumps(dict(ok=False, error=refused.error, **refused.details), sort_keys=True))
         return 2
-    lines = config_lines(modules)
-    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "setup.cfg").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out / "setup.cfg").write_bytes(data)
     words = command()
     print(json.dumps(dict(ok=True, config=str(out / "setup.cfg"), modules=modules, image=IMAGE, argv=words,
-                          command=" ".join(shlex.quote(word) for word in words)), sort_keys=True))
+                          command=" ".join(shlex.quote(word) for word in words), note=UNTRACKED_NOTE), sort_keys=True))
     return 0
 
 
