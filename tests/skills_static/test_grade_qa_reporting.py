@@ -241,6 +241,23 @@ def test_f5_a_gap_is_named_by_kind_and_id_in_either_order(line):
     assert grade.gap_named(line, "ac_without_tc", "AC-002.1") and grade.gap_named(line, "tc_unproven", "TC-001")
 
 
+# The kernel's report.md escapes ``_`` as ``\_`` (qa.report._ESCAPES): its Traceability section lists each gap as a table row.
+KERNEL_GAP_ROWS = "\n".join(["| Record | Gap |", "| --- | --- |", "| TC-005 | tc\\_not\\_automated |",
+                             "| FND-001 | fnd\\_without\\_fix |", "| AC-002.1 | ac\\_without\\_tc |"])
+
+
+@pytest.mark.parametrize("kind,gid", [("tc_not_automated", "TC-005"), ("fnd_without_fix", "FND-001"),
+                                      ("ac_without_tc", "AC-002.1")])
+def test_f5_a_gap_in_the_kernels_escaped_markdown_is_named(kind, gid):
+    assert grade.gap_named(KERNEL_GAP_ROWS, kind, gid)
+
+
+@pytest.mark.parametrize("kind,gid", [("fnd_without_fix", "TC-005"), ("tc_not_automated", "FND-001"),
+                                      ("tc_unproven", "TC-005"), ("fnd_without_fix", "FND-002")])
+def test_f5_an_escaped_row_names_only_its_own_kind_and_id(kind, gid):
+    assert not grade.gap_named(KERNEL_GAP_ROWS, kind, gid)
+
+
 def test_f5_no_gap_to_list_is_a_failure_not_a_pass(monkeypatch):
     monkeypatch.setattr(grade, "expected_gaps", lambda state: (COMMIT, []))
     assert verdicts(grade.grade_f5_trace(F5_ANSWER, f5_facts(), True))["every_gap_listed"] is False

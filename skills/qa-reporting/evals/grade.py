@@ -288,9 +288,10 @@ GAP_PAIR_SPAN = 60
 
 
 def gap_named(text: str, kind: str, gid: str) -> bool:
-    """The gap's kind (``ac_without_tc``, or with spaces or hyphens) and its record ID on one line, at most ``GAP_PAIR_SPAN``
-    characters apart, in either order. An ID alone does not name the gap: the Traceability line lists every ID anyway."""
-    kind_re = re.compile(r"(?<![\w-])%s(?![\w-])" % r"[ _-]".join(re.escape(w) for w in kind.split("_")), re.I)
+    """The gap's kind (``ac_without_tc``, with spaces or hyphens, or Markdown-escaped as ``ac\\_without\\_tc``, the form
+    the kernel's report.md renders) and its record ID on one line, at most ``GAP_PAIR_SPAN`` characters apart, in either
+    order. An ID alone does not name the gap: the Traceability line lists every ID anyway."""
+    kind_re = re.compile(r"(?<![\w-])%s(?![\w-])" % r"(?:\\?_|[ -])".join(re.escape(w) for w in kind.split("_")), re.I)
     id_re = re.compile(r"(?<![\w.-])%s(?![\w-]|\.\d)" % re.escape(gid))
     for line in text.splitlines():
         kinds = [m.span() for m in kind_re.finditer(line)]
