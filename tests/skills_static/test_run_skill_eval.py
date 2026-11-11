@@ -140,7 +140,8 @@ FAKE = textwrap.dedent('''\
         sys.stderr.flush()
     # File changes the agent makes: EDITS writes (or, for null, deletes) files in the copy, @KEY@ standing for the key and
     # @CWD@ for the copy's absolute path, a directory in the way being removed first; LINKS replaces a path by a symlink; GIT
-    # runs git commands in the copy, as an agent could; CAT (first of all) prints files of the copy into the transcript.
+    # runs git commands in the copy, as an agent could; CAT (first of all) prints files of the copy into the transcript; PY
+    # (last of all) runs Python source in the copy, as an agent's own script could.
     for rel, text in (cfg.get("EDITS") or {}).items():
         path = os.path.join(os.getcwd(), rel)
         if text is None:
@@ -162,6 +163,8 @@ FAKE = textwrap.dedent('''\
     for args in cfg.get("GIT") or []:
         subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@a", "-c", "commit.gpgsign=false"] + args, cwd=os.getcwd(),
                        capture_output=True)
+    for source in cfg.get("PY") or []:
+        exec(source, {"__name__": "agent_script"})
     body = {"type": "result", "subtype": "success", "is_error": False, "result": "done", "num_turns": 2,
             "duration_ms": 1500, "total_cost_usd": float(cfg.get("COST", "0.25")),
             "usage": {"input_tokens": 100, "output_tokens": 40, "cache_read_input_tokens": 7,
@@ -1540,8 +1543,93 @@ def test_the_copys_kernel_keys_are_redacted_everywhere_they_are_saved(world):
         assert KERNEL_KEY_A not in data and KERNEL_KEY_R not in data, path
         text = data.decode("utf-8", "replace")
         assert not [f for f in forms if f in text], path
-    for rel in ("stdout.txt", "stderr.txt", "qa-state/ledger/events.jsonl", "file-state/diff.patch"):
+    for rel in ("stdout.txt", "stderr.txt", "qa-state/ledger/events.jsonl"):
         assert "[REDACTED:kernel-key]" in (run_dir / rel).read_text(), rel
+    held = [".qa/ledger/events.jsonl", ".qa/redaction.key", "late.txt", "leak.txt"]    # each holds a key in some form
+    assert _meta(world)["redacted_files"] == held
+    diff = (run_dir / "file-state" / "diff.patch").read_text()
+    assert not [p for p in held if "b/" + p in diff]
+
+
+def _nested_repository(marker, committed):
+    """An agent's moves that leave a populated nested repository registered as a gitlink (staged, or committed too), whose
+    own configuration names a content filter that runs a program leaving ``marker``, with its file stat-dirty so that a
+    status taken inside it hashes the file again."""
+    git_cmds = [["-C", "sub", "init", "-q"], ["-C", "sub", "add", "-A"], ["-C", "sub", "commit", "-qm", "s"], ["add", "sub"]]
+    if committed:
+        git_cmds.append(["commit", "-qm", "gitlink"])
+    hostile = _hostile_filter(marker)
+    after = ("import os, time\nopen('sub/.git/config', 'w').write(%r)\nopen('sub/.gitattributes', 'w').write(%r)\n"
+             "time.sleep(1.1)\nos.utime('sub/s.txt')\n") % (hostile[".git/config"], hostile[".gitattributes"])
+    return {"FAKE_EDITS": {"app.py": "changed\n", "sub/s.txt": "aaa\n"}, "FAKE_GIT": git_cmds, "FAKE_PY": [after]}
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["staged", "committed"])
+def test_a_nested_repository_is_recorded_as_a_gitlink_and_never_entered(world, committed):
+    harness = _harness_module()
+    marker = world.root / "ran"
+    r = run(world, env=_nested_repository(marker, committed))
+    assert r.returncode == 0, r.stderr
+    assert not marker.exists()
+    state, meta, work = _state_dir(world), _meta(world), _workdir(world)
+    assert " M app.py" in (state / "status.txt").read_text().splitlines()
+    assert "+changed" in (state / "diff.patch").read_text()
+    link = [{"commit": git(work / "sub", "rev-parse", "HEAD")[0], "path": "sub"}]
+    assert meta["gitlinks"] == {"head": link if committed else [], "index": link, "work_tree": link}
+    # The control: the same status, taken with the copy pinned as the snapshot pins it but without the options that keep
+    # git out of nested repositories, enters the nested one and runs the program its configuration names.
+    copy = world.root / "copy"
+    shutil.copytree(str(work / ".git"), str(copy), symlinks=True)
+    (copy / "config").write_text(harness._CLEAN_CONFIG)
+    where = {"GIT_DIR": str(copy), "GIT_COMMON_DIR": str(copy), "GIT_OBJECT_DIRECTORY": str(copy / "objects"),
+             "GIT_WORK_TREE": str(work)}
+    opts = harness._GIT_SAFE_OPTS
+    kept = [part for pair in zip(opts[::2], opts[1::2]) if "ubmodule" not in pair[1] for part in pair]
+    subprocess.run(["git"] + kept + ["status", "--porcelain=v1", "-uall", "--no-renames"], cwd=str(work),
+                   env=harness._safe_git_env(where), capture_output=True)
+    assert marker.exists()
+
+
+def test_a_file_holding_a_kernel_key_is_left_out_of_the_diff_and_named(world):
+    """Git writes a file holding a NUL as a binary patch, in which no byte of the key shows as it is: such a file, and any
+    other whose content on either side holds a kernel key in some form, is left out of the diff and named instead."""
+    script = ("import os, subprocess\nos.makedirs('.qa', exist_ok=True)\nkey = %r\nopen('.qa/authority.key', 'wb').write(key)\n"
+              "open('old.bin', 'wb').write(b'\\0old' + key)\n"
+              "for args in (['add', 'old.bin'], ['commit', '-qm', 'setup']):\n"
+              "    subprocess.run(['git', '-c', 'user.name=a', '-c', 'user.email=a@a', '-c', 'commit.gpgsign=false'] + args,"
+              " check=True, capture_output=True)\n") % KERNEL_KEY_A
+    _setup_case(world, script)
+    after = ("key = open('.qa/authority.key', 'rb').read()\nopen('blob.bin', 'wb').write(b'\\0head' + key + b'\\0tail')\n"
+             "open('hex.bin', 'wb').write(b'\\0' + key.hex().encode())\n")
+    r = run(world, env={"FAKE_EDITS": {"plain.txt": "kept\n", "old.bin": None}, "FAKE_PY": [after]})
+    assert r.returncode == 0, r.stderr
+    run_dir, meta, work = world.out / "runs" / records(world)[0]["run_id"], _meta(world), _workdir(world)
+    assert meta["redacted_files"] == [".qa/authority.key", "blob.bin", "hex.bin", "old.bin"]
+    diff = (run_dir / "file-state" / "diff.patch").read_text()
+    assert "+++ b/plain.txt" in diff and not [p for p in meta["redacted_files"] if "/" + p in diff]
+    for path in [p for p in run_dir.rglob("*") if p.is_file()]:
+        data = path.read_bytes()
+        assert KERNEL_KEY_A not in data and not [f for f in _kernel_key_forms(KERNEL_KEY_A) if f in data.decode("utf-8", "replace")]
+    # The control: the diff git writes for such a file is a binary patch that holds no form of the key a byte match finds.
+    index = dict(os.environ, GIT_INDEX_FILE=str(world.root / "control-index"))
+    subprocess.run(["git", "-C", str(work), "read-tree", meta["base_commit"]], env=index, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(work), "add", "-A", "--", "blob.bin"], env=index, check=True, capture_output=True)
+    shown = subprocess.run(["git", "-C", str(work), "diff", "--cached", "--binary", meta["base_commit"], "--", "blob.bin"], env=index,
+                           check=True, capture_output=True).stdout
+    assert b"GIT binary patch" in shown and KERNEL_KEY_A not in shown and KERNEL_KEY_A.hex().encode() not in shown
+
+
+def test_a_refused_setup_keeps_its_output_without_the_copys_kernel_keys(world):
+    _setup_case(world, "import base64, os, sys\nos.makedirs('.qa', exist_ok=True)\nkey = %r\n"
+                       "open('.qa/authority.key', 'wb').write(key)\nsys.stdout.buffer.write(key + b'\\n')\nsys.stdout.flush()\n"
+                       "print(key.hex())\nprint(base64.b64encode(key).decode(), file=sys.stderr)\nsys.exit(4)\n" % KERNEL_KEY_A)
+    r = run(world)
+    assert r.returncode == 3 and "setup script exited 4" in (r.stdout + r.stderr)
+    assert calls(world) == [] and records(world) == []
+    saved = next((world.out / "runs").rglob("setup.txt")).read_bytes()
+    text = saved.decode("utf-8", "replace")
+    assert KERNEL_KEY_A not in saved and not [f for f in _kernel_key_forms(KERNEL_KEY_A) if f in text]
+    assert text.count("[REDACTED:kernel-key]") >= 3
 
 
 @pytest.mark.parametrize("target", [".git/config", ".git/objects", ".git"])

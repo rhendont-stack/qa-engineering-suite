@@ -70,12 +70,18 @@ The copy's final file state is saved beside it, in ``DIR/runs/ID/file-state/``: 
 -uall``), ``diff.patch`` (``git diff --binary`` of tracked and untracked files against the commit the agent started from, so a
 commit the agent made still shows; ignored files are left out) and ``meta.json`` (that base commit, the final HEAD, whether the
 diff was cut at ``FILE_STATE_LIMIT`` bytes, the installed skills' SKILL.md sha256, ``fixture_tree``, the base commit's tree,
-``git_config``, the configuration entries git read, and ``error``). git never reads the copy's own repository configuration,
-which the agent could have changed: ``.git`` is copied outside the copy and given a minimal configuration of the harness's,
-with no user or system configuration, hooks, fsmonitor, filters, diff drivers or prompts; git's directory, common directory and
-object directory are pinned to that copy, replace refs and grafts are off, and the effective configuration is listed before
-anything else and must come from the command line and that file alone. So nothing the repository names runs and nothing is
-written into the copy. A ``.git`` that is not a plain directory, holds a symlink, or holds a file that sends git to another
+``git_config``, the configuration entries the top-level git process read, ``gitlinks``, ``redacted_files``, and ``error``).
+What is enforced, and tested: git never reads the copy's own repository configuration, which the agent could have changed:
+``.git`` is copied outside the copy and given a minimal configuration of the harness's, with no user or system configuration,
+hooks, fsmonitor, filters, diff drivers or prompts; git's directory, common directory and object directory are pinned to that
+copy, replace refs and grafts are off, and the configuration the top-level git process reads is listed before anything else
+and must come from the command line and that file alone. That listing covers the top-level process only, so no snapshot call
+enters a nested repository (a git started there would read that repository's own configuration): the gitlinks in HEAD, in
+the copy's index and in the work tree are recorded in ``gitlinks``, and what lies inside them is not in the state. So
+nothing the copy's repository, or a repository nested in it, names runs, and nothing is written into the copy. A file whose
+content on either side of the diff holds a kernel key, in any form the redaction knows, is left out of ``diff.patch`` and
+named in ``redacted_files``, because git writes a file holding a NUL as a binary patch, which shows no byte of the key as it
+is. A ``.git`` that is not a plain directory, holds a symlink, or holds a file that sends git to another
 directory (a common-directory redirect, object alternates, grafts) gives no state, only ``meta.json`` with ``error``: a
 problem (exit 1), never a crash and never an empty state. The sha256 of each installed SKILL.md, read before the agent
 starts, is also in the ledger's ``end`` line (``skill_sha256``, with ``base_commit`` and ``fixture_tree``). The working copy is then deleted, on every path that created it, refused, failed or
@@ -289,22 +295,27 @@ def check_setup_script(case: Dict[str, Any], script: Any) -> Path:
 
 
 def run_setup(script: str, workdir: Path, home: Path) -> str:
-    """Runs the setup script in the copy. Returns its redacted output; raises ``Refused`` (with ``output``) when it fails."""
+    """Runs the setup script in the copy. Returns its output, the API key and the copy's kernel keys redacted (the keys are
+    read while the copy still exists, because a refused setup deletes it); raises ``Refused`` (with ``output``) when it fails."""
     env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
     key = os.environ.get(KEY_VAR, "")
+
+    def clean(text: str) -> str:
+        return redact_kernel_keys_text(redact(text, key), kernel_key_forms(kernel_keys(workdir)))[:SETUP_OUTPUT_LIMIT]
+
     try:
         proc = subprocess.run([sys.executable, "-I", script], cwd=str(workdir), env=env, capture_output=True, text=True,
-                              timeout=SETUP_TIMEOUT, stdin=subprocess.DEVNULL)
+                              errors="replace", timeout=SETUP_TIMEOUT, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired as exc:
         out = ((exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout or "")
         refusal = Refused("the setup script ran past %d seconds" % SETUP_TIMEOUT)
-        refusal.output = redact(out, key)[:SETUP_OUTPUT_LIMIT]
+        refusal.output = clean(out)
         raise refusal
     except OSError as exc:
         refusal = Refused("the setup script could not start: %s" % type(exc).__name__)
         refusal.output = ""
         raise refusal
-    output = redact("exit %d\n--- stdout\n%s--- stderr\n%s" % (proc.returncode, proc.stdout, proc.stderr), key)[:SETUP_OUTPUT_LIMIT]
+    output = clean("exit %d\n--- stdout\n%s--- stderr\n%s" % (proc.returncode, proc.stdout, proc.stderr))
     if proc.returncode != 0:
         refusal = Refused("the setup script exited %d; nothing was spent" % proc.returncode)
         refusal.output = output
@@ -789,7 +800,12 @@ def copy_qa_state(workdir: Path, dest: Path, key: str, key_forms_extra: Sequence
 FILE_STATE_LIMIT = 20_000_000       # bytes of diff kept; more is cut and ``diff_truncated`` says so
 # Every git call on the copy: no user or system configuration (``_git_env``), and nothing the repository could name runs.
 _GIT_SAFE_OPTS = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=" + os.devnull,
-                  "-c", "core.attributesFile=" + os.devnull, "-c", "core.quotePath=false", "-c", "protocol.allow=never"]
+                  "-c", "core.attributesFile=" + os.devnull, "-c", "core.quotePath=false", "-c", "protocol.allow=never",
+                  # Never into a nested repository: a git started there reads that repository's own configuration.
+                  "-c", "submodule.recurse=false", "-c", "diff.ignoreSubmodules=all", "-c", "status.submoduleSummary=false",
+                  "-c", "fetch.recurseSubmodules=false"]
+_NO_NESTED = "--ignore-submodules=all"
+_GITLINK_MODE = b"160000"
 _CLEAN_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
 
 
@@ -879,17 +895,67 @@ def _config_problem(listing: bytes, own_config: Path) -> Tuple[List[str], Option
     return entries, None
 
 
-def capture_file_state(workdir: Path, base: Optional[str], scratch: Path) -> Dict[str, Any]:
+def _gitlinks(listing: bytes, sha_field: int) -> List[Dict[str, str]]:
+    """The gitlinks (mode 160000) in ``git ls-tree -r -z`` (``sha_field`` 2) or ``git ls-files -s -z`` (1) output."""
+    found = []
+    for entry in listing.split(b"\0"):
+        head, _tab, path = entry.partition(b"\t")
+        fields = head.split(b" ")
+        if path and fields[0] == _GITLINK_MODE and len(fields) > sha_field:
+            found.append({"commit": fields[sha_field].decode("ascii", "replace"), "path": path.decode("utf-8", "replace")})
+    return sorted(found, key=lambda item: item["path"])
+
+
+def _changed_blobs(raw: bytes) -> List[Tuple[bytes, List[str]]]:
+    """``(path, [blob ids])`` for each entry of ``git diff --raw -z --no-renames``: the blobs on both sides, absent sides and
+    gitlinks left out."""
+    fields, changed = raw.split(b"\0"), []
+    for header, path in zip(fields[0::2], fields[1::2]):
+        parts = header.lstrip(b":").split(b" ")
+        if len(parts) < 4:
+            continue
+        blobs = [parts[2 + side].decode("ascii") for side in (0, 1)
+                 if parts[side] != _GITLINK_MODE and parts[2 + side].strip(b"0")]
+        changed.append((path, blobs))
+    return changed
+
+
+def _blob_contents(batch: bytes) -> Dict[str, bytes]:
+    """The objects in ``git cat-file --batch`` output, by id; a missing one is left out."""
+    contents: Dict[str, bytes] = {}
+    at = 0
+    while at < len(batch):
+        end = batch.find(b"\n", at)
+        if end < 0:
+            break
+        header = batch[at:end].split(b" ")
+        at = end + 1
+        if len(header) == 3 and header[2].isdigit():
+            size = int(header[2])
+            contents[header[0].decode("ascii")] = batch[at:at + size]
+            at += size + 1
+    return contents
+
+
+def capture_file_state(workdir: Path, base: Optional[str], scratch: Path, secrets: Sequence[bytes] = ()) -> Dict[str, Any]:
     """The copy's ``git status --porcelain=v1 -uall`` and ``git diff --binary`` against ``base`` (the commit the agent started
     from), tracked and untracked files alike, ignored files left out.
 
-    git never reads the copy's own repository configuration: ``.git`` (refused when it holds a symlink or an indirection file)
-    is copied into ``scratch`` and given a minimal configuration of the harness's; git's directory, common directory and
-    object directory are pinned to that copy, replace refs and grafts are off, and the effective configuration is listed
-    first and must hold nothing but the command line and that file, so no filter, diff driver, fsmonitor or hook the agent
-    may have set runs, and nothing is written into the copy. Untracked files enter the diff through a separate index in
-    ``scratch``. Returns ``{status, diff, head_commit, config}`` (bytes, bytes, text, the configuration entries as
-    ``"<origin> <key>"``); raises ``FileStateError``."""
+    What is enforced, and tested: ``.git`` is refused when it holds a symlink or an indirection file; otherwise it is copied
+    into ``scratch`` and given a minimal configuration of the harness's; git's directory, common directory and object
+    directory are pinned to that copy, replace refs and grafts are off, and the configuration the top-level git process reads
+    is listed first and must hold nothing but the command line and that file, so no filter, diff driver, fsmonitor or hook
+    the agent may have set in the copy's repository runs, and nothing is written into the copy. Every call keeps out of
+    nested repositories (``--ignore-submodules=all`` and the submodule options in ``_GIT_SAFE_OPTS``), because a git started
+    inside one reads that repository's own configuration, which no listing here sees; the gitlinks in HEAD, in the copy's
+    index and in the work tree are recorded instead, and what lies inside them is not in the state. Untracked files enter
+    the diff through a separate index in ``scratch``. A file whose content on either side of the diff holds one of
+    ``secrets`` (byte strings) is left out of the diff and named in ``redacted_files``: a file git writes as a binary patch
+    shows no byte of a key as it is, so redacting the patch afterwards would miss it.
+
+    Returns ``{status, diff, head_commit, config, gitlinks, redacted_files}`` (bytes, bytes, text, the configuration entries
+    as ``"<origin> <key>"``, ``{head, index, work_tree}`` lists of ``{path, commit}``, sorted paths); raises
+    ``FileStateError``."""
     if base is None:
         raise FileStateError("the base commit was not read before the agent started")
     git_dir = workdir / ".git"
@@ -904,11 +970,11 @@ def capture_file_state(workdir: Path, base: Optional[str], scratch: Path) -> Dic
     where = {"GIT_DIR": str(copy), "GIT_COMMON_DIR": str(copy), "GIT_OBJECT_DIRECTORY": str(copy / "objects"),
              "GIT_WORK_TREE": str(workdir), "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
 
-    def git(args: List[str], index: Optional[Path] = None) -> bytes:
+    def git(args: List[Any], index: Optional[Path] = None, given: Optional[bytes] = None) -> bytes:
         env = _safe_git_env(dict(where, **({"GIT_INDEX_FILE": str(index)} if index else {})))
         try:
             done = subprocess.run(["git"] + _GIT_SAFE_OPTS + args, cwd=str(workdir), env=env, capture_output=True, timeout=300,
-                                  stdin=subprocess.DEVNULL)
+                                  **({"input": given} if given is not None else {"stdin": subprocess.DEVNULL}))
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise FileStateError("git %s could not run: %s" % (args[0], type(exc).__name__))
         if done.returncode != 0:
@@ -918,29 +984,41 @@ def capture_file_state(workdir: Path, base: Optional[str], scratch: Path) -> Dic
     config, problem = _config_problem(git(["config", "--list", "--show-origin", "-z"]), copy / "config")
     if problem is not None:
         raise FileStateError(problem)
-    status = git(["status", "--porcelain=v1", "-uall", "--no-renames"])
+    status = git(["status", "--porcelain=v1", "-uall", "--no-renames", _NO_NESTED])
     head = git(["rev-parse", "--verify", "-q", "HEAD^{commit}"]).decode("ascii", "replace").strip()
+    gitlinks = {"head": _gitlinks(git(["ls-tree", "-r", "-z", "--full-tree", "HEAD"]), 2),
+                "index": _gitlinks(git(["ls-files", "-s", "-z"]), 1)}
     index = scratch / "full-index"
     git(["read-tree", base], index)
     git(["add", "-A", "--", "."], index)
-    diff = git(["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", base, "--"], index)
-    return {"status": status, "diff": diff, "head_commit": head, "config": config}
+    gitlinks["work_tree"] = _gitlinks(git(["ls-files", "-s", "-z"], index), 1)
+    compare = ["--cached", "--no-abbrev", "--no-ext-diff", "--no-textconv", "--no-renames", _NO_NESTED, base]
+    changed = _changed_blobs(git(["diff", "--raw", "-z"] + compare + ["--"], index))
+    wanted = sorted({blob for _path, blobs in changed for blob in blobs})
+    contents = _blob_contents(git(["cat-file", "--batch"], given="".join(b + "\n" for b in wanted).encode("ascii"))) \
+        if secrets and wanted else {}
+    held = sorted(path for path, blobs in changed if any(form in contents.get(blob, b"") for blob in blobs for form in secrets))
+    left_out = [":(literal,exclude)" + os.fsdecode(path) for path in held]
+    diff = git(["diff", "--binary"] + compare + ["--", "."] + left_out, index)
+    return {"status": status, "diff": diff, "head_commit": head, "config": config, "gitlinks": gitlinks,
+            "redacted_files": [path.decode("utf-8", "replace") for path in held]}
 
 
 def save_file_state(workdir: Path, dest: Path, base: Optional[str], skills: Dict[str, str], key: str,
                     fixture_tree: Optional[str] = None, key_forms_extra: Sequence[bytes] = ()) -> Optional[str]:
     """Writes ``status.txt``, ``diff.patch`` and ``meta.json`` under ``dest``, redacted (the API key and the kernel keys).
     Returns None, or the problem: then only ``meta.json`` is written, with ``error``, so a grader reading the snapshot finds no
-    state rather than an empty one. ``meta.json`` also holds ``fixture_tree`` (the base commit's tree) and ``git_config``
-    (the configuration git read while taking the state)."""
+    state rather than an empty one. ``meta.json`` also holds ``fixture_tree`` (the base commit's tree), ``git_config``
+    (the configuration git read while taking the state), ``gitlinks`` (nested repositories, recorded and never entered) and
+    ``redacted_files`` (the files left out of the diff because they hold a kernel key)."""
     dest.mkdir(parents=True, exist_ok=True)
     meta: Dict[str, Any] = {"base_commit": base, "head_commit": None, "head_moved": None, "skill_sha256": skills,
                             "diff_truncated": None, "diff_bytes": None, "error": None, "fixture_tree": fixture_tree,
-                            "git_config": None}
+                            "git_config": None, "gitlinks": None, "redacted_files": None}
     scratch = Path(tempfile.mkdtemp(prefix="qa-eval-state-"))
     try:
         try:
-            state = capture_file_state(workdir, base, scratch)
+            state = capture_file_state(workdir, base, scratch, key_forms_extra)
         except (FileStateError, OSError, shutil.Error) as exc:
             meta["error"] = str(exc) if isinstance(exc, FileStateError) else type(exc).__name__
         else:
@@ -948,7 +1026,8 @@ def save_file_state(workdir: Path, dest: Path, base: Optional[str], skills: Dict
             (dest / "status.txt").write_bytes(redact_kernel_keys(redact_bytes(state["status"], key), key_forms_extra))
             (dest / "diff.patch").write_bytes(diff[:FILE_STATE_LIMIT])
             meta.update(head_commit=state["head_commit"], head_moved=state["head_commit"] != base,
-                        diff_truncated=len(diff) > FILE_STATE_LIMIT, diff_bytes=len(diff), git_config=state["config"])
+                        diff_truncated=len(diff) > FILE_STATE_LIMIT, diff_bytes=len(diff), git_config=state["config"],
+                        gitlinks=state["gitlinks"], redacted_files=state["redacted_files"])
     finally:
         shutil.rmtree(str(scratch), ignore_errors=True)
     (dest / "meta.json").write_text(json.dumps(meta, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -1171,7 +1250,8 @@ def parse(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def save_setup_output(run_dir: Path, output: Optional[str], key: str) -> None:
-    """A refused setup keeps its output as evidence; a failure to save it is said on stderr, never a crash."""
+    """A refused setup keeps its output as evidence (``run_setup`` has already redacted the copy's kernel keys, while the copy
+    existed); a failure to save it is said on stderr, never a crash."""
     if not output:
         return
     try:
