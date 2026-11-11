@@ -126,15 +126,31 @@ FAKE = textwrap.dedent('''\
             open(os.path.join(qa, rel), "w").write(text)
         os.symlink("/etc/hosts", os.path.join(qa, "link.txt"))
         os.symlink(os.getcwd(), os.path.join(qa, "evidence", "linkdir"))
-    # File changes the agent makes: EDITS writes (or, for null, deletes) files in the copy, @KEY@ standing for the key; LINKS
-    # replaces a path by a symlink; GIT runs git commands in the copy, as an agent could.
+    for rel in cfg.get("CAT") or []:
+        data = open(os.path.join(os.getcwd(), rel), "rb").read()
+        shown = data.decode("utf-8", "replace") + " hex " + data.hex()
+        for ascii_only in (False, True):
+            line = json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "content": shown}]}},
+                              ensure_ascii=ascii_only)
+            sys.stdout.flush()
+            sys.stdout.buffer.write((line + "\\n").encode("utf-8"))
+            sys.stdout.flush()
+        sys.stderr.flush()
+        sys.stderr.buffer.write((shown + "\\n").encode("utf-8"))
+        sys.stderr.flush()
+    # File changes the agent makes: EDITS writes (or, for null, deletes) files in the copy, @KEY@ standing for the key and
+    # @CWD@ for the copy's absolute path, a directory in the way being removed first; LINKS replaces a path by a symlink; GIT
+    # runs git commands in the copy, as an agent could; CAT (first of all) prints files of the copy into the transcript.
     for rel, text in (cfg.get("EDITS") or {}).items():
         path = os.path.join(os.getcwd(), rel)
         if text is None:
             os.remove(path)
         else:
+            if os.path.isdir(path) and not os.path.islink(path):
+                import shutil
+                shutil.rmtree(path)
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            open(path, "w").write(text.replace("@KEY@", KEY))
+            open(path, "w").write(text.replace("@KEY@", KEY).replace("@CWD@", os.getcwd()))
     for rel, target in (cfg.get("LINKS") or {}).items():
         path = os.path.join(os.getcwd(), rel)
         if os.path.isdir(path) and not os.path.islink(path):
@@ -1403,6 +1419,129 @@ def test_the_repository_configuration_the_agent_leaves_runs_nothing(world):
     assert "+changed" in (state / "diff.patch").read_text() and "?? new.txt" in (state / "status.txt").read_text().splitlines()
     subprocess.run(["git", "-C", str(_workdir(world)), "diff", "HEAD"], capture_output=True)   # the same configuration, read as it stands,
     assert marker.exists()                                                                       # does run a program: the test shows something
+
+
+def _hostile_filter(marker):
+    """A repository configuration whose content filter runs a program that leaves ``marker``, and the attribute that uses it."""
+    import shlex
+    touch = "touch %s" % shlex.quote(str(marker))
+    config = ("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
+              "[filter \"x\"]\n\tclean = %s\n\tsmudge = %s\n\tprocess = %s\n[user]\n\tagentkey = planted\n") % ((touch,) * 3)
+    return {".gitattributes": "* filter=x\n", ".git/config": config}
+
+
+# Each class of file that sends git from the git directory to another place: the common-directory redirect, object
+# alternates (local and over http), grafts, and a git file in place of the directory.
+INDIRECTIONS = {".git/commondir": "@CWD@/.git\n", ".git/objects/info/alternates": "@CWD@/.git/objects\n",
+                ".git/objects/info/http-alternates": "file://@CWD@/.git/objects\n",
+                ".git/info/grafts": "0123456789012345678901234567890123456789\n", ".git": "gitdir: @CWD@/.git-elsewhere\n"}
+
+
+@pytest.mark.parametrize("target", sorted(INDIRECTIONS))
+def test_an_indirection_in_the_git_directory_gives_no_file_state_and_runs_nothing(world, target):
+    marker = world.root / "ran"
+    edits = dict(_hostile_filter(marker), **{"app.py": "changed\n", target: INDIRECTIONS[target]})
+    r = run(world, env={"FAKE_EDITS": edits})
+    assert r.returncode == 1 and "file state not saved" in r.stderr and SECRET not in r.stderr
+    assert not marker.exists()
+    rec = records(world)[0]
+    assert rec["status"] == "ok" and [json.loads(line)["event"] for line in world.ledger.read_text().splitlines()] == ["start", "end"]
+    state = _state_dir(world)
+    assert not (state / "status.txt").exists() and not (state / "diff.patch").exists()
+    assert ("indirection" if target != ".git" else "plain directory") in _meta(world)["error"]
+
+
+def test_a_common_directory_redirect_is_live_without_the_guard_and_dead_with_the_pin(world):
+    """The control for the class above: with git's directory alone pointing at a clean copy, the redirect makes git read the
+    live configuration and run its program; with the common directory pinned too, nothing runs."""
+    harness = _harness_module()
+    marker = world.root / "ran"
+    edits = dict(_hostile_filter(marker), **{"app.py": "changed\n", ".git/commondir": INDIRECTIONS[".git/commondir"]})
+    assert run(world, env={"FAKE_EDITS": edits}).returncode == 1
+    work = _workdir(world)
+    for pinned in (True, False):
+        copy = world.root / ("copy-pinned" if pinned else "copy-unpinned")
+        shutil.copytree(str(work / ".git"), str(copy), symlinks=True)
+        (copy / "config").write_text(harness._CLEAN_CONFIG)
+        where = {"GIT_DIR": str(copy), "GIT_WORK_TREE": str(work)}
+        if pinned:
+            where.update(GIT_COMMON_DIR=str(copy), GIT_OBJECT_DIRECTORY=str(copy / "objects"))
+        where["GIT_INDEX_FILE"] = str(world.root / ("index-" + copy.name))         # staging every file runs its clean filter
+        subprocess.run(["git"] + harness._GIT_SAFE_OPTS + ["add", "-A", "--", "."], cwd=str(work),
+                       env=harness._safe_git_env(where), capture_output=True)
+        assert marker.exists() is (not pinned)
+
+
+def test_the_snapshot_reads_no_configuration_from_the_copy(world):
+    marker = world.root / "ran"
+    edits = dict(_hostile_filter(marker), **{"app.py": "changed\n"})
+    assert run(world, env={"FAKE_EDITS": edits}).returncode == 0
+    assert not marker.exists()
+    entries = _meta(world)["git_config"]
+    assert entries and all(e.startswith(("command line ", "harness ")) for e in entries)
+    assert sorted(e.split(" ", 1)[1] for e in entries if e.startswith("harness ")) == \
+        ["core.bare", "core.filemode", "core.repositoryformatversion"]
+    assert not [e for e in entries if "filter." in e or "user." in e]
+
+
+def test_a_configuration_origin_other_than_the_harness_is_a_problem(tmp_path):
+    harness = _harness_module()
+    own = tmp_path / "git" / "config"
+    good = b"command line:\0core.fsmonitor\nfalse\0file:" + str(own).encode() + b"\0core.bare\nfalse\0"
+    assert harness._config_problem(good, own) == (["command line core.fsmonitor", "harness core.bare"], None)
+    for bad in (good + b"file:/elsewhere/config\0filter.x.clean\ntouch\0",
+                good + b"file:" + str(own).encode() + b"\0filter.x.clean\ntouch\0",
+                good + b"blob:abc\0core.editor\nvi\0"):
+        assert harness._config_problem(bad, own)[1]
+
+
+def test_replace_refs_change_nothing_in_the_diff(world):
+    git_cmds = [["add", "-A"], ["commit", "-qm", "the change"], ["replace", "HEAD~1", "HEAD"]]
+    assert run(world, env={"FAKE_EDITS": {"app.py": "changed\n"}, "FAKE_GIT": git_cmds}).returncode == 0
+    assert "+changed" in (_state_dir(world) / "diff.patch").read_text()
+    live = subprocess.run(["git", "-C", str(_workdir(world)), "diff", "HEAD~1", "HEAD"], capture_output=True, text=True)
+    assert live.returncode == 0 and live.stdout == ""          # read as it stands, the replace ref hides the change
+
+
+def test_the_fixture_tree_is_recorded_in_the_end_record_and_the_evidence(world):
+    assert run(world).returncode == 0
+    work, meta = _workdir(world), _meta(world)
+    tree = git(work, "rev-parse", meta["base_commit"] + "^{tree}")[0]
+    assert meta["fixture_tree"] == records(world)[0]["fixture_tree"] == tree and len(tree) == 40
+
+
+KERNEL_KEY_A = bytes(range(200, 232))                        # not valid UTF-8, as the kernel's random keys mostly are
+KERNEL_KEY_R = b"\xff\x00kernel-redaction-key-bytes\x80\x81\x82"
+
+
+def _kernel_key_forms(raw):
+    import base64
+    shown = raw.decode("utf-8", "replace")
+    forms = {raw.hex(), base64.b64encode(raw).decode()[:-4], shown, json.dumps(shown)[1:-1], json.dumps(shown, ensure_ascii=False)[1:-1]}
+    return [f for f in forms if len(f.encode()) >= 16]
+
+
+def test_the_copys_kernel_keys_are_redacted_everywhere_they_are_saved(world):
+    import base64
+    _setup_case(world, "import os\nos.makedirs('.qa', exist_ok=True)\n"
+                       "open('.qa/authority.key', 'wb').write(%r)\nopen('.qa/redaction.key', 'wb').write(%r)\n"
+                       % (KERNEL_KEY_A, KERNEL_KEY_R))
+    late = "agent-made-key-0123456789abcdef"
+    edits = {".qa/ledger/events.jsonl": "seen %s\n" % KERNEL_KEY_A.hex(), "leak.txt": base64.b64encode(KERNEL_KEY_R).decode() + "\n",
+             ".qa/authority.key": None,                                   # gone by the end: the key read after the setup counts
+             ".qa/redaction.key": late, "late.txt": "late %s\n" % late}  # made by the agent: the key read at the end counts
+    r = run(world, env={"FAKE_CAT": [".qa/authority.key", ".qa/redaction.key"], "FAKE_EDITS": edits})
+    assert r.returncode == 0, r.stderr
+    run_dir = world.out / "runs" / records(world)[0]["run_id"]
+    saved = [p for p in run_dir.rglob("*") if p.is_file()]
+    forms = _kernel_key_forms(KERNEL_KEY_A) + _kernel_key_forms(KERNEL_KEY_R) + [late]
+    for path in saved:
+        data = path.read_bytes()
+        assert KERNEL_KEY_A not in data and KERNEL_KEY_R not in data, path
+        text = data.decode("utf-8", "replace")
+        assert not [f for f in forms if f in text], path
+    for rel in ("stdout.txt", "stderr.txt", "qa-state/ledger/events.jsonl", "file-state/diff.patch"):
+        assert "[REDACTED:kernel-key]" in (run_dir / rel).read_text(), rel
 
 
 @pytest.mark.parametrize("target", [".git/config", ".git/objects", ".git"])
