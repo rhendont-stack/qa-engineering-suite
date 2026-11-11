@@ -549,3 +549,12 @@ def test_end_to_end_the_red_setup_keeps_the_failure_and_a_run_that_records_it_pa
         shutil.rmtree(str(work), ignore_errors=True)
     assert result["hard_failed"] == [] and result["verdict"] == "pass", result["criteria"]
     assert empty["hard_failed"] == ["red_baseline_recorded"]
+
+
+def test_the_facts_module_the_grader_imports_has_a_name_no_other_skill_uses():
+    """Every grader puts its own evals/ first on sys.path; a module name another skill's evals also use would hand one grader
+    the other's facts once both are imported in one process."""
+    name = Path(grade._cases.__file__).name
+    assert name == "_mutation_cases.py" and Path(grade._cases.__file__).parent == EVALS
+    others = [p for p in (REPO / "skills").glob("*/evals/" + name) if p.parent != EVALS]
+    assert others == []

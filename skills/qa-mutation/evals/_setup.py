@@ -1,8 +1,8 @@
 """Prepares the working copy for a qa-mutation case, through the kernel's launcher for everything under ``.qa/``.
 
 Shared by ``setup_green.py`` and ``setup_red.py``, which the harness runs with the working copy as their directory, never an
-agent. With ``repair``, ``parse_quantity`` is rewritten as ``_cases.REPAIRED`` and the copy's one commit is amended to hold it,
-so the work tree is clean and HEAD is the repaired project. Then ``init`` and the user's approval to run the project's tests
+agent. With ``repair``, ``parse_quantity`` is rewritten as ``_mutation_cases.REPAIRED`` and the copy's one commit is amended to
+hold it, so the work tree is clean and HEAD is the repaired project. Then ``init`` and the user's approval to run the project's tests
 (``config set project.trust trusted``, quoted as the user's words). Nothing else is recorded.
 """
 import json
@@ -13,7 +13,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import _cases as data  # noqa: E402
+import _mutation_cases as data  # noqa: E402
 
 LAUNCHER = HERE.parent / "scripts" / "qa.py"
 if not LAUNCHER.is_file():  # before the skill has been vendored, the shared launcher is the same kernel

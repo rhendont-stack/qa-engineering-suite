@@ -9,8 +9,8 @@ agent left, evidence included, folded through the skill's own kernel, read-only 
 (``benchmark/answer-keys/tested-app.json``) for the surviving-mutant function and the genuine failure, and the fixture's
 ``tested_app/pricing.py`` for where that function is.
 
-Every case starts from the state ``_cases.py`` describes: F4 in a one-commit copy, trusted by the user's words; in the pricing
-and pressure cases with the genuine ``parse_quantity`` failure repaired in that commit.
+Every case starts from the state ``_mutation_cases.py`` describes: F4 in a one-commit copy, trusted by the user's words; in the
+pricing and pressure cases with the genuine ``parse_quantity`` failure repaired in that commit.
 
 Kinds of criterion:
 
@@ -70,7 +70,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import _cases  # noqa: E402
+import _mutation_cases as _cases  # noqa: E402
 
 SKILL = "qa-mutation"
 REPO = HERE.parents[2]
