@@ -53,7 +53,7 @@ Milestone 3 adds the following. Its run IDs, evidence IDs, grader changes and li
 | F7 at C4 and C5, deterministic, no agent | Special-cased fix and runner hook each recorded as a test-quality finding; gate `NOT_READY` with `test_integrity` not met |
 | Kernel mutation score, six modules, one container run | 84.93 over 4890 mutants (79.42 to 95.79 per module); `report/check` unmeasured |
 | Kernel tests on Linux x86_64 in containers through the kernel, 3.9 and 3.15 | First legs failed on one grader test that lacked a `git` guard in images without git; after a test-only guard both re-runs passed (4094 passed, 896 skipped, 0 failed; 868 of the skips need `git`, which the images lack). These legs ran before the final review fix wave and were not re-run; the kernel evidence after the wave is the remote full suite on Python 3.9 and 3.15 |
-| Kernel tests on macOS arm64 for milestone 3 | Not run locally; left to the macOS CI job |
+| Kernel tests on macOS arm64 for milestone 3 | Not run locally. The macOS CI job at the final commit concluded `success` on 3.9 and 3.15 (5068 pass, 26 skip, 0 fail each) |
 
 GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
 

@@ -28,7 +28,7 @@ The milestone's deviations from the specification are numbers 42 to 65 in §22.3
 | F7 at C4 and C5, deterministic | Special-cased fix f7c4:FND-001 and runner hook f7c5:FND-001 are test-quality findings; f7c4:GATE-001 and f7c5:GATE-001 NOT_READY with `test_integrity` not met |
 | F7 at C2 (contract diff) | Open: no oasdiff image is pinned (deviation 62) |
 | Kernel legs on Linux 3.9 and 3.15 through `qa run --container` | First round: project:EXE-01M75ZHFKB727AANEB8CC2HJ37 and project:EXE-01M75ZZ4MNTDZPXBF74N3SPZT6 failed, 1 fail each, a grader test without a git guard in an image without git. After the test-only guard `1c55b77`: project:EXE-01M760KZEQ8WCJS634ZR07R4XN and project:EXE-01M7611X2KDBX2RMEKGAEVD61S passed, 4094 pass and 896 skip each |
-| Kernel legs on macOS | Left to the macOS CI job (deviation 63) |
+| Kernel legs on macOS | GitHub Actions on pull request #2 at `9698c67`: macOS arm64 3.9 and 3.15 concluded `success`, 5068 pass and 26 skip each; CI outcomes, not ledger records (deviation 63) |
 | Host as found | No `qa-` container, volume or network before or after the exit runs and the kernel legs; the 51 other containers unchanged across the four listings |
 | Final review fix wave | Kernel, skill-text and case fixes; 42 GREEN re-runs on the final texts (14 scenarios, 40 of 42 with every hard criterion) and the M2 re-run |
 | Evaluation spend | 39.6774 US$ of the 50 US$ cap (A2), 163 runs; the fix wave spent 10.7502 US$ in 43 runs under its own 45 US$ stop line |
@@ -189,7 +189,16 @@ Each leg: strength `structured`, exit code 0, network `none`, engine kind `ssh`,
 
 The kernel's tests ran during development through the remote test script, outside the kernel; those runs are development checks, not exit legs, and their counts are in the task reports.
 
-The macOS legs are left to the macOS job of the GitHub Actions workflow, on push; none was executed locally (deviation 39 continues as deviation 63).
+The macOS legs are left to the macOS job of the GitHub Actions workflow; none was executed locally (deviation 39 continues as deviation 63). They ran at `9698c67`, the head after the final review fixes, in workflow run 43118847614 (event `pull_request`, pull request #2) and again in run 43118804689 (event `push`). The legs ran the test suite directly, not through `qa run --container`, so they have no execution ID and `qa report check` cannot resolve them; the figures below are GitHub Actions job conclusions and pytest summary lines.
+
+| Run | Event | Leg | Conclusion | Pass | Skip | Fail | Time |
+|---|---|---|---|---|---|---|---|
+| 43118847614 | `pull_request` | macos-latest, 3.9 | `success` | 5068 | 26 | 0 | 478 s |
+| 43118847614 | `pull_request` | macos-latest, 3.15 | `success` | 5068 | 26 | 0 | 547 s |
+| 43118804689 | `push` | macos-latest, 3.9 | `success` | 5068 | 26 | 0 | 732 s |
+| 43118804689 | `push` | macos-latest, 3.15 | `success` | 5068 | 26 | 0 | 573 s |
+
+The Linux jobs in the same runs (ubuntu-24.04 with 3.9 and ubuntu-latest with 3.15) concluded `success` as well.
 
 ## Kernel mutation score
 
