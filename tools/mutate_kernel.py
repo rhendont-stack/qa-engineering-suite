@@ -50,7 +50,7 @@ VENV, HOME = "/work/venv", "/work/home"
 # puts shared/kernel on the path), so the run mutates the kernel through ``src/qa``, a link made in the project copy. The
 # unmutated kernel stays in ``mutants/shared/kernel`` for the tests that start it in a subprocess.
 LINK_SOURCE, LINK_TARGET = "src/qa/", "../shared/kernel/qa"
-PYTEST_ARGS = ("-o pythonpath=tests",)  # the ini's own pythonpath would put the unmutated kernel before mutmut's copy
+PYTEST_ARGS = ("-o", "pythonpath=tests")  # the ini's own pythonpath would put the unmutated kernel before mutmut's copy
 
 
 class Refused(Exception):

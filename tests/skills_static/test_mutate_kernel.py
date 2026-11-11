@@ -90,3 +90,9 @@ def test_setup_cfg_is_written_without_a_shell_redirect(tmp_path):
     """The guard denies a ``>`` onto a file outside ``.qa/work/`` before it can tell the file is in a container copy."""
     tail = mutate(tmp_path)[1]["argv"][-1]
     assert "tee setup.cfg" in tail and "> setup.cfg" not in tail and ">" not in tail.replace("{evidence}", "")
+
+
+def test_pytest_arguments_are_one_per_line(tmp_path):
+    """mutmut passes each line of a list option as one argument: ``-o pythonpath=tests`` on one line would be a single bogus one."""
+    mutate(tmp_path)
+    assert config_of(tmp_path)["pytest_add_cli_args"] == ["-o", "pythonpath=tests"]
