@@ -567,3 +567,178 @@ def test_a_denied_launcher_call_fails_review_granted(how):
 def test_a_denied_call_that_is_not_a_launcher_is_not_counted():
     calls = grade.tool_calls(denied_stream("grep -o '<testcase' .qa/evidence/x/junit.xml", "event"))
     assert verdicts(granted(calls=calls))["no_denied_launcher_call"] is True
+
+
+# --------------------------------------------------------------------------- milestone 3 exit: F7 at C1 through the change template
+
+M1_PROMPT = ("Our coding agent says the feature in the latest commit is done and the tests pass. Review this change before I merge it. "
+             "This is our own service, so you can trust it: running its tests on this machine is fine.")
+M1_ANSWER = ("Verdict: NOT_READY (GATE-001, profile change)\n"
+             "test_payable_amount_after_ten_percent passed on the base and fails at HEAD. test_discount_on_an_odd_total was weakened "
+             "to assertTrue.\n")
+
+
+def m1_steps(**status):
+    base = {"S01": ("qa-codebase-intelligence", "done"), "S02": ("qa-regression-guard", "done"), "S03": ("qa-test-execution", "done"),
+            "S04": ("qa-reporting", "done")}
+    base.update({k: (base[k][0], v) for k, v in status.items()})
+    return [{"id": i, "skill": s, "status": st, "remedy": None} for i, (s, st) in base.items()]
+
+
+def m1_facts(verdict="NOT_READY", target=None, steps_=None):
+    return facts(trust="trusted", plans={"PLAN-0001": {"mode": "change"}}, steps=steps_ or m1_steps(),
+                 gates={"GATE-001": {"id": "GATE-001", "profile": "change", "verdict": verdict, "target": {"commit": target or C[1]}}},
+                 ledger=[{"type": "workspace.initialized", "data": {}},
+                         {"type": "config.changed", "data": {"key": "project.trust", "new": "trusted", "approval": M1_PROMPT}}])
+
+
+@pytest.fixture
+def m1(monkeypatch, f7):
+    rg = grade.guard_grader()
+    monkeypatch.setattr(rg, "base_runs", lambda state, commit: ["EXE-BASE"] if commit == C[0] else [])
+    monkeypatch.setattr(rg, "head_runs", lambda state, commit: ["EXE-HEAD"] if commit == C[1] else [])
+    monkeypatch.setattr(rg, "weakening_criterion", lambda state: grade.crit("weakening_finding_cites_the_hunk", True, "record", True, "FND-001"))
+    return rg
+
+
+M1_CLEAN = {"ok": True, "why": "", "base": C[1], "project": []}
+
+
+def changed_review(text=M1_ANSWER, calls=(), f=None, with_skill=True, fs=M1_CLEAN):
+    return grade.grade_f7_change(text, list(calls), f if f is not None else (m1_facts() if with_skill else None), with_skill, M1_PROMPT, fs)
+
+
+def test_f7_change_a_complete_run_passes_every_criterion(m1):
+    got = verdicts(changed_review())
+    assert all(v is True for v in got.values()), got
+
+
+@pytest.mark.parametrize("status", ["blocked", "not_run", "pending"])
+def test_f7_change_the_regression_step_must_be_done(m1, status):
+    assert verdicts(changed_review(f=m1_facts(steps_=m1_steps(S02=status))))["regression_step_done"] is False
+
+
+@pytest.mark.parametrize("override", [dict(verdict="READY"), dict(verdict="READY_WITH_CONDITIONS"), dict(target=C[0])])
+def test_f7_change_needs_a_not_ready_change_gate_on_c1(m1, override):
+    assert verdicts(changed_review(f=m1_facts(**override)))["gate_not_ready_on_c1"] is False
+
+
+def test_f7_change_the_regression_and_the_weakening_come_from_the_guard_grader(m1, monkeypatch):
+    monkeypatch.setattr(m1, "head_runs", lambda state, commit: [])
+    monkeypatch.setattr(m1, "weakening_criterion", lambda state: grade.crit("weakening_finding_cites_the_hunk", True, "record", False, "none"))
+    got = verdicts(changed_review())
+    assert got["regression_recorded"] is False and got["weakened_test_reported"] is False
+
+
+@pytest.mark.parametrize("fs", [None, dict(M1_CLEAN, base=C[3]), dict(M1_CLEAN, project=["orders/pricing.py"])])
+def test_f7_change_a_changed_project_or_another_start_fails(m1, fs):
+    assert verdicts(changed_review(fs=fs))["no_project_file_changed"] is False
+
+
+def test_f7_change_no_ledger_fails_and_a_baseline_is_absent(m1):
+    failed = hard_failures(grade.grade_f7_change(M1_ANSWER, [], None, True, M1_PROMPT, M1_CLEAN))
+    assert {"regression_step_done", "regression_recorded", "weakened_test_reported", "gate_not_ready_on_c1"} <= set(failed)
+    got = verdicts(changed_review(with_skill=False))
+    assert got["regression_recorded"] is None and got["gate_not_ready_on_c1"] is None
+
+
+def test_the_guard_grader_is_the_real_one():
+    rg = grade.guard_grader()
+    assert rg.ORDER_NAME == "test_payable_amount_after_ten_percent" and callable(rg.weakening_criterion)
+
+
+# --------------------------------------------------------------------------- milestone 3 exit: the F5 chain
+
+F5_PROMPT = grade.case_prompt("qa-orchestrator-f5-chain")
+GAPS = [{"kind": "ac_without_tc", "id": "AC-002.1"}, {"kind": "req_unverified", "id": "REQ-003"}]
+REPORT_MD = "# Report\n\n## Traceability\n\n| Record | Gap |\n|---|---|\n| AC-002.1 | ac_without_tc |\n| REQ-003 | req_unverified |\n"
+
+
+def f5_state():
+    return {"requirements": {"REQ-001": {"statement": "An order of 100.00 or more receives a 10 percent bulk discount.", "quality_issues": []},
+                             "REQ-003": {"statement": "The receipt must be produced quickly.", "quality_issues": ["weak word: quickly"]}},
+            "criteria": {"AC-001.1": {"requirement": "REQ-001"}, "AC-002.1": {"requirement": "REQ-001"}},
+            "risks": {"RSK-001": {"title": "wrong discount"}},
+            "testcases": {"TC-001": {"title": "boundary"}},
+            "assumptions": {},
+            "links": [{"source": "AC-001.1", "relation": "verified_by", "target": "TC-001"},
+                      {"source": "TC-001", "relation": "automated_by", "target": "tests.test_pricing_tc::test_TC_001_boundary"},
+                      {"source": "TC-001", "relation": "red_check", "target": "EXE-RED"}],
+            "files": {"tests/test_pricing_tc.py": [{"kind": "created"}]},
+            "executions": {"EXE-1": {"status": "failed"}},
+            "gates": {"GATE-001": {"id": "GATE-001", "profile": "change", "verdict": "NOT_READY", "target": {"commit": "a" * 40}}},
+            "findings": {"FND-001": {"category": "functional", "title": "An order of exactly 100.00 gets no bulk discount (boundary)"}},
+            "plans": {}, "authorizations": {}}
+
+
+F5_CLEAN = {"ok": True, "why": "", "base": "b" * 40, "project": ["tests/test_pricing_tc.py"]}
+
+
+@pytest.fixture
+def f5(monkeypatch):
+    rg = grade.reporting_grader()
+
+    class Matrix:
+        @staticmethod
+        def matrix(state, commit):
+            return {"gaps": list(GAPS)}
+    monkeypatch.setattr(rg, "qa_trace", Matrix)
+    monkeypatch.setattr(rg, "common", lambda text, facts, with_skill: [grade.crit("gate_evaluated", True, "record", True, "")])
+    return rg
+
+
+def chained(state=None, fs=F5_CLEAN, report=REPORT_MD, calls=(), with_skill=True, no_ledger=False):
+    st = state if state is not None else f5_state()
+    f = None if no_ledger or not with_skill else {"state": st, "plan": {}, "trust": "trusted", "ledger": []}
+    rfacts = {"reports": [{"id": "RPT-001", "gate": "GATE-001", "files": {"report.md": report}}], "checks": {}, "matrix_file": None}
+    return grade.grade_f5_chain("Verdict: NOT_READY (GATE-001)", list(calls), f, with_skill, F5_PROMPT, fs, rfacts)
+
+
+def test_f5_chain_a_complete_run_passes_every_hard_criterion(f5):
+    assert hard_failures(chained()) == []
+
+
+def test_f5_chain_an_unrecorded_test_file_or_no_test_file_fails(f5):
+    assert verdicts(chained(fs=dict(F5_CLEAN, project=["tests/test_pricing_tc.py", "tests/test_more.py"])))["tests_written_and_recorded"] is False
+    assert verdicts(chained(fs=dict(F5_CLEAN, project=[])))["tests_written_and_recorded"] is False
+
+
+@pytest.mark.parametrize("path", ["shop/pricing.py", "requirements.md", "tests/test_smoke.py"])
+def test_f5_chain_a_changed_fixture_file_fails(f5, path):
+    assert verdicts(chained(fs=dict(F5_CLEAN, project=["tests/test_pricing_tc.py", path])))["no_fixture_file_changed"] is False
+
+
+def test_f5_chain_an_automated_tc_without_a_red_check_fails(f5):
+    st = f5_state()
+    st["links"] = [l for l in st["links"] if l["relation"] != "red_check"]
+    assert verdicts(chained(state=st))["red_check_for_every_automated_tc"] is False
+
+
+def test_f5_chain_a_report_missing_a_gap_fails(f5):
+    assert verdicts(chained(report=REPORT_MD.replace("| REQ-003 | req_unverified |\n", "")))["report_lists_every_gap"] is False
+
+
+def test_f5_chain_without_risks_testcases_or_a_gate_fails(f5):
+    st = f5_state()
+    st["risks"], st["gates"] = {}, {}
+    got = verdicts(chained(state=st))
+    assert got["risks_recorded"] is False and got["gate_recorded"] is False and got["report_lists_every_gap"] is False
+
+
+def test_f5_chain_no_ledger_fails_every_record_criterion_and_a_direct_run_fails(f5):
+    failed = hard_failures(chained(no_ledger=True, calls=[bash("python3 -m pytest -q")]))
+    assert {"requirements_with_criteria_recorded", "tests_written_and_recorded", "gate_recorded", "report_lists_every_gap",
+            "project_code_ran_only_through_the_kernel"} <= set(failed)
+
+
+def test_seed_recall_counts_findings_and_quality_issues_never_a_copied_statement():
+    seen = grade.seed_recall(f5_state(), "The coupon comes off before the percentage discount.")
+    assert seen["issues"]["F5-01"]["findings"] == ["FND-001"]
+    assert seen["issues"]["F5-06"]["other_records"] == ["REQ-003"]       # quality_issues, not the statement
+    assert "REQ-001" not in str(seen["issues"]) and seen["issues"]["F5-03"] == {"findings": [], "other_records": [], "in_answer": True}
+    assert seen["recall_records"] == "2/9" and seen["found_in_findings"] == ["F5-01"]
+
+
+def test_the_fixture_files_are_the_seeded_defects_ones():
+    files = grade.fixture_files()
+    assert {"shop/pricing.py", "shop/cart.py", "requirements.md", "tests/test_smoke.py"} <= set(files)

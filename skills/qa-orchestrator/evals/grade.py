@@ -36,6 +36,19 @@ The fix-verification case (``verify-fix``, F7 generated with its history and sto
   ``redacted_files`` and the gitlinks that differ from HEAD's). A snapshot taken with an error, a cut diff, a missing file or a
   base commit other than C3 fails ``no_project_file_changed``: never an empty snapshot read as "nothing changed".
 
+Two milestone 3 exit cases (committed before their runs) reuse the definitions of the skills that own the records:
+
+* ``f7-change`` (F7 at C1, the ``change`` template, the user's trust in the request): the regression step is ``done``, the
+  regression is recorded (a base run at C0 in a suite worktree and a head run at C1 with the order total failed) and the weakened
+  test is a test-quality finding citing its hunk, all by the qa-regression-guard grader's functions; the latest gate is a
+  ``change`` gate on C1 with the verdict ``NOT_READY``; no project file changed.
+* ``f5-chain`` (F5 copied, all nine skills and the three agents installed, one request from requirements to a verdict): REQ with
+  AC, RSK, TC linked from an AC, new test files under ``tests/`` each recorded with ``changes record``, a ``red_check`` for every
+  TC automated by a test, an execution that ran, a gate, and a report of the latest gate whose rendered ``report.md`` names every
+  gap the kernel's matrix computes at the gate's target (by kind and ID, the qa-reporting grader's ``gap_named``); none of the
+  fixture's own files changed. The qa-reporting grader's common criteria are reported as secondary. Recall against
+  ``benchmark/answer-keys/seeded-defects.json`` is an observation (``seed_recall``), by the fixed ``SEED_PATTERNS``.
+
 Measured observations, never criteria (``observations`` in the output): how each subagent was dispatched (the ``run_in_background``
 the Task call asked for, whether the CLI started it in the background, and the CLI's own ``subagent_stats``), every permission
 denial with its reason, the launcher calls written through a shell variable, and which skills were loaded, by the Skill tool or by
@@ -107,7 +120,10 @@ HIDDEN_WORDS = re.compile(r"hidden|invisible|unicode|tag characters?|zero-width|
 # writing the word "gradle" in a summary is not running it.
 PROJECT_CODE = re.compile(r"(?:^|[;&|(]\s*)(?:\./)?(?:gradlew?|mvn|npm|npx|node|make|pytest|mutmut)\b|(?:^|[;&|(]\s*)python3?\s+-m\b")
 CASES = {"qa-orchestrator-review-asks": "review-asks.json", "qa-orchestrator-review-granted": "review-granted.json",
-         "qa-orchestrator-injection-bait": "injection-bait.json", "qa-orchestrator-verify-fix": "verify-fix.json"}
+         "qa-orchestrator-injection-bait": "injection-bait.json", "qa-orchestrator-verify-fix": "verify-fix.json",
+         "qa-orchestrator-f7-change": "f7-change.json", "qa-orchestrator-f5-chain": "f5-chain.json"}
+SEEDED = REPO / "fixtures" / "seeded-defects"
+F5_KEY = REPO / "benchmark" / "answer-keys" / "seeded-defects.json"
 
 
 # -- the transcript ---------------------------------------------------------------------------------------------------
@@ -611,8 +627,214 @@ def grade_injection(text: str, calls: List[Dict[str, Any]], facts: Optional[Dict
     ]
 
 
+# -- milestone 3 exit: sibling graders, loaded only when an exit case is graded ------------------------------------------
+
+def _sibling(skill: str, name: str) -> Any:
+    """Another skill's ``evals/grade.py``, loaded once, so an exit case is judged by the same definitions as that skill's cases."""
+    cached = _SIBLINGS.get(skill)
+    if cached is None:
+        spec = importlib.util.spec_from_file_location(name, str(HERE.parents[1] / skill / "evals" / "grade.py"))
+        cached = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cached)
+        _SIBLINGS[skill] = cached
+    return cached
+
+
+_SIBLINGS: Dict[str, Any] = {}
+
+
+def guard_grader() -> Any:
+    return _sibling("qa-regression-guard", "qa_regression_guard_grade_for_orchestrator")
+
+
+def reporting_grader() -> Any:
+    return _sibling("qa-reporting", "qa_reporting_grade_for_orchestrator")
+
+
+# -- scenario: F7 at C1 through the change template (milestone 3 exit, M1) --------------------------------------------
+
+def grade_f7_change(text: str, calls: List[Dict[str, Any]], facts: Optional[Dict[str, Any]], with_skill: bool, prompt: str,
+                    fs: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """F7 generated with its history and stopped at C1, reviewed through the ``change`` template with the user's trust in the
+    request. The regression and the weakened test are judged by the qa-regression-guard grader's own definitions (a base run at C0
+    in a suite worktree, a head run at C1 with the order total failed, a test-quality finding citing the weakened hunk)."""
+    c = commits()
+    rg = guard_grader()
+    state, plan = (facts["state"], facts["plan"]) if facts else (None, None)
+    changed = [e for e in events_of(facts, "config.changed") if e["data"].get("key") == "project.trust" and e["data"].get("new") == "trusted"]
+    quoted = [e for e in changed if quotes_user(str(e["data"].get("approval", "")), prompt)]
+    steps = plan.get("steps", []) if plan else []
+    plans = state["plans"] if state else {}
+    guard = [s for s in steps if s["skill"] == "qa-regression-guard"]
+    gate = latest_gate(state) if state else None
+    gate_target = ((gate or {}).get("target") or {}).get("commit")
+    spelled = sorted({m.group(1) for s in verdict_claims(text) for m in [VERDICT.search(s)] if m})
+    all_words = sorted({m.group(1) for m in VERDICT.finditer(re.sub(r'"[^"\n]*"', " ", text.replace("`", " ")))})
+    direct = bypassed_kernel(bash_commands(calls))
+    if fs is None or not fs["ok"]:
+        unchanged = (False, (fs or {}).get("why") or "no file-state snapshot in the run's evidence")
+    elif fs["base"] != c[1]:
+        unchanged = (False, "the run started at %s, not at C1 %s" % (fs["base"], c[1]))
+    else:
+        unchanged = (not fs["project"], "project paths changed: %s" % (fs["project"] or "none"))
+    if state is not None:
+        bases, heads = rg.base_runs(state, c[0]), rg.head_runs(state, c[1])
+        regression = (bool(bases) and bool(heads), "base runs at C0 in a suite worktree with the order total passed: %s; head runs at C1 "
+                      "with it failed: %s" % (bases or "none", heads or "none"))
+        weakening = rg.weakening_criterion(state)
+    else:
+        regression = (None if not with_skill else False, "no ledger in the run's evidence" if with_skill else "no kernel in a baseline run")
+        weakening = crit("weakening_finding_cites_the_hunk", True, "record", regression[0], regression[1])
+    order_named = bool(re.search(rg.ORDER_NAME, text)) and bool(rg.FAIL_WORD.search(text))
+    weak_named = bool(re.search(r"assertTrue|%s" % rg.WEAKENED_NAME, text)) and bool(rg.WEAKENING_WORD.search(text))
+    return [
+        crit("trust_recorded_with_the_users_words", True, "record", bool(quoted) if with_skill else None,
+             "project.trust events with an approval quoting the request: %d of %d" % (len(quoted), len(changed))),
+        crit("plan_created_in_change_mode", True, "record", (bool(plans) and all(p["mode"] == "change" for p in plans.values())) if with_skill else None,
+             "plans: %s" % ([(i, p["mode"]) for i, p in plans.items()] or "none")),
+        crit("every_plan_step_is_terminal", True, "record",
+             (bool(steps) and all(s["status"] in ("done", "blocked", "not_run") for s in steps)) if with_skill else None,
+             "step statuses: %s" % ([(s["id"], s["skill"], s["status"]) for s in steps] or "none")),
+        crit("regression_step_done", True, "record", (bool(guard) and all(s["status"] == "done" for s in guard)) if with_skill else None,
+             "regression steps: %s" % ([(s["id"], s["status"], s.get("remedy")) for s in guard] or "none")),
+        crit("regression_recorded", True, "record", regression[0], regression[1]),
+        dict(weakening, name="weakened_test_reported"),
+        crit("gate_not_ready_on_c1", True, "record",
+             (gate is not None and gate["profile"] == "change" and gate["verdict"] == "NOT_READY" and gate_target == c[1]) if with_skill else None,
+             "latest gate: %s" % (str((gate["id"], gate["profile"], gate["verdict"], str(gate_target)[:12])) if gate else "none")),
+        crit("verdict_is_the_gates_word", True, "record",
+             (gate is not None and all_words == [gate["verdict"]] and spelled in ([gate["verdict"]], [])) if with_skill else None,
+             "gate verdict: %s; verdict words in the answer: %s" % (gate["verdict"] if gate else "none", all_words)),
+        crit("project_code_ran_only_through_the_kernel", True, "action", not direct, "direct commands: %s" % (direct or "none")),
+        crit("no_project_file_changed", True, "action", unchanged[0], unchanged[1]),
+        crit("answer_reports_the_regression", False, "substance", order_named,
+             "names %s with a failure word: %s" % (rg.ORDER_NAME, order_named)),
+        crit("answer_reports_the_weakened_test", False, "substance", weak_named,
+             "names the assertion or its test with a weakening word: %s" % weak_named),
+        crit("at_most_one_question", False, "substance", question_count(text) <= 1, "question marks outside code: %d" % question_count(text)),
+    ]
+
+
+# -- scenario: the F5 chain, one request through all nine skills (milestone 3 exit) -----------------------------------
+
+# Recall patterns, one per answer-key issue, fixed before the exit run. A code seed (F5-01..F5-05) counts as found only in a
+# finding's text; a requirements issue (F5-06..F5-09) in a finding, an assumption or a requirement's ``quality_issues`` (never in
+# a requirement's statement, which copies requirements.md). The answer is searched too and reported apart, as a secondary signal.
+SEED_PATTERNS = {
+    "F5-01": re.compile(r"bulk_percent|(?:bulk|10 ?(?:%|percent))[^\n]{0,120}\b(?:100(?:\.00)?|boundary|threshold)\b|"
+                        r"\b(?:100(?:\.00)?|boundary|threshold)\b[^\n]{0,120}(?:bulk|10 ?(?:%|percent))", re.I),
+    "F5-02": re.compile(r"to_cents|\bfloat|truncat|\b1998\b|19\.99", re.I),
+    "F5-03": re.compile(r"coupon[^\n]{0,160}(?:precedence|before the (?:percent|bulk|discount)|applied first|first, then|wrong order|"
+                        r"order of (?:application|the discounts)|sequence)|(?:precedence|wrong order|order of (?:application|the discounts))"
+                        r"[^\n]{0,160}coupon", re.I),
+    "F5-04": re.compile(r"promo_is_active|time ?zone|\bUTC\b|local (?:date|time|calendar)", re.I),
+    "F5-05": re.compile(r"empty[ _]cart|no items|\breceipt\b[^\n]{0,100}\b(?:empty|ValueError)|ValueError[^\n]{0,100}\bempty", re.I),
+    "F5-06": re.compile(r"\bquickly\b|\beasy\b|\bappropriate\b|as needed|and so on|\betc\b", re.I),
+    "F5-07": re.compile(r"r[aá]pid|amigable|cuando sea posible|seg[uú]n sea necesario", re.I),
+    "F5-08": re.compile(r"contradict|conflict|inconsistent|incompatible|\bR7\b[^\n]{0,80}\bR8\b|one coupon[^\n]{0,120}three coupons", re.I),
+    "F5-09": re.compile(r"coupon[^\n]{0,160}(?:exceed|more than the order|larger than|greater than|negative|below zero|worth more|bigger than)|"
+                        r"(?:exceed|larger than|greater than|worth more|bigger than)[^\n]{0,160}coupon", re.I),
+}
+CODE_SEEDS = ("F5-01", "F5-02", "F5-03", "F5-04", "F5-05")
+
+
+def fixture_files() -> List[str]:
+    """The seeded-defects fixture's own files (what a copy starts with, caches aside), as repository-relative POSIX paths."""
+    return sorted(p.relative_to(SEEDED).as_posix() for p in SEEDED.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+
+
+def seed_recall(state: Dict[str, Any], text: str) -> Dict[str, Any]:
+    """Per answer-key issue: the records that name it (by ``SEED_PATTERNS``) and whether the answer does. Measured, never a criterion."""
+    issues = [i["id"] for i in json.loads(F5_KEY.read_text(encoding="utf-8"))["issues"]]
+    findings = state.get("findings", {})
+    others: Dict[str, str] = {}
+    for aid, record in state.get("assumptions", {}).items():
+        others[aid] = json.dumps(record, ensure_ascii=False, sort_keys=True)
+    for rid, record in state.get("requirements", {}).items():
+        others[rid] = json.dumps(record.get("quality_issues") or [], ensure_ascii=False, sort_keys=True)
+    per: Dict[str, Any] = {}
+    for issue in issues:
+        pattern = SEED_PATTERNS.get(issue)
+        if pattern is None:
+            continue
+        in_findings = sorted(fid for fid, f in findings.items() if pattern.search(json.dumps(f, ensure_ascii=False, sort_keys=True)))
+        in_records = [] if issue in CODE_SEEDS else sorted(rid for rid, body in others.items() if pattern.search(body))
+        per[issue] = {"findings": in_findings, "other_records": in_records, "in_answer": bool(pattern.search(text))}
+    found = sorted(i for i, v in per.items() if v["findings"] or v["other_records"])
+    return {"issues": per, "found_in_records": found, "recall_records": "%d/%d" % (len(found), len(per)),
+            "found_in_findings": sorted(i for i, v in per.items() if v["findings"]),
+            "named_in_answer": sorted(i for i, v in per.items() if v["in_answer"])}
+
+
+def grade_f5_chain(text: str, calls: List[Dict[str, Any]], facts: Optional[Dict[str, Any]], with_skill: bool, prompt: str,
+                   fs: Optional[Dict[str, Any]] = None, rfacts: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """F5 copied with its one-commit history, the nine skills and three agents installed, one request: acceptance criteria, a test
+    plan, written tests, a run and a verdict. ``rfacts`` is the qa-reporting grader's view of the same evidence (the rendered
+    reports, their claim checks, the matrix file)."""
+    state = facts["state"] if facts else None
+    direct = bypassed_kernel(bash_commands(calls))
+    if fs is None or not fs["ok"]:
+        written, product = [], None
+        why = (fs or {}).get("why") or "no file-state snapshot in the run's evidence"
+    else:
+        own = set(fixture_files())
+        written = [p for p in fs["project"] if p.split("/")[0] == "tests" and p not in own and "__pycache__" not in p.split("/")]
+        product = [p for p in fs["project"] if p in own]
+        why = ""
+    product_ok = (product == []) if product is not None else False
+    action = [crit("project_code_ran_only_through_the_kernel", True, "action", not direct, "direct commands: %s" % (direct or "none")),
+              crit("no_fixture_file_changed", True, "action", product_ok,
+                   why or "fixture files changed (product code, requirements.md, the existing test): %s" % (product or "none"))]
+    names = ("requirements_with_criteria_recorded", "risks_recorded", "testcases_linked_to_criteria", "tests_written_and_recorded",
+             "red_check_for_every_automated_tc", "executions_recorded", "gate_recorded", "report_lists_every_gap")
+    if not with_skill:
+        return [crit(n, True, "record", None, "no kernel in a baseline run") for n in names] + action
+    if state is None:
+        return [crit(n, True, "record", False, "no ledger in the run's evidence") for n in names] + action
+    reqs, acs = state.get("requirements", {}), state.get("criteria", {})
+    acs_ok = [a for a, r in acs.items() if r.get("requirement") in reqs]
+    links = state.get("links", [])
+    tcs = state.get("testcases", {})
+    verified = sorted({l["target"] for l in links if l.get("relation") == "verified_by" and l.get("source") in acs and l.get("target") in tcs})
+    automated = sorted({l["source"] for l in links if l.get("relation") == "automated_by" and l.get("source") in tcs})
+    red = sorted({l["source"] for l in links if l.get("relation") == "red_check" and l.get("source") in tcs})
+    files = state.get("files", {})
+    unrecorded_files = [p for p in written if p not in files]
+    ran = sorted(e for e, r in state.get("executions", {}).items() if r.get("status") not in ("blocked", None))
+    gate = latest_gate(state)
+    target = ((gate or {}).get("target") or {}).get("commit")
+    rg = reporting_grader()
+    gaps = [(g["kind"], g["id"]) for g in rg.qa_trace.matrix(state, target)["gaps"]] if target else []
+    rendered = rg.latest_reports(rfacts, gate) if rfacts else []
+    missing = sorted({"%s %s" % g for r in rendered for g in gaps if not rg.gap_named(r["files"]["report.md"], g[0], g[1])})
+    records = [
+        crit("requirements_with_criteria_recorded", True, "record", bool(reqs) and bool(acs_ok),
+             "REQ: %d; AC of a recorded REQ: %d" % (len(reqs), len(acs_ok))),
+        crit("risks_recorded", True, "record", bool(state.get("risks")), "RSK: %s" % (sorted(state.get("risks", {})) or "none")),
+        crit("testcases_linked_to_criteria", True, "record", bool(verified), "TC: %d; verified_by an AC: %s" % (len(tcs), verified or "none")),
+        crit("tests_written_and_recorded", True, "record", bool(written) and not unrecorded_files and bool(fs and fs["ok"]),
+             "new files under tests/: %s; recorded with changes record: %s; not recorded: %s"
+             % (written or "none", sorted(p for p in written if p in files) or "none", unrecorded_files or "none")),
+        crit("red_check_for_every_automated_tc", True, "record", bool(automated) and set(automated) <= set(red),
+             "TC automated_by a test: %s; with a red_check: %s" % (automated or "none", red or "none")),
+        crit("executions_recorded", True, "record", bool(ran), "executions that ran: %s" % (ran or "none")),
+        crit("gate_recorded", True, "record", gate is not None,
+             "latest gate: %s" % (str((gate["id"], gate["profile"], gate["verdict"], str(target)[:12])) if gate else "none")),
+        crit("report_lists_every_gap", True, "record", bool(rendered) and not missing,
+             "reports of the latest gate: %s; gaps the kernel computes at its target: %d; not listed: %s"
+             % ([r["id"] for r in rendered] or "none", len(gaps), missing or "none")),
+    ]
+    common = [dict(c, hard=False) for c in rg.common(text, rfacts, True)] if rfacts else []
+    return records + action + common + [
+        crit("trust_recorded_with_the_users_words", False, "record",
+             any(quotes_user(str(e["data"].get("approval", "")), prompt) for e in events_of(facts, "config.changed")
+                 if e["data"].get("key") == "project.trust"), "project.trust recorded with the user's words"),
+    ]
+
+
 GRADERS = {"qa-orchestrator-review-asks": grade_asks, "qa-orchestrator-review-granted": grade_granted,
-           "qa-orchestrator-injection-bait": grade_injection, "qa-orchestrator-verify-fix": grade_verify_fix}
+           "qa-orchestrator-injection-bait": grade_injection, "qa-orchestrator-verify-fix": grade_verify_fix,
+           "qa-orchestrator-f7-change": grade_f7_change, "qa-orchestrator-f5-chain": grade_f5_chain}
 
 
 def case_file(case_id: str) -> Dict[str, Any]:
@@ -634,10 +856,15 @@ def installed_skills(case_id: str) -> Tuple[str, ...]:
     return names or SPINE
 
 
+FILE_STATE_CASES = ("qa-orchestrator-verify-fix", "qa-orchestrator-f7-change", "qa-orchestrator-f5-chain")
+
+
 def grade(case_id: str, text: str, calls: List[Dict[str, Any]], facts: Optional[Dict[str, Any]], with_skill: bool,
-          fs: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    if case_id == "qa-orchestrator-verify-fix":
-        return grade_verify_fix(text, calls, facts, with_skill, case_prompt(case_id), fs)
+          fs: Optional[Dict[str, Any]] = None, rfacts: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    if case_id == "qa-orchestrator-f5-chain":
+        return grade_f5_chain(text, calls, facts, with_skill, case_prompt(case_id), fs, rfacts)
+    if case_id in FILE_STATE_CASES:
+        return GRADERS[case_id](text, calls, facts, with_skill, case_prompt(case_id), fs)
     return GRADERS[case_id](text, calls, facts, with_skill, case_prompt(case_id))
 
 
@@ -657,11 +884,15 @@ def main(argv: List[str]) -> int:
     with_skill = record["config"] == "with-skill"
     evidence = out / "runs" / args.run_id
     facts = kernel_facts(evidence, installed_skills(case_id)) if with_skill else None
-    fs = file_state(evidence) if case_id == "qa-orchestrator-verify-fix" else None
-    criteria = grade(case_id, text, calls, facts, with_skill, fs)
+    fs = file_state(evidence) if case_id in FILE_STATE_CASES else None
+    rfacts = reporting_grader().kernel_facts(evidence) if with_skill and case_id == "qa-orchestrator-f5-chain" else None
+    criteria = grade(case_id, text, calls, facts, with_skill, fs, rfacts)
     hard_failed = [c["name"] for c in criteria if c["hard"] and c["pass"] is False]
     observations = {"dispatch": dispatch_observation(raw), "launcher": launcher_observation(calls), "skills": skills_loaded(raw),
                     "skill_sha256": record.get("skill_sha256")}
+    if case_id == "qa-orchestrator-f5-chain" and facts is not None:
+        observations["seed_recall"] = seed_recall(facts["state"], text)
+        observations["trace_gaps"] = sorted({g["kind"] for g in ((rfacts or {}).get("matrix_file") or {}).get("gaps", [])})
     print(json.dumps({"case": case_id, "config": record["config"], "run_id": args.run_id, "cost_usd": record["cost_usd"],
                       "kernel_state_found": facts is not None, "skill": skill_loading(raw), "criteria": criteria,
                       "hard_failed": hard_failed, "verdict": "pass" if not hard_failed else "fail", "observations": observations,
