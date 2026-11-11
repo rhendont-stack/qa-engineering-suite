@@ -1,0 +1,34 @@
+{
+  "mode": "fix",
+  "steps": [
+    {
+      "id": "S01",
+      "skill": "qa-regression-guard",
+      "requires_authorization": ["test-execution-local"],
+      "expected_outputs": [
+        {"kind": "execution", "skill": "qa-regression-guard", "min_count": 1},
+        {"kind": "result_set", "skill": "qa-regression-guard", "min_count": 1, "status_not_in": ["unknown"]},
+        {"kind": "revalidation", "min_count": 1, "outcome_in": ["passed", "failed", "inconclusive"]}
+      ]
+    },
+    {
+      "id": "S02",
+      "skill": "qa-test-execution",
+      "depends_on": ["S01"],
+      "requires_authorization": ["test-execution-local"],
+      "expected_outputs": [
+        {"kind": "execution", "skill": "qa-test-execution", "min_count": 1},
+        {"kind": "result_set", "skill": "qa-test-execution", "min_count": 1, "status_not_in": ["unknown"]}
+      ]
+    },
+    {
+      "id": "S03",
+      "skill": "qa-reporting",
+      "depends_on": ["S01", "S02"],
+      "expected_outputs": [
+        {"kind": "gate", "profile": "fix", "min_count": 1},
+        {"kind": "report", "format": "md", "min_count": 1}
+      ]
+    }
+  ]
+}
