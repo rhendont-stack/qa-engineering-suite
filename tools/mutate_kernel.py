@@ -42,7 +42,9 @@ TIMEOUT_SECONDS = 4 * 3600
 # lists (that file holds the one wheel for macOS arm64, which a Linux container cannot use).
 REQUIREMENTS = ("requirements-dev.txt", "tests/corpus/producers/mutmut_mutation/requirements.txt")
 # What the tests read next to the kernel: mutmut runs them in ``mutants/``, a copy of the paths it is told to take.
-ALSO_COPY = ("pytest.ini", "fixtures", "shared/kernel", "shared/launcher", "shared/policies", "shared/schemas", "shared/templates")
+RESOURCES = ("schemas", "policies", "templates")  # ``qa.resource_dir`` finds these next to the package: ``src/<kind>`` here
+ALSO_COPY = (("pytest.ini", "fixtures", "shared/kernel", "shared/launcher", "shared/policies", "shared/schemas", "shared/templates")
+             + tuple("src/" + kind for kind in RESOURCES))
 VENV, HOME = "/work/venv", "/work/home"
 
 
@@ -91,7 +93,8 @@ def run_script(lines: List[str]) -> str:
     """What runs in the container after the install: the configuration, mutmut, then the converter, in one shell."""
     write = "printf '%%s\\n' %s | tee setup.cfg" % " ".join(shlex.quote(line) for line in lines)
     return " && ".join([
-        "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME), "mkdir -p %s src" % HOME, "ln -s %s %s" % (LINK_TARGET, LINK_SOURCE.rstrip("/")), write,
+        "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME), "mkdir -p %s src" % HOME, "ln -s %s %s" % (LINK_TARGET, LINK_SOURCE.rstrip("/")),
+        " && ".join("ln -s ../shared/%s src/%s" % (kind, kind) for kind in RESOURCES), write,
         "python -m mutmut run", "python3 %s --root . --out %s" % (CONVERTER, REPORT)])
 
 
