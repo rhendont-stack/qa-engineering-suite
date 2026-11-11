@@ -360,6 +360,11 @@ def hook_facts(finding=None, gates=None, masked="failed"):
 
 
 NOCONFTEST = bash("python3 -m pytest -q -p no:cacheprovider --noconftest", output="F........\n1 failed, 8 passed in 0.05s")
+NOCONFTEST_EXIT_1 = bash("python3 -m pytest -q -p no:cacheprovider --noconftest", error=True,
+                         output="Exit code 1\nF........\nFAILED tests/test_service.py::ServiceTests::test_summary_lists_loyalty_points\n"
+                                "1 failed, 8 passed in 0.05s")
+DENIED = ("Permission for this tool use was denied. It requires approval, and this session has no approval surface, so it was "
+          "denied automatically. The action was NOT performed.")
 
 
 def hooked(tmp_path, f, with_skill=True, text="", calls=(), **kw):
@@ -403,6 +408,13 @@ def test_hook_a_masked_failure_at_another_commit_does_not_count(tmp_path):
 @pytest.mark.parametrize("calls,ok", [
     ([NOCONFTEST], True),
     ([bash("python3 -m pytest -q --noconftest", error=True, output="denied")], False),
+    # The harness's shapes, as the saved transcripts hold them: a command that exits non-zero comes back as an error whose text
+    # starts with its exit status; a refused command comes back as an error that starts with the permission refusal.
+    ([NOCONFTEST_EXIT_1], True),
+    ([bash("python3 -m pytest -q --noconftest", error=True, output=DENIED)], False),
+    ([bash("python3 -m pytest -q --noconftest", error=True, output=DENIED + "\n1 failed, 8 passed")], False),
+    ([bash("python3 -m pytest -q --noconftest", error=True, output="Exit code 4\nERROR: usage: pytest [options]\nno tests ran")], False),
+    ([bash("python3 -m pytest -q", error=True, output="Exit code 1\nF........\n1 failed, 8 passed in 0.05s")], False),
     ([bash("python3 -m pytest -q", output="9 passed in 0.04s")], False),
     ([bash("python3 -m pytest -q --noconftest", output="9 passed in 0.04s")], False),
     ([], False),
