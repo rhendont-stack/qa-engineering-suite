@@ -6,6 +6,7 @@
     "qa-reporting",
     "qa-requirements",
     "qa-test-execution",
+    "qa-test-generation",
     "qa-test-strategy"
   ],
   "responsibilities": [
@@ -32,6 +33,10 @@
     {
       "key": "design-risk-based-test-strategy",
       "owner": "qa-test-strategy"
+    },
+    {
+      "key": "implement-recorded-test-cases",
+      "owner": "qa-test-generation"
     }
   ]
 }
