@@ -51,7 +51,7 @@ Milestone 3 adds the following. Its run IDs, evidence IDs, grader changes and li
 | F7 at C3, verification of a fix through the orchestrator (`fix` template), one run | Did not finish: two helper calls written relative to a worktree were outside the evaluation's allow-list and refused, so no revalidation and no gate were recorded (the same scenario held in 3 of 3 runs during development) |
 | F7 at C4 and C5, deterministic, no agent | Special-cased fix and runner hook each recorded as a test-quality finding; gate `NOT_READY` with `test_integrity` not met |
 | Kernel mutation score, six modules, one container run | 84.93 over 4890 mutants (79.42 to 95.79 per module); `report/check` unmeasured |
-| Kernel tests on Linux x86_64 in containers through the kernel, 3.9 and 3.15 | Both legs: 4094 passed, 895 skipped (866 of them need `git`, which the images lack), 1 failed: a grader test added for the exit runs has no `git` guard. Reported as measured, not re-run |
+| Kernel tests on Linux x86_64 in containers through the kernel, 3.9 and 3.15 | First legs failed on one grader test that lacked a `git` guard in images without git; after a test-only guard both re-runs passed (4094 passed, 896 skipped, 0 failed; 867 of the skips need `git`, which the images lack) |
 | Kernel tests on macOS arm64 for milestone 3 | Not run locally; left to the macOS CI job |
 
 GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.

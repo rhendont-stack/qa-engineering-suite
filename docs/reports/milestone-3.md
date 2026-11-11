@@ -1,6 +1,6 @@
 # Milestone 3 exit evidence
 
-Date of the exit runs: 2026-11-11 (UTC). Branch `milestone-3/analysis-change-skills`. The exit cases and their grader were committed as `7657b8f` before any exit run; the commits that add this report change only documentation. `<repo>` stands for the repository path.
+Date of the exit runs: 2026-11-11 (UTC). Branch `milestone-3/analysis-change-skills`. The exit cases and their grader were committed as `7657b8f` before any exit run; the commits that add this report change only documentation, apart from `1c55b77`, a test-only skip guard described under Kernel legs. `<repo>` stands for the repository path.
 
 Every `EXE-`, `AUTH-`, `GATE-`, `FND-`, `PLAN-` and `RPT-` ID below is a full ID that `qa report check` resolves. The evidence is not in git: this repository's own `.qa/` ledger (`project:`), the saved `qa-state` of each exit evaluation run, and two deterministic F7 workspaces. Numbered IDs are handed out by each ledger on its own, so each one is written with its ledger's alias, as in `f7c4:GATE-001`. This is the exact command, run from the repository root:
 
@@ -26,9 +26,9 @@ The milestone's deviations from the specification are numbers 42 to 63 in §22.3
 | F7 M2 at C3 through the orchestrator, `fix` template | fail: two calls in worktree-relative form were outside the case's allow-list and denied; no revalidation, no gate. In Task 18 the same scenario held every hard criterion in 3 of 3 runs |
 | F7 at C4 and C5, deterministic | Special-cased fix f7c4:FND-001 and runner hook f7c5:FND-001 are test-quality findings; f7c4:GATE-001 and f7c5:GATE-001 NOT_READY with `test_integrity` not met |
 | F7 at C2 (contract diff) | Open: no oasdiff image is pinned (deviation 62) |
-| Kernel legs on Linux 3.9 and 3.15 through `qa run --container` | project:EXE-01M75ZHFKB727AANEB8CC2HJ37 and project:EXE-01M75ZZ4MNTDZPXBF74N3SPZT6 failed: 4094 pass, 895 skip and 1 fail each; the one failure is a grader test without a git guard in an image without git |
+| Kernel legs on Linux 3.9 and 3.15 through `qa run --container` | First round: project:EXE-01M75ZHFKB727AANEB8CC2HJ37 and project:EXE-01M75ZZ4MNTDZPXBF74N3SPZT6 failed, 1 fail each, a grader test without a git guard in an image without git. After the test-only guard `1c55b77`: project:EXE-01M760KZEQ8WCJS634ZR07R4XN and project:EXE-01M7611X2KDBX2RMEKGAEVD61S passed, 4094 pass and 896 skip each |
 | Kernel legs on macOS | Left to the macOS CI job (deviation 63) |
-| Host as found | No `qa-` container, volume or network before or after the exit runs and the kernel legs; the 51 other containers unchanged across the three listings |
+| Host as found | No `qa-` container, volume or network before or after the exit runs and the kernel legs; the 51 other containers unchanged across the four listings |
 | Evaluation spend | 28.9272 US$ of the 50 US$ cap (A2), 120 runs |
 | Kernel mutation score | Six modules, 84.93 over 4890 mutants (project:EXE-01M75H1KC6V22PRSFFPQZ6MMVY); `report/check` unmeasured |
 
@@ -135,7 +135,9 @@ F7's C2 (the renamed response field, answer-key entry F7-03) was not exercised: 
 
 ## Kernel legs
 
-Both legs ran on 2026-11-11 under `qa run --container` on the remote engine, one after the other, at commit `789250e8b1b549dd84062689c713fb094609e7ff` (the first commit of this report) with a clean tree; the only local difference, `.qa/config.json`, is marked skip-worktree and was never added. The command is the milestone 2 legs' command: the launcher of `qa-test-execution`, `--activity install-dependencies`, `--scope full`, `--timeout 3600`, the install step `python -m venv /work/.venv && /work/.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt` (the hash-pinned Linux requirements), then `/work/.venv/bin/python -m pytest -q -p no:cacheprovider -c pytest.ini --rootdir . --junitxml={evidence}/junit.xml tests` with that JUnit file declared as the report. The install step ran under project:AUTH-004 (`install-dependencies`, environment `local`, the user's answer of 2026-11-11 "Sí, 6 horas (Recomendado)", for these legs only).
+Two rounds, all on 2026-11-11 under `qa run --container` on the remote engine, one leg after the other, each round with a clean tree: the first at commit `789250e8b1b549dd84062689c713fb094609e7ff` (the first commit of this report), the second at `1c55b77b1093647ef210776442abfae8a8658f6b` after a test-only fix. In both rounds the only local difference, `.qa/config.json`, is marked skip-worktree and was never added. The command is the milestone 2 legs' command: the launcher of `qa-test-execution`, `--activity install-dependencies`, `--scope full`, `--timeout 3600`, the install step `python -m venv /work/.venv && /work/.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt` (the hash-pinned Linux requirements), then `/work/.venv/bin/python -m pytest -q -p no:cacheprovider -c pytest.ini --rootdir . --junitxml={evidence}/junit.xml tests` with that JUnit file declared as the report. The install step of every leg ran under project:AUTH-004 (`install-dependencies`, environment `local`, the user's answer of 2026-11-11 "Sí, 6 horas (Recomendado)", for these legs only).
+
+### First round at `789250e`, kept as measured history
 
 | Leg | Execution | Status | Reason | Total | Pass | Fail | Error | Skip | Wall time |
 |---|---|---|---|---|---|---|---|---|---|
@@ -144,9 +146,24 @@ Both legs ran on 2026-11-11 under `qa run --container` on the remote engine, one
 
 Each leg: strength `structured`, exit code 1, network `none`, engine kind `ssh`, platform `linux-amd64`, `install_ran` true. `qa ledger verify` on the project ledger returned `ok: true` with no problems afterwards.
 
-The one failure is the same in both legs: `tests/skills_static/test_grade_qa_orchestrator.py::test_the_f7_commits_come_from_the_generator`, a test added with the exit grader in `7657b8f`, raised `FileNotFoundError` for `git` in images that ship no git. It has no "tool missing: git" guard, the same omission that made the milestone 2 legs' first attempts end with errors. The test exercises the grader, not the kernel. It is reported as measured; no test-only guard was added and no new leg was executed in this task.
+The one failure is the same in both legs: `tests/skills_static/test_grade_qa_orchestrator.py::test_the_f7_commits_come_from_the_generator`, a test added with the exit grader in `7657b8f`, raised `FileNotFoundError` for `git` in images that ship no git. It has no "tool missing: git" guard, the same omission that made the milestone 2 legs' first attempts end with errors. The test exercises the grader, not the kernel. It is reported as measured; it breaks the rule that a test needing an absent tool reports `skipped: tool missing`.
 
-Skips per leg, from each JUnit file: 695 "tool missing: git" and 171 "git is not installed", 16 "tool missing: QA_TEST_CONTAINER_ENGINE is not set" (live engine tests, which run only from the Mac), and 13 others (directory and file modes that do not bind this user, unpublished design documents, file-system case and normalization behaviour, one generated history not scanned without git). No skip is a pass. The tests that need git were therefore not executed in these legs; the counts against milestone 2 (3543 tests, 309 skipped) grew because milestone 3 adds many tests that build git repositories.
+Skips per leg in the first round, from each JUnit file: 695 "tool missing: git" and 171 "git is not installed", 16 "tool missing: QA_TEST_CONTAINER_ENGINE is not set" (live engine tests, which run only from the Mac), and 13 others (directory and file modes that do not bind this user, unpublished design documents, file-system case and normalization behaviour, one generated history not scanned without git). No skip is a pass. The tests that need git were therefore not executed in either round; the counts against milestone 2 (3543 tests, 309 skipped) grew because milestone 3 adds many tests that build git repositories.
+
+### The fix: commit `1c55b77`
+
+A test-only change of 2 added lines in one file, no product code: the test now carries `@pytest.mark.skipif(shutil.which("git") is None, reason="tool missing: git")`, the marker the other git-dependent grader tests use. The file ran on both Pythons in the remote test script (image with git) and exited 0 on each, so the guard does not skip where git exists.
+
+### Second round at `1c55b77`
+
+The same command and the same two image digests as the first round.
+
+| Leg | Execution | Status | Reason | Total | Pass | Fail | Error | Skip | Wall time |
+|---|---|---|---|---|---|---|---|---|---|
+| `python:3.9-slim` | project:EXE-01M760KZEQ8WCJS634ZR07R4XN | passed | | 4990 | 4094 | 0 | 0 | 896 | 390 s |
+| `python:3-slim` (3.15) | project:EXE-01M7611X2KDBX2RMEKGAEVD61S | passed | | 4990 | 4094 | 0 | 0 | 896 | 360 s |
+
+Each leg: strength `structured`, exit code 0, network `none`, engine kind `ssh`, platform `linux-amd64`, `install_ran` true. `qa ledger verify` on the project ledger returned `ok: true` with no problems afterwards. The pass count is the same as in the first round; the grader test now skips, so each leg skips 896 (696 "tool missing: git", 171 "git is not installed", 16 "tool missing: QA_TEST_CONTAINER_ENGINE is not set", 13 others).
 
 The kernel's tests ran during development through the remote test script, outside the kernel; those runs are development checks, not exit legs, and their counts are in the task reports.
 
@@ -215,11 +232,11 @@ Measured observations (not criteria):
 
 ## Host as found
 
-The remote engine was listed by name filter on 2026-11-11 at 18:03 UTC, while the first exit run was in progress, again at 18:19 UTC, after the last one, and a third time at 19:12 UTC, after the two kernel legs. The exit evaluation runs use the Mac only; the kernel legs started their own `qa-<execution id>` objects, which the kernel removes. All three times: no container, volume or network whose name starts with `qa-`. The only suite objects on the engine are the two test images of the remote test script.
+The remote engine was listed by name filter on 2026-11-11 at 18:03 UTC, while the first exit run was in progress, again at 18:19 UTC, after the last one, a third time at 19:12 UTC, after the first round of kernel legs, and a fourth time at 19:31 UTC, after the second round. The exit evaluation runs use the Mac only; the kernel legs started their own `qa-<execution id>` objects, which the kernel removes. All four times: no container, volume or network whose name starts with `qa-`. The only suite objects on the engine are the two test images of the remote test script.
 
 Other containers were compared by creation time and uptime only; none was stopped, removed, started or inspected. At the first listing 51 non-suite containers existed, 28 running and 23 exited, and every one was created before the exit runs began. Those created before 2026-11-11 03:00 UTC that were running all showed an uptime that began around that time, which reads as a restart of the engine or its host. The project ledger records no suite execution between 2026-11-10 03:00 UTC and 2026-11-11 12:27 UTC, so the restart is not attributable to the suite from its own records; its cause is not known.
 
-At the second and third listings the same 51 containers existed, with the same creation times, 28 running and 23 exited, and none had changed between running and exited.
+At the later listings the same 51 containers existed, with the same creation times, 28 running and 23 exited, and none had changed between running and exited.
 
 ## Spend
 
@@ -276,7 +293,7 @@ Exit evidence:
 - The exit runs gave the harness a `--timeout` (5400 s for F5, 3600 s for the F7 runs), so that a long run could not end without a cost record, which would stop every later run. No run came near its timeout.
 - The kernel's own rendered report fails the kernel's own check. In the `report.md` of f5:RPT-001 the gate lines that list acceptance criteria and test cases carry a status word next to `AC-` and `TC-` IDs, which `qa report check` does not accept as citations, so it flags four `uncited_claim` lines the agent did not write. This is a kernel defect, parked for the final fix wave.
 - The kernel's rendered report gives the traceability gaps as counts per kind, without the IDs, and has no row for findings without a fix. This is why F5 missed `report_lists_every_gap`; the answer gave both counts.
-- F7's C2 leg is open (deviation 62). In the Linux kernel legs the tests that need git skip (866 per leg), and one grader test without a git guard is the only failure.
+- F7's C2 leg is open (deviation 62). In the Linux kernel legs the tests that need git skip (867 per leg in the second round); they ran in the remote test script, not through the kernel. The first round's only failure was a grader test without a git guard.
 - The deterministic C4 and C5 checks exercise the scan and the gate, not an agent: whether an agent records those hits as findings in one run is measured only by the Task 15 runs.
 
 Evaluated agent and harness:
