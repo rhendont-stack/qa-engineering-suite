@@ -77,7 +77,8 @@ hooks, fsmonitor, filters, diff drivers or prompts; git's directory, common dire
 copy, replace refs and grafts are off, and the configuration the top-level git process reads is listed before anything else
 and must come from the command line and that file alone. That listing covers the top-level process only, so no snapshot call
 enters a nested repository (a git started there would read that repository's own configuration): the gitlinks in HEAD, in
-the copy's index and in the work tree are recorded in ``gitlinks``, and what lies inside them is not in the state. So
+the copy's index and in the work tree are recorded in ``gitlinks`` and show in the diff as paths (the diffs compare a tree
+with an index, which never enters one), and what lies inside them is not in the state. So
 nothing the copy's repository, or a repository nested in it, names runs, and nothing is written into the copy. A file whose
 content on either side of the diff holds a kernel key, in any form the redaction knows, is left out of ``diff.patch`` and
 named in ``redacted_files``, because git writes a file holding a NUL as a binary patch, which shows no byte of the key as it
@@ -296,26 +297,28 @@ def check_setup_script(case: Dict[str, Any], script: Any) -> Path:
 
 def run_setup(script: str, workdir: Path, home: Path) -> str:
     """Runs the setup script in the copy. Returns its output, the API key and the copy's kernel keys redacted (the keys are
-    read while the copy still exists, because a refused setup deletes it); raises ``Refused`` (with ``output``) when it fails."""
+    read while the copy still exists, because a refused setup deletes it); raises ``Refused`` (with ``output``) when it fails.
+    The output is redacted as bytes, before any decoding, so no newline translation or replaced byte hides a key."""
     env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
     key = os.environ.get(KEY_VAR, "")
 
-    def clean(text: str) -> str:
-        return redact_kernel_keys_text(redact(text, key), kernel_key_forms(kernel_keys(workdir)))[:SETUP_OUTPUT_LIMIT]
+    def clean(raw: bytes) -> str:
+        forms = kernel_key_forms(kernel_keys(workdir))
+        text = redact_kernel_keys(redact_bytes(raw, key), forms).decode("utf-8", "replace")
+        return redact_kernel_keys_text(redact(text, key), forms)[:SETUP_OUTPUT_LIMIT]
 
     try:
-        proc = subprocess.run([sys.executable, "-I", script], cwd=str(workdir), env=env, capture_output=True, text=True,
-                              errors="replace", timeout=SETUP_TIMEOUT, stdin=subprocess.DEVNULL)
+        proc = subprocess.run([sys.executable, "-I", script], cwd=str(workdir), env=env, capture_output=True,
+                              timeout=SETUP_TIMEOUT, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired as exc:
-        out = ((exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else exc.stdout or "")
         refusal = Refused("the setup script ran past %d seconds" % SETUP_TIMEOUT)
-        refusal.output = clean(out)
+        refusal.output = clean(exc.stdout if isinstance(exc.stdout, bytes) else b"")
         raise refusal
     except OSError as exc:
         refusal = Refused("the setup script could not start: %s" % type(exc).__name__)
         refusal.output = ""
         raise refusal
-    output = clean("exit %d\n--- stdout\n%s--- stderr\n%s" % (proc.returncode, proc.stdout, proc.stderr))
+    output = clean(b"exit %d\n--- stdout\n%s--- stderr\n%s" % (proc.returncode, proc.stdout, proc.stderr))
     if proc.returncode != 0:
         refusal = Refused("the setup script exited %d; nothing was spent" % proc.returncode)
         refusal.output = output
@@ -805,6 +808,9 @@ _GIT_SAFE_OPTS = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false
                   "-c", "submodule.recurse=false", "-c", "diff.ignoreSubmodules=all", "-c", "status.submoduleSummary=false",
                   "-c", "fetch.recurseSubmodules=false"]
 _NO_NESTED = "--ignore-submodules=all"
+# The diffs compare a tree with an index, which never starts a git inside a nested repository; ``none`` overrides the
+# ``diff.ignoreSubmodules`` above and any ``.gitmodules`` setting, so a gitlink the agent left shows in the diff as a path.
+_GITLINKS_SHOWN = "--ignore-submodules=none"
 _GITLINK_MODE = b"160000"
 _CLEAN_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
 
@@ -945,10 +951,11 @@ def capture_file_state(workdir: Path, base: Optional[str], scratch: Path, secret
     into ``scratch`` and given a minimal configuration of the harness's; git's directory, common directory and object
     directory are pinned to that copy, replace refs and grafts are off, and the configuration the top-level git process reads
     is listed first and must hold nothing but the command line and that file, so no filter, diff driver, fsmonitor or hook
-    the agent may have set in the copy's repository runs, and nothing is written into the copy. Every call keeps out of
-    nested repositories (``--ignore-submodules=all`` and the submodule options in ``_GIT_SAFE_OPTS``), because a git started
-    inside one reads that repository's own configuration, which no listing here sees; the gitlinks in HEAD, in the copy's
-    index and in the work tree are recorded instead, and what lies inside them is not in the state. Untracked files enter
+    the agent may have set in the copy's repository runs, and nothing is written into the copy. No call enters a nested
+    repository, because a git started inside one reads that repository's own configuration, which no listing here sees:
+    status takes ``--ignore-submodules=all`` and the submodule options in ``_GIT_SAFE_OPTS``, and the diffs compare a tree
+    with an index only, so a gitlink shows in them as a path and its commit. The gitlinks in HEAD, in the copy's index and
+    in the work tree are also recorded; what lies inside them is not in the state. Untracked files enter
     the diff through a separate index in ``scratch``. A file whose content on either side of the diff holds one of
     ``secrets`` (byte strings) is left out of the diff and named in ``redacted_files``: a file git writes as a binary patch
     shows no byte of a key as it is, so redacting the patch afterwards would miss it.
@@ -992,7 +999,7 @@ def capture_file_state(workdir: Path, base: Optional[str], scratch: Path, secret
     git(["read-tree", base], index)
     git(["add", "-A", "--", "."], index)
     gitlinks["work_tree"] = _gitlinks(git(["ls-files", "-s", "-z"], index), 1)
-    compare = ["--cached", "--no-abbrev", "--no-ext-diff", "--no-textconv", "--no-renames", _NO_NESTED, base]
+    compare = ["--cached", "--no-abbrev", "--no-ext-diff", "--no-textconv", "--no-renames", _GITLINKS_SHOWN, base]
     changed = _changed_blobs(git(["diff", "--raw", "-z"] + compare + ["--"], index))
     wanted = sorted({blob for _path, blobs in changed for blob in blobs})
     contents = _blob_contents(git(["cat-file", "--batch"], given="".join(b + "\n" for b in wanted).encode("ascii"))) \

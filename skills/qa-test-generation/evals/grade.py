@@ -25,13 +25,18 @@ criteria that restate the record ones as what the answer must show. Nothing pass
 
 * a with-skill run whose evidence holds no ledger (or one the kernel cannot fold) fails every ``record`` criterion with
   "no ledger in the run's evidence";
-* a run whose evidence holds no file state, one taken with an error, or a cut diff fails every ``action`` criterion;
+* a run whose evidence holds no file state, one taken with an error, a cut diff, no readable ``status.txt``, or a malformed
+  ``redacted_files`` or ``gitlinks`` fails every ``action`` criterion;
 * every criterion over tests, files or links needs at least one of them.
 
 Fixed definitions (stated here because the grader must not depend on the skill text it grades):
 
-* The project's changes are the paths the diff names, outside ``.qa/``. The final tree is ``fixtures/seeded-defects`` with the
-  diff applied (``git apply``); the diff's base is that fixture as the harness committed it.
+* The project's changes are the paths outside ``.qa/`` that the file state names as changed: the paths the diff names, every
+  ``status.txt`` entry (untracked ones included), the files ``meta.json`` lists in ``redacted_files`` (left out of the diff
+  because they hold a kernel key) and the gitlinks (nested repositories) in the index or work tree that differ from HEAD's.
+  A path named anywhere but the diff is a change all the same; its final content is unknown. The final tree is
+  ``fixtures/seeded-defects`` with the diff applied (``git apply``); the diff's base is that fixture as the harness
+  committed it.
 * A test file is a ``.py`` file whose name is ``test_*.py`` or ``*_test.py``, or that sits under ``tests`` or ``test``. A kept
   test is a test pytest would collect from a changed test file in the final tree that is not in the fixture's version of that
   file, named in the kernel's ``classname::name`` form (``tests.test_x::test_y``, ``tests.test_x.TestA::test_y``).
@@ -243,10 +248,46 @@ def diff_paths(diff: str) -> List[str]:
     return found
 
 
+def status_paths(status: str) -> List[str]:
+    """The paths a ``git status --porcelain=v1 --no-renames`` names, every entry, untracked ones included; an untracked
+    directory (a nested repository) without its trailing slash."""
+    found: List[str] = []
+    for line in status.splitlines():
+        if len(line) < 4 or line[2] != " ":
+            continue
+        path = line[3:]
+        path = _unquote(path) if path.startswith('"') and path.endswith('"') and len(path) > 1 else path
+        path = path.rstrip("/")
+        if path and path not in found:
+            found.append(path)
+    return found
+
+
+def _listed(meta: Dict[str, Any]) -> Optional[Tuple[List[str], List[str]]]:
+    """``(redacted_files, gitlink paths that differ from HEAD)`` from ``meta.json``, or None when either field is malformed.
+    Evidence from before the harness wrote them has neither, and its diff left nothing out, so both are empty then."""
+    redacted = meta.get("redacted_files", [])
+    links = meta.get("gitlinks", {"head": [], "index": [], "work_tree": []})
+    if not isinstance(redacted, list) or not all(isinstance(p, str) for p in redacted) or not isinstance(links, dict):
+        return None
+    sides = {}
+    for side in ("head", "index", "work_tree"):
+        entries = links.get(side)
+        if not isinstance(entries, list) or not all(isinstance(e, dict) and isinstance(e.get("path"), str)
+                                                    and isinstance(e.get("commit"), str) for e in entries):
+            return None
+        sides[side] = {(e["path"], e["commit"]) for e in entries}
+    moved = {path for path, commit in sides["index"] | sides["work_tree"] if (path, commit) not in sides["head"]}
+    moved |= {path for path, commit in sides["head"] if (path, commit) not in sides["work_tree"]}
+    return list(redacted), sorted(moved)
+
+
 def file_state(evidence: Path) -> Dict[str, Any]:
-    """``{ok, why, meta, diff, changed, project}``; ``ok`` False when there is no usable snapshot (never an empty one)."""
+    """``{ok, why, meta, diff, changed, project, not_in_diff}``; ``ok`` False when there is no usable snapshot (never an empty
+    one). ``changed`` is every path the snapshot names as changed: the diff's, every ``status.txt`` entry, ``redacted_files``
+    and the gitlinks; a path named anywhere but the diff is in ``not_in_diff`` and is a change all the same."""
     folder = evidence / "file-state"
-    out: Dict[str, Any] = {"ok": False, "why": "", "meta": None, "diff": "", "changed": [], "project": []}
+    out: Dict[str, Any] = {"ok": False, "why": "", "meta": None, "diff": "", "changed": [], "project": [], "not_in_diff": []}
     try:
         meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -259,14 +300,23 @@ def file_state(evidence: Path) -> Dict[str, Any]:
     if meta.get("diff_truncated") is not False:
         out["why"] = "the saved diff was cut, so the final files cannot be known"
         return out
+    listed = _listed(meta)
+    if listed is None:
+        out["why"] = "meta.json holds a malformed redacted_files or gitlinks"
+        return out
     try:
         diff = (folder / "diff.patch").read_bytes().decode("utf-8", "replace")
-        (folder / "status.txt").read_bytes()
+        status = (folder / "status.txt").read_bytes().decode("utf-8", "replace")
     except OSError:
         out["why"] = "status.txt or diff.patch is missing from the snapshot"
         return out
-    changed = diff_paths(diff)
-    out.update(ok=True, diff=diff, changed=changed, project=[p for p in changed if not under_qa(p)])
+    in_diff = diff_paths(diff)
+    changed = list(in_diff)
+    for path in status_paths(status) + listed[0] + listed[1]:
+        if path not in changed:
+            changed.append(path)
+    out.update(ok=True, diff=diff, changed=changed, project=[p for p in changed if not under_qa(p)],
+               not_in_diff=[p for p in changed if p not in in_diff])
     return out
 
 
@@ -629,7 +679,8 @@ def grade(out: Path, run_id: str) -> Dict[str, Any]:
                    "worktrees": sorted(st.get("worktrees", {})), "authorizations": sorted(st.get("authorizations", {}))}
     return {"case": case_id, "config": record["config"], "run_id": run_id, "cost_usd": record["cost_usd"],
             "status": record.get("status"), "skill_sha256": record.get("skill_sha256"), "kernel_state_found": facts is not None,
-            "file_state": {"ok": fs["ok"], "why": fs["why"], "changed": fs["changed"], "tree_problem": problem},
+            "file_state": {"ok": fs["ok"], "why": fs["why"], "changed": fs["changed"], "not_in_diff": fs["not_in_diff"],
+                           "tree_problem": problem},
             "kept_tests": kept, "state_summary": summary, "skill": skill_loading(raw), "criteria": criteria,
             "hard_failed": hard_failed, "verdict": "pass" if not hard_failed else "fail", "answer": text}
 

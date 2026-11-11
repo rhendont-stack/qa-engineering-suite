@@ -1551,33 +1551,43 @@ def test_the_copys_kernel_keys_are_redacted_everywhere_they_are_saved(world):
     assert not [p for p in held if "b/" + p in diff]
 
 
-def _nested_repository(marker, committed):
-    """An agent's moves that leave a populated nested repository registered as a gitlink (staged, or committed too), whose
-    own configuration names a content filter that runs a program leaving ``marker``, with its file stat-dirty so that a
-    status taken inside it hashes the file again."""
-    git_cmds = [["-C", "sub", "init", "-q"], ["-C", "sub", "add", "-A"], ["-C", "sub", "commit", "-qm", "s"], ["add", "sub"]]
-    if committed:
-        git_cmds.append(["commit", "-qm", "gitlink"])
+def _nested_repository(marker, how):
+    """An agent's moves that leave a populated nested repository: untracked, registered as a gitlink (staged), or committed
+    too. Its own configuration names a content filter that runs a program leaving ``marker``, and its file is stat-dirty, so
+    a status taken inside it hashes the file again."""
+    git_cmds = [["-C", "sub", "init", "-q"], ["-C", "sub", "add", "-A"], ["-C", "sub", "commit", "-qm", "s"]]
+    git_cmds += {"untracked": [], "staged": [["add", "sub"]], "committed": [["add", "sub"], ["commit", "-qm", "gitlink"]]}[how]
     hostile = _hostile_filter(marker)
     after = ("import os, time\nopen('sub/.git/config', 'w').write(%r)\nopen('sub/.gitattributes', 'w').write(%r)\n"
              "time.sleep(1.1)\nos.utime('sub/s.txt')\n") % (hostile[".git/config"], hostile[".gitattributes"])
     return {"FAKE_EDITS": {"app.py": "changed\n", "sub/s.txt": "aaa\n"}, "FAKE_GIT": git_cmds, "FAKE_PY": [after]}
 
 
-@pytest.mark.parametrize("committed", [False, True], ids=["staged", "committed"])
-def test_a_nested_repository_is_recorded_as_a_gitlink_and_never_entered(world, committed):
+def _stat_dirty(path):
+    import time
+    time.sleep(1.1)
+    os.utime(str(path))
+
+
+@pytest.mark.parametrize("how", ["untracked", "staged", "committed"])
+def test_a_nested_repository_is_recorded_as_a_gitlink_shown_in_the_diff_and_never_entered(world, how):
     harness = _harness_module()
     marker = world.root / "ran"
-    r = run(world, env=_nested_repository(marker, committed))
+    r = run(world, env=_nested_repository(marker, how))
     assert r.returncode == 0, r.stderr
-    assert not marker.exists()
+    assert not marker.exists()                                  # no snapshot call, the diffs included, entered it
     state, meta, work = _state_dir(world), _meta(world), _workdir(world)
-    assert " M app.py" in (state / "status.txt").read_text().splitlines()
-    assert "+changed" in (state / "diff.patch").read_text()
+    status = (state / "status.txt").read_text().splitlines()
+    assert " M app.py" in status and (how != "untracked" or "?? sub/" in status)
+    diff = (state / "diff.patch").read_text()
+    assert "+changed" in diff and "diff --git a/sub b/sub" in diff      # the new gitlink against the base, as a path
     link = [{"commit": git(work / "sub", "rev-parse", "HEAD")[0], "path": "sub"}]
-    assert meta["gitlinks"] == {"head": link if committed else [], "index": link, "work_tree": link}
-    # The control: the same status, taken with the copy pinned as the snapshot pins it but without the options that keep
-    # git out of nested repositories, enters the nested one and runs the program its configuration names.
+    assert meta["gitlinks"] == {"head": link if how == "committed" else [], "index": [] if how == "untracked" else link,
+                                "work_tree": link}
+    if how == "untracked":
+        return                                                  # git enters a nested repository only through a gitlink
+    # The controls: with the copy pinned as the snapshot pins it, a status without the options that keep git out of nested
+    # repositories, and a diff of the work tree (not of an index), each enter the nested one and run its program.
     copy = world.root / "copy"
     shutil.copytree(str(work / ".git"), str(copy), symlinks=True)
     (copy / "config").write_text(harness._CLEAN_CONFIG)
@@ -1585,9 +1595,12 @@ def test_a_nested_repository_is_recorded_as_a_gitlink_and_never_entered(world, c
              "GIT_WORK_TREE": str(work)}
     opts = harness._GIT_SAFE_OPTS
     kept = [part for pair in zip(opts[::2], opts[1::2]) if "ubmodule" not in pair[1] for part in pair]
-    subprocess.run(["git"] + kept + ["status", "--porcelain=v1", "-uall", "--no-renames"], cwd=str(work),
-                   env=harness._safe_git_env(where), capture_output=True)
-    assert marker.exists()
+    for args in (["status", "--porcelain=v1", "-uall", "--no-renames"], ["diff", "--ignore-submodules=none", "--no-ext-diff"]):
+        if marker.exists():
+            marker.unlink()
+            _stat_dirty(work / "sub" / "s.txt")
+        subprocess.run(["git"] + kept + args, cwd=str(work), env=harness._safe_git_env(where), capture_output=True)
+        assert marker.exists(), args
 
 
 def test_a_file_holding_a_kernel_key_is_left_out_of_the_diff_and_named(world):
@@ -1630,6 +1643,20 @@ def test_a_refused_setup_keeps_its_output_without_the_copys_kernel_keys(world):
     text = saved.decode("utf-8", "replace")
     assert KERNEL_KEY_A not in saved and not [f for f in _kernel_key_forms(KERNEL_KEY_A) if f in text]
     assert text.count("[REDACTED:kernel-key]") >= 3
+
+
+KERNEL_KEY_CR = b"setup-key-left-half\rright-half-0123"      # a CR byte, which a text-mode read turns into a newline
+
+
+@pytest.mark.parametrize("code", [0, 4])
+def test_setup_output_holding_a_key_with_a_carriage_return_is_redacted(world, code):
+    _setup_case(world, "import os, sys\nos.makedirs('.qa', exist_ok=True)\nkey = %r\nopen('.qa/redaction.key', 'wb').write(key)\n"
+                       "sys.stdout.buffer.write(b'raw ' + key + b' end\\n')\nsys.stdout.flush()\nsys.exit(%d)\n" % (KERNEL_KEY_CR, code))
+    r = run(world)
+    assert r.returncode == (0 if code == 0 else 3), r.stdout + r.stderr
+    saved = next((world.out / "runs").rglob("setup.txt")).read_bytes()
+    assert b"raw [REDACTED:kernel-key] end" in saved
+    assert b"left-half" not in saved and b"right-half" not in saved
 
 
 @pytest.mark.parametrize("target", [".git/config", ".git/objects", ".git"])
