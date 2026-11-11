@@ -79,7 +79,7 @@ def install_command() -> str:
 
 def run_script(lines: List[str]) -> str:
     """What runs in the container after the install: the configuration, mutmut, then the converter, in one shell."""
-    write = "printf '%%s\\n' %s > setup.cfg" % " ".join(shlex.quote(line) for line in lines)
+    write = "printf '%%s\\n' %s | tee setup.cfg" % " ".join(shlex.quote(line) for line in lines)
     return " && ".join([
         "export PYTHONPATH=%s HOME=%s PYTHONDONTWRITEBYTECODE=1" % (SITE, HOME), "mkdir -p " + HOME, write,
         "python -m mutmut run", "python3 %s --root . --out %s" % (CONVERTER, REPORT)])

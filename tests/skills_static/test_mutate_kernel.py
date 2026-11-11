@@ -83,3 +83,9 @@ def test_printed_command_pins_the_image_by_digest(tmp_path):
     # the configuration the run uses is the one written to --out
     for line in (tmp_path / "setup.cfg").read_text().splitlines():
         assert shlex.quote(line) in tail[2]
+
+
+def test_setup_cfg_is_written_without_a_shell_redirect(tmp_path):
+    """The guard denies a ``>`` onto a file outside ``.qa/work/`` before it can tell the file is in a container copy."""
+    tail = mutate(tmp_path)[1]["argv"][-1]
+    assert "tee setup.cfg" in tail and "> setup.cfg" not in tail and ">" not in tail.replace("{evidence}", "")
