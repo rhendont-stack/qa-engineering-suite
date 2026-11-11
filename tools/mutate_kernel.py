@@ -57,6 +57,9 @@ LINK_SOURCE, LINK_TARGET = "src/qa/", "../shared/kernel/qa"
 PYTEST_ARGS = ("-o", "pythonpath=tests")  # the ini's own pythonpath would put the unmutated kernel before mutmut's copy
 
 
+# The converter takes ``mutants/src`` only: ``mutants/`` also holds the corpus captures of ``tests/``, which are not this run's.
+
+
 class Refused(Exception):
     def __init__(self, error: str, **details: object) -> None:
         super().__init__(error)
@@ -97,7 +100,7 @@ def run_script(lines: List[str]) -> str:
     return " && ".join([
         "export PATH=%s/bin:$PATH HOME=%s PYTHONDONTWRITEBYTECODE=1" % (VENV, HOME), "mkdir -p %s src" % HOME, "ln -s %s %s" % (LINK_TARGET, LINK_SOURCE.rstrip("/")),
         " && ".join("ln -s shared/%s %s" % (kind, kind) for kind in RESOURCES), write,
-        "python -m mutmut run", "python3 %s --root . --out %s" % (CONVERTER, REPORT)])
+        "python -m mutmut run", "python3 %s --root src --mutants mutants/src --out %s" % (CONVERTER, REPORT)])
 
 
 def command(lines: List[str]) -> List[str]:

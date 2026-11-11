@@ -96,3 +96,9 @@ def test_pytest_arguments_are_one_per_line(tmp_path):
     """mutmut passes each line of a list option as one argument: ``-o pythonpath=tests`` on one line would be a single bogus one."""
     mutate(tmp_path)
     assert config_of(tmp_path)["pytest_add_cli_args"] == ["-o", "pythonpath=tests"]
+
+
+def test_converter_reads_only_the_mutated_kernel(tmp_path):
+    """``mutants/`` holds a copy of ``tests/``, with the corpus captures' own .meta files: the converter must not scan them."""
+    script = mutate(tmp_path)[1]["argv"][-1]
+    assert "mutmut_to_report.py --root src --mutants mutants/src --out {evidence}/kernel-mutation.json" in script
