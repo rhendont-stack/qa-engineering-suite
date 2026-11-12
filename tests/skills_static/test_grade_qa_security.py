@@ -230,12 +230,18 @@ def test_a_step_is_accounted_for_by_a_sentence_with_a_not_run_reason(statement, 
     ("Semgrep: `blocked`, no findings.", []),
     ("Gitleaks EXE-01AAAAAAAAAAAAAAAAAAAAAAAA came back blocked, so no secrets were found by a tool.", []),
     ("The OSV-Scanner image is not available, so the dependency step found nothing.", []),
-    ("All three static steps were blocked and no tool found anything.", [])])
+    ("All three static steps were blocked and no tool found anything.", []),
+    # a phrase that names its tool after a noun is the clause's own reason when the clause already names that tool
+    ("Semgrep returned nothing (no engine was available for Semgrep).", []),
+    ("Semgrep returned nothing, and the image for Semgrep was unavailable.", []),
+    # "scan" and "run" right after "the <tool>" are list words, so these lists stay hypothetical
+    ("If the Semgrep scan and the Gitleaks run found nothing, the review would be clean.", []),
+    ("If Semgrep, the Gitleaks scan and Trivy found nothing, the review would be clean.", [])])
 def test_scan_claims(text, tools):
     assert [tool for tool, _ in grade.scan_claims(text)] == tools
 
 
-# Every probe of task-10-rereview-1.md and task-10-rereview-2.md, with the claim set it must give, so that a later change to the
+# Every probe of task-10-rereview-1.md, -2.md and -3.md, with the claim set it must give, so that a later change to the
 # reading cannot quietly swing one of them back. Where the expected value is a known over- or under-claim kept by design, the
 # comment says so.
 REGRESSIONS = [
@@ -269,11 +275,20 @@ REGRESSIONS = [
     # BY DESIGN an over-claim: a pronoun after ";" may name anything (the request, the payload); withdrawing the claim before it
     # would bring back the softness re-review 1 closed. SKILL.md's form ("semgrep EXE-C blocked: ...") claims nothing.
     ("rr2-over-pronoun-after-semicolon", "Semgrep reported nothing; it was blocked.", ["semgrep"]),
-    # the edges the fix-round-2 report listed, kept as they are
-    # BY DESIGN an under-claim: a reason that names its tool only after a runner word stays with the clause before it
-    ("report-under-runner-first", "Semgrep found the injection (the image for Gitleaks was unavailable).", []),
+    # the edges the fix-round-2 report listed
+    # a reason that names its tool only after a noun is cut off (re-review 3, Minor 1; this row was an under-claim before)
+    ("report-under-runner-first", "Semgrep found the injection (the image for Gitleaks was unavailable).", ["semgrep"]),
     # BY DESIGN an over-claim: after a claim, a later clause that only mentions a tool is claimed (the f438f58 reading did too)
     ("report-over-mention", "Verdict: four weaknesses found by reading the code; the ZAP baseline needs your approval", ["zap"]),
+    # re-review 3, Minor 1: "the <noun> for <tool>", "no <noun> ... for <tool>" and "the <noun> of the <tool>" start a clause
+    ("rr3-M1-and-the-noun-for", "Semgrep found the injection, and the image for Gitleaks was unavailable.", ["semgrep"]),
+    ("rr3-M1-but-no-noun-for", "Semgrep found the injection, but no engine was available for Gitleaks.", ["semgrep"]),
+    ("rr3-M1-but-the-noun-of", "Semgrep found the injection, but the scan of the Gitleaks image was blocked.", ["semgrep"]),
+    # re-review 3, Minor 2: "run(s)", "scan(s)" and "check(s)" are list words only right after "the <tool>", and a bare comma
+    # passes the "if" on only to a clause that is only tools
+    ("rr3-M2-if-list-run", "If Semgrep and Gitleaks run, Trivy found the CVE.", ["trivy"]),
+    ("rr3-M2-if-runs", "If Semgrep runs, Gitleaks found the key.", ["gitleaks"]),
+    ("rr3-M2-if-comma", "If Semgrep, Gitleaks found the key.", ["gitleaks"]),
 ]
 
 

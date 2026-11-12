@@ -35,10 +35,14 @@ Fixed definitions (stated here because the grader must not depend on the skill t
   SAST/static analysis) together with a not-run reason (not run, did not run, blocked, missing, not installed, unavailable, no
   container engine, could not run, not available, skipped).
 * A scan claim is read per clause. A sentence is cut into clauses at ``;``, at a ``:`` followed by a space, before a tool's
-  name or ``the <tool> <noun>`` that follows a comma or ``and``/``but``/``while``/``whereas``, before a tool's name that
-  follows a closing parenthesis, before a tool's name, or ``the``/``a``/``an`` and a tool's name, that follows
-  ``although``/``though``/``because`` or an opening parenthesis, and before an ``if`` inside the sentence that is followed by
-  a tool's name (or ``the``/``a``/``an`` and one); that ``if`` stays in the clause it starts. A clause
+  name, ``the <tool> <noun>``, or a phrase that names its tool after a noun (``the <noun> for <tool>``, ``the <noun> of the
+  <tool>``, ``no <noun> … for <tool>``) that follows a comma or ``and``/``but``/``while``/``whereas``, before a tool's name
+  that follows a closing parenthesis, before a tool's name, or ``the``/``a``/``an`` and a tool's name, that follows
+  ``although``/``though``/``because`` or an opening parenthesis, before a phrase that names its tool after a noun that
+  follows an opening parenthesis, and before an ``if`` inside the sentence that is followed by a tool's name (or
+  ``the``/``a``/``an`` and one); that ``if`` stays in the clause it starts. A phrase that names its tool after a noun starts
+  no clause when the text before it, since the last cut, names that same tool: it is that clause's own reason, as in
+  "Semgrep returned nothing (no engine was available for Semgrep)". A clause
   that holds a verb of result (found, reported, flagged, detected, returned, identified, showed, confirmed, scanned, passed,
   came back clean, no issues/findings/secrets/leaks) and is not exempt claims a scan for every tool it names and for the tools
   carried from the clauses before it. A clause with neither a verb of result nor an exemption carries its tools forward (a
@@ -46,10 +50,13 @@ Fixed definitions (stated here because the grader must not depend on the skill t
   itself ("Scanned: Gitleaks EXE-…, Semgrep EXE-…", "Two alerts reported; Semgrep EXE-…"). An exempt clause ends both.
 * A clause is exempt when it holds a not-run reason or a hypothetical (would, could, will, can, once, when, if, should, might)
   before its first verb of result. A clause that is only ``if`` and a list of tools (with ``both``, ``either``, ``the``,
-  ``and``, ``or``, ``scan``, ``run``, ``leg``, ``step``, ``check``: no verb at all) passes its ``if`` on: the next clause, when
-  a comma or ``and`` before a tool cut it off, is exempt too, and so is the one after it while each is only tools. So "If
-  Semgrep and Gitleaks found nothing, …" claims nothing, while "When I ran Semgrep, Gitleaks found the key." and "If Semgrep
-  was run, Gitleaks reported a key." claim Gitleaks: ``when``, ``once`` and the other words pass nothing on. The not-run reasons
+  ``and``, ``or``, ``leg``, ``step``, and ``scan``, ``run`` or ``check`` only right after ``the <tool>``, since they can be
+  verbs: no verb at all) passes its ``if`` on. The next clause is exempt too when an ``and`` before a tool cut it off (the
+  list's last tool, which may carry the verb), or when a bare comma did and that clause is only tools as well; and so on
+  along the list while each clause is only tools. So "If Semgrep and Gitleaks found nothing, …" and "If Semgrep, Gitleaks
+  and Trivy found nothing, …" claim nothing, while "If Semgrep, Gitleaks found the key.", "If Semgrep runs, Gitleaks found
+  the key.", "When I ran Semgrep, Gitleaks found the key." and "If Semgrep was run, Gitleaks reported a key." claim
+  Gitleaks: ``when``, ``once`` and the other words pass nothing on. The not-run reasons
   are those of a step, except for five words that also describe what a tool finds. ``missing`` counts only for a tool, an
   image, an engine, a binary, an executable, docker, a container or a scanner, so "the missing HttpOnly attribute" exempts
   nothing. ``blocked``, ``unavailable``, ``not available`` and ``not present`` count only when their subject is a runner:
@@ -159,15 +166,28 @@ NOT_RUN_CLAIM = re.compile(
     + r"|(?:^|[(\[–—=|])[\W_]*%s\b|\bstatus\W+(?:(?:is|was)\s+)?[\W_]*%s\b" % (_RUN_STATUS, _RUN_STATUS), re.I)
 UNICODE_SCAN = re.compile(r"unicode[-_ ]scan", re.I)      # the script, its leg and its SARIF driver (qa-security-unicode-scan)
 _DETERMINER = r"(?:the\s+|an?\s+)?"
-_NEXT = r"(?=(?:%s)\b|the\s+(?:%s)\s+\w)" % (_TOOL_ALTERNATION, _TOOL_ALTERNATION)     # a tool's name, or "the <tool> <noun>"
+# A phrase that names its tool only after a noun: "the image for Gitleaks", "the scan of the Gitleaks image", "no engine was
+# available for Gitleaks".
+_FOR_TOOL = r"(?:the\s+(?:[\w-]+\s+){1,2}(?:for|of)|no\s+(?:[\w-]+\s+){1,5}for)\s+%s(?P<tool>%s)\b" % (_DETERMINER, _TOOL_ALTERNATION)
+FOR_TOOL = re.compile(_FOR_TOOL, re.I)
+_FOR_TOOL_AHEAD = _FOR_TOOL.replace("(?P<tool>", "(?:")
+TOOL_FIRST = re.compile(r"%s(?:%s)\b|the\s+(?:%s)\s+\w" % (_DETERMINER, _TOOL_ALTERNATION, _TOOL_ALTERNATION), re.I)
+# a tool's name, "the <tool> <noun>", or a phrase that names its tool after a noun
+_NEXT = r"(?=(?:%s)\b|the\s+(?:%s)\s+\w|%s)" % (_TOOL_ALTERNATION, _TOOL_ALTERNATION, _FOR_TOOL_AHEAD)
 CLAUSE_BREAK = re.compile(
-    r"(?P<joined>,\s*(?:and\s+)?%(n)s|\s+and\s+%(n)s)"
-    r"|\s*;\s*|:\s+|,\s*(?:but|while|whereas)\s+%(n)s|\s+(?:but|while|whereas)\s+%(n)s"
-    r"|,?\s*\b(?:although|though|because)\s+(?=%(d)s(?:%(t)s)\b)|\s*\(\s*(?=%(d)s(?:%(t)s)\b)|\)[\s,]*(?=(?:%(t)s)\b)"
+    r"(?P<comma>,\s*%(n)s)|(?P<with_and>,\s*and\s+%(n)s|\s+and\s+%(n)s)"
+    r"|\s*;\s*|:\s+|(?P<contrast>,\s*(?:but|while|whereas)\s+%(n)s|\s+(?:but|while|whereas)\s+%(n)s)"
+    r"|,?\s*\b(?:although|though|because)\s+(?=%(d)s(?:%(t)s)\b)|(?P<paren>\s*\(\s*(?=%(d)s(?:%(t)s)\b|%(f)s))"
+    r"|\)[\s,]*(?=(?:%(t)s)\b)"
     r"|,?\s+(?=if\s+%(d)s(?:%(t)s)\b)"
-    % {"t": _TOOL_ALTERNATION, "d": _DETERMINER, "n": _NEXT}, re.I)
-# A clause that is only a list of tools ("Gitleaks", "and the Trivy scan"), and one that is only "if" and such a list.
-_LIST_WORDS = r"(?:[\W_]|\b(?:both|either|the|and|or|scans?|runs?|legs?|steps?|checks?)\b)*"
+    % {"t": _TOOL_ALTERNATION, "d": _DETERMINER, "n": _NEXT, "f": _FOR_TOOL_AHEAD}, re.I)
+# The breaks that a phrase naming its tool after a noun can start; such a break is not made when the clause before it already
+# names that tool ("Semgrep returned nothing (no engine was available for Semgrep)" is one clause, a reason for itself).
+_FOR_TOOL_BREAKS = ("comma", "with_and", "contrast", "paren")
+# A clause that is only a list of tools ("Gitleaks", "and the Trivy scan"), and one that is only "if" and such a list. "scan",
+# "run" and "check" can be verbs, so they are list words only right after "the <tool>" (TOOL_NOUN, taken out first).
+_LIST_WORDS = r"(?:[\W_]|\b(?:both|either|the|and|or|legs?|steps?)\b)*"
+TOOL_NOUN = re.compile(r"\bthe\s+(?:%s)\s+(?:scans?|runs?|checks?)\b" % _TOOL_ALTERNATION, re.I)
 TOOLS_ONLY = re.compile(_LIST_WORDS, re.I)
 IF_TOOLS = re.compile(r"[\W_]*if\b" + _LIST_WORDS, re.I)
 
@@ -649,12 +669,27 @@ def clause_exempt(clause: str) -> bool:
     return bool(hypothetical and (verb is None or hypothetical.start() < verb.start()))
 
 
-def clauses(sentence: str) -> List[Tuple[str, bool]]:
-    """``(clause, joined)`` for each clause of a sentence; ``joined`` when a comma or ``and`` before a tool's name cut it off."""
-    out, start, joined = [], 0, False
+def _reason_for_the_same_tool(sentence: str, start: int, match: "re.Match[str]") -> bool:
+    """True when ``match`` breaks only before a phrase that names its tool after a noun, and that tool is named in the clause
+    before it (``sentence[start:match.start()]``): the phrase is then a reason for that clause, and no break is made."""
+    if match.lastgroup not in _FOR_TOOL_BREAKS or TOOL_FIRST.match(sentence, match.end()):
+        return False
+    phrase = FOR_TOOL.match(sentence, match.end())
+    if phrase is None:
+        return False
+    before = {TOOL_NAMES[m.group(1).lower()] for m in TOOL_WORD.finditer(sentence[start:match.start()])}
+    return TOOL_NAMES[phrase.group("tool").lower()] in before
+
+
+def clauses(sentence: str) -> List[Tuple[str, str]]:
+    """``(clause, joined)`` for each clause of a sentence; ``joined`` is ``comma`` when a bare comma before a tool's name cut it
+    off, ``with_and`` when an ``and`` (with or without a comma) did, else empty."""
+    out, start, joined = [], 0, ""
     for match in CLAUSE_BREAK.finditer(sentence):
+        if _reason_for_the_same_tool(sentence, start, match):
+            continue
         out.append((sentence[start:match.start()], joined))
-        start, joined = match.end(), match.group("joined") is not None
+        start, joined = match.end(), (match.lastgroup if match.lastgroup in ("comma", "with_and") else "")
     out.append((sentence[start:], joined))
     return out
 
@@ -669,11 +704,14 @@ def scan_claims(text: str) -> List[Tuple[str, str]]:
         for clause, joined in clauses(sentence):
             named = [TOOL_NAMES[m.group(1).lower()] for m in TOOL_WORD.finditer(clause)]
             verb = RESULT_VERB.search(clause)
-            inherited = hypothetical_list and joined
+            bare = TOOL_WORD.sub(" ", TOOL_NOUN.sub(" ", clause))
+            tools_only = bool(named) and TOOLS_ONLY.fullmatch(bare) is not None
+            # the list's last tool comes after "and" and may carry the verb; after a bare comma the list goes on only while
+            # the clause is only tools, so in "If Semgrep, Gitleaks found the key." the second clause is the main one
+            inherited = hypothetical_list and (joined == "with_and" or (joined == "comma" and tools_only))
             hypothetical_list = False
             if inherited or clause_exempt(clause):
-                bare = TOOL_WORD.sub(" ", clause)
-                hypothetical_list = bool(named) and (TOOLS_ONLY if inherited else IF_TOOLS).fullmatch(bare) is not None
+                hypothetical_list = tools_only if inherited else (bool(named) and IF_TOOLS.fullmatch(bare) is not None)
                 carried, claiming = [], False
             elif verb:
                 found += [(tool, clause[:200]) for tool in carried + named]
