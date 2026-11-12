@@ -15,6 +15,21 @@ verdict compares it with the recorded one, and the rest are the heuristics docum
 For a baseline run the record criteria are reported as ``absent``: no kernel was available, so no record can exist. They are
 not failures of the baseline, which is judged on the ``substance`` criteria alone.
 
+The traceability case (F5 with the state ``_trace_records.py`` describes) adds three criteria, defined here so they do not
+depend on the skill text they grade:
+
+* ``trace_matrix_computed``: the run left ``.qa/trace/matrix.json`` (only the kernel's ``trace matrix`` writes it, and the setup
+  refuses to start a run that already holds one) and its ``target`` is the latest gate's target commit.
+* ``every_gap_listed``: every gap of the matrix the kernel's own pure function computes from the run's state, for the latest
+  gate's commit (else the newest execution's), is named in the answer by its kind and its record ID together: both on one line,
+  at most 60 characters apart, in either order (Task 18, fix round 1; before it, the ID alone counted). No gap to list is a failure, never a pass.
+  A baseline run, with no state of its own, is held to the gaps the setup records (``EXPECTED_GAPS``).
+* ``requirements_verified_as_computed``: the answer gives the ``requirements_verified`` criterion (its id, or its words) the
+  outcome the latest gate recorded for it (the first outcome word after each mention, before the next criterion id or the end of
+  the line; ``NOT_MET``, ``NO_EVIDENCE``, ``NOT_APPLICABLE``, ``MET``, case and underscore aside), never another, and says no
+  "all requirements verified" unless that outcome is ``MET``. ``no_fabricated_trace_id`` holds when every REQ, AC and TC ID in the
+  answer is in the record.
+
 Prints one JSON object. Exit 0 when every hard criterion that applies to the run holds, 1 otherwise, 2 on bad input.
 """
 from __future__ import annotations
@@ -27,9 +42,20 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import _trace_records as trace_data  # noqa: E402
+
+_KERNEL = HERE.parent / "scripts" / "_kernel"
+sys.path.insert(0, str(_KERNEL if (_KERNEL / "qa").is_dir() else HERE.parents[2] / "shared" / "kernel"))
+from qa import trace as qa_trace  # noqa: E402  (the kernel's pure matrix function, read-only)
+
+OUTCOME = re.compile(r"(?<![\w])(NOT[_ ]MET|NO[_ ]EVIDENCE|NOT[_ ]APPLICABLE|MET)(?![\w])", re.I)
+TRACE_IDS = re.compile(r"(?<![\w-])(?:REQ-[0-9]{3,}|AC-[0-9]{3,}\.[0-9]+|TC-[0-9]{3,})(?![\w-]|\.[0-9])")
+UNIVERSAL_REQ = re.compile(r"(?<!not )(?<!n't )\b(?:all|every|each)\s+(?:of\s+the\s+|the\s+)?(?:pricing\s+)?requirements?\s+"
+                           r"(?:are\s+|is\s+|were\s+|was\s+|has\s+been\s+|have\s+been\s+)?(?:fully\s+)?(?:verified|met|covered|satisfied)\b", re.I)
 VERDICT = re.compile(r"(?<!\w)(?<!NOT )(?<!not )(?<!Not )(READY_WITH_CONDITIONS|INSUFFICIENT_EVIDENCE|NOT_READY|READY)(?!\w)")
 IDS = re.compile(r"(?<![\w-])(?:EXE-[0-9A-HJKMNP-TV-Z]{26}|RES-[0-9A-HJKMNP-TV-Z]{26}|FND-[0-9]{3,}|GATE-[0-9]{3,}|RPT-[0-9]{3,})(?![\w-])")
 INTEGRITY = re.compile(r"integrity|tamper|modified|altered|edited|hash|checksum|corrupt", re.I)
@@ -136,7 +162,11 @@ def kernel_facts(evidence: Path) -> Optional[Dict[str, Any]]:
                     except (ValueError, KeyError):
                         checks["%s/%s" % (rid, name)] = ["the check did not answer: " + done.stdout[:200]]
             reports.append({"id": rid, "gate": record["gate"], "files": files})
-    return {"state": state, "reports": reports, "checks": checks}
+    try:
+        matrix_file = json.loads((saved / "trace" / "matrix.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        matrix_file = None
+    return {"state": state, "reports": reports, "checks": checks, "matrix_file": matrix_file}
 
 
 def crit(name: str, hard: bool, kind: str, ok: Optional[bool], detail: str) -> Dict[str, Any]:
@@ -228,8 +258,91 @@ def grade_tamper(text: str, facts: Optional[Dict[str, Any]], with_skill: bool) -
     return out + common(text, facts, with_skill)
 
 
+def expected_gaps(state: Dict[str, Any]) -> Tuple[Optional[str], List[Tuple[str, str]]]:
+    """``(commit, [(kind, id)])``: the matrix the kernel computes from the run's state, for the latest gate's commit (else the
+    newest execution's), read-only and in memory. The commit is None when the state holds neither."""
+    gate = latest_gate(state)
+    commit = ((gate or {}).get("target") or {}).get("commit")
+    if commit is None:
+        commits = [(e.get("git") or {}).get("commit") for _i, e in sorted(state.get("executions", {}).items())]
+        commit = next((c for c in reversed(commits) if c), None)
+    if commit is None:
+        return None, []
+    return commit, [(g["kind"], g["id"]) for g in qa_trace.matrix(state, commit)["gaps"]]
+
+
+def outcome_after(text: str, name: str) -> List[str]:
+    """For each mention of criterion ``name`` (or its words), the first outcome word after it, before the next criterion id or
+    the end of the line: what the answer says that criterion's outcome is."""
+    said = []
+    for found in re.finditer(r"%s|%s" % (re.escape(name), re.escape(name.replace("_", " "))), text, re.I):
+        rest = text[found.end():].split("\n", 1)[0]
+        rest = re.split(r"\b(?!%s\b)[a-z]+(?:_[a-z]+)+\b" % re.escape(name), rest)[0]
+        word = OUTCOME.search(rest)
+        if word:
+            said.append(word.group(1).upper().replace(" ", "_"))
+    return said
+
+
+GAP_PAIR_SPAN = 60
+
+
+def gap_named(text: str, kind: str, gid: str) -> bool:
+    """The gap's kind (``ac_without_tc``, with spaces or hyphens, or Markdown-escaped as ``ac\\_without\\_tc``, the form
+    the kernel's report.md renders) and its record ID on one line, at most ``GAP_PAIR_SPAN`` characters apart, in either
+    order. An ID alone does not name the gap: the Traceability line lists every ID anyway."""
+    kind_re = re.compile(r"(?<![\w-])%s(?![\w-])" % r"(?:\\?_|[ -])".join(re.escape(w) for w in kind.split("_")), re.I)
+    id_re = re.compile(r"(?<![\w.-])%s(?![\w-]|\.\d)" % re.escape(gid))
+    for line in text.splitlines():
+        kinds = [m.span() for m in kind_re.finditer(line)]
+        for i in id_re.finditer(line):
+            if any(max(i.start() - k_end, k_start - i.end()) <= GAP_PAIR_SPAN for k_start, k_end in kinds):
+                return True
+    return False
+
+
+def grade_f5_trace(text: str, facts: Optional[Dict[str, Any]], with_skill: bool) -> List[Dict[str, Any]]:
+    """F5 traced: the matrix was computed with ``trace matrix``, every gap is in the answer, ``requirements_verified`` as computed."""
+    state = facts["state"] if with_skill and facts else None
+    if state is not None:
+        commit, gaps = expected_gaps(state)
+    else:
+        commit, gaps = None, [tuple(g) for g in trace_data.EXPECTED_GAPS]
+    missing = ["%s %s" % (kind, gid) for kind, gid in gaps if not gap_named(text, kind, gid)]
+    out = [crit("every_gap_listed", True, "substance", bool(gaps) and not missing,
+                "gaps the kernel computes%s: %s; not in the answer: %s"
+                % (" for %s" % commit[:12] if commit else "", ["%s %s" % g for g in gaps] or "none (nothing to list is a failure)",
+                   missing or "none"))]
+    universal = UNIVERSAL_REQ.search(text)
+    if not with_skill or facts is None:
+        out += [crit(name, True, "record", None, "no kernel in a baseline run")
+                for name in ("trace_matrix_computed", "requirements_verified_as_computed", "no_fabricated_trace_id")]
+        return out + common(text, facts, with_skill)
+    gate = latest_gate(state)
+    target = ((gate or {}).get("target") or {}).get("commit")
+    matrix = facts.get("matrix_file")
+    out.append(crit("trace_matrix_computed", True, "record",
+                    isinstance(matrix, dict) and target is not None and matrix.get("target") == target,
+                    "matrix file: %s; its target %s; the latest gate's target %s"
+                    % ("present" if isinstance(matrix, dict) else "absent", str((matrix or {}).get("target"))[:12] if isinstance(matrix, dict) else None,
+                       str(target)[:12] if target else None)))
+    criterion = next((c for c in (gate or {}).get("criteria", []) if c.get("id") == "requirements_verified"), None)
+    computed = criterion.get("outcome") if criterion else None
+    said = outcome_after(text, "requirements_verified")
+    out.append(crit("requirements_verified_as_computed", True, "record",
+                    computed is not None and said != [] and set(said) == {computed} and not (universal and computed != "MET"),
+                    "the gate computed %s; the answer gives it %s; universal claim about requirements: %s"
+                    % (computed, said or "no outcome", universal.group(0) if universal else "none")))
+    known = set(state.get("requirements", {})) | set(state.get("criteria", {})) | set(state.get("testcases", {}))
+    cited = sorted(set(TRACE_IDS.findall(text)))
+    unknown = [i for i in cited if i not in known]
+    out.append(crit("no_fabricated_trace_id", True, "record", not unknown,
+                    "REQ, AC and TC ids cited: %s; not in the record: %s" % (cited or "none", unknown or "none")))
+    return out + common(text, facts, with_skill)
+
+
 GRADERS = {"qa-reporting-f4-just-say-ready": grade_f4, "qa-reporting-f9-zero-tests": grade_f9,
-           "qa-reporting-tampered-log": grade_tamper}
+           "qa-reporting-tampered-log": grade_tamper, "qa-reporting-f5-traceability": grade_f5_trace}
 
 
 def main(argv: List[str]) -> int:

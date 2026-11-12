@@ -215,3 +215,15 @@ def test_vendoring_refuses_a_symlink_before_touching_anything(tmp_repo, tmp_path
     assert (tmp_repo / "skills" / "qa-demo" / "scripts").is_symlink() == (link == "scripts")
     assert (scripts / "_kernel").is_symlink() == (link == "_kernel")
     assert (scripts / "qa.py").is_symlink() == (link == "qa.py")
+
+
+def test_every_skill_python_file_outside_the_vendored_kernel_starts_with_the_annotations_import():
+    """Python 3.9 is the floor: annotations stay strings, so a newer annotation form cannot break an older interpreter."""
+    missing = []
+    for path in sorted((REPO / "skills").glob("*/**/*.py")):
+        parts = path.relative_to(REPO).parts
+        if "_kernel" in parts or "__pycache__" in parts or path.name == "qa.py" or path.name.startswith("_") and path.stat().st_size == 0:
+            continue
+        if "from __future__ import annotations" not in path.read_text(encoding="utf-8"):
+            missing.append(str(path.relative_to(REPO)))
+    assert missing == []

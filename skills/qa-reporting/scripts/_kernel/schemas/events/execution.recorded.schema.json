@@ -26,6 +26,7 @@
     "evidence_manifest": {"anyOf": [{"$ref": "#/$defs/evidence_manifest"}, {"type": "null"}]},
     "reports": {"type": "array", "items": {"$ref": "#/$defs/declared_report"}},
     "report": {"anyOf": [{"$ref": "#/$defs/test_report"}, {"$ref": "#/$defs/alert_report"}, {"type": "null"}]},
+    "measurements": {"type": "array", "items": {"$ref": "#/$defs/measurement"}, "minItems": 1, "description": "absent, never empty, when no measurement report parsed"},
     "status": {"$ref": "defs.schema.json#/$defs/status"},
     "reason": {"anyOf": [{"$ref": "defs.schema.json#/$defs/reason"}, {"type": "null"}]},
     "strength": {"anyOf": [{"$ref": "defs.schema.json#/$defs/strength"}, {"type": "null"}]},
@@ -71,7 +72,8 @@
         "commit": {"type": "string"},
         "branch": {"type": ["string", "null"]},
         "dirty": {"type": "boolean"},
-        "diff_hash": {"$ref": "defs.schema.json#/$defs/sha256"}
+        "diff_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "worktree": {"type": "string", "description": "present only when the run was inside a suite worktree: its path, relative to the workspace root; the facts above are then the worktree's"}
       },
       "required": ["commit", "branch", "dirty", "diff_hash"],
       "additionalProperties": false
@@ -131,7 +133,7 @@
     "declared_report": {
       "type": "object",
       "properties": {
-        "format": {"enum": ["junit", "ctrf", "sarif"]},
+        "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation"]},
         "pattern": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
         "error": {"enum": ["report_missing", "report_invalid", null]}
@@ -161,6 +163,55 @@
         "runs": {"type": "integer", "minimum": 0}
       },
       "required": ["format", "kind", "alerts", "runs"],
+      "additionalProperties": false
+    },
+    "measurement": {
+      "description": "A measurement report that parsed (coverage or mutation). It never decides the run's status; the totals are those of the stored copy named by file.",
+      "type": "object",
+      "properties": {
+        "format": {"enum": ["lcov", "cobertura", "jacoco", "mutation"]},
+        "kind": {"enum": ["coverage", "mutants"]},
+        "file": {"type": "string"},
+        "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "totals": {"$ref": "#/$defs/measurement_totals"},
+        "anomalies": {"type": "array", "items": {"enum": ["path_outside_project", "partial"]}, "minItems": 1}
+      },
+      "required": ["format", "kind", "file", "sha256", "totals"],
+      "additionalProperties": false
+    },
+    "measurement_totals": {"anyOf": [{"$ref": "#/$defs/coverage_totals"}, {"$ref": "#/$defs/mutation_totals"}]},
+    "mutation_totals": {
+      "description": "Per file, how many mutants had each status (only the statuses that occur): all a reader needs to score any set of paths. Paths are as the report wrote them.",
+      "type": "object",
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "mutants": {"type": "integer", "minimum": 0},
+        "by_file": {"type": "object", "additionalProperties": {"$ref": "#/$defs/status_counts"}}
+      },
+      "required": ["files", "mutants", "by_file"],
+      "additionalProperties": false
+    },
+    "status_counts": {
+      "type": "object",
+      "properties": {
+        "Killed": {"type": "integer", "minimum": 1}, "Survived": {"type": "integer", "minimum": 1},
+        "NoCoverage": {"type": "integer", "minimum": 1}, "Timeout": {"type": "integer", "minimum": 1},
+        "CompileError": {"type": "integer", "minimum": 1}, "RuntimeError": {"type": "integer", "minimum": 1},
+        "Ignored": {"type": "integer", "minimum": 1}, "Pending": {"type": "integer", "minimum": 1}
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    },
+    "coverage_totals": {
+      "type": "object",
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "lines_total": {"type": "integer", "minimum": 0},
+        "lines_covered": {"type": "integer", "minimum": 0},
+        "branches_total": {"type": "integer", "minimum": 0},
+        "branches_covered": {"type": "integer", "minimum": 0}
+      },
+      "required": ["files", "lines_total", "lines_covered", "branches_total", "branches_covered"],
       "additionalProperties": false
     },
     "allowed_check": {

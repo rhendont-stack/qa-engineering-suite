@@ -259,6 +259,26 @@ def _not_redirected(ws: Workspace) -> Workspace:
     return ws
 
 
+def _under_qa_work(path: Path) -> bool:
+    """Whether ``path`` is ``.qa/work`` or lies below it, at any depth.
+
+    The spelling of the two names is not trusted: on a case-insensitive filesystem a path spelled ``.QA/Work`` names the same
+    directory, so a candidate spelling is confirmed by asking the filesystem whether it is the real ``.qa/work``."""
+    parts = path.parts
+    for i in range(len(parts) - 1):
+        if parts[i].lower() != ".qa" or parts[i + 1].lower() != "work":
+            continue
+        if parts[i] == ".qa" and parts[i + 1] == "work":
+            return True
+        outer = Path(*parts[:i]) if i else Path(path.anchor)
+        try:
+            if os.path.samefile(str(outer.joinpath(*parts[i:i + 2])), str(outer / ".qa" / "work")):
+                return True
+        except OSError:  # no such directory under that spelling: a case-sensitive filesystem, where it is another name
+            continue
+    return False
+
+
 def find_workspace(start: Path, explicit: Optional[Path] = None) -> Workspace:
     if explicit is not None:
         root = Path(explicit).resolve()
@@ -267,6 +287,8 @@ def find_workspace(start: Path, explicit: Optional[Path] = None) -> Workspace:
         raise QaError("no_workspace", "no .qa/config.json in the given workspace", path=str(root))
     here = Path(start).resolve()
     for candidate in [here] + list(here.parents):
+        if _under_qa_work(candidate):
+            continue  # inside a worktree the suite made: whatever it tracks, the workspace is the one outside
         if (candidate / ".qa" / "config.json").is_file():
             return _not_redirected(Workspace(root=candidate, qa_dir=candidate / ".qa"))
     raise QaError("no_workspace", "no .qa/config.json found here or in any parent", start=str(here))

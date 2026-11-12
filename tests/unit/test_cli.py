@@ -208,6 +208,7 @@ REPORTS = {
     "junit": '<testsuite><testcase classname="c" name="t"/></testsuite>',
     "ctrf": '{"results": {"tests": [{"name": "t", "status": "passed", "duration": 1}]}}',
     "sarif": '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "scanner"}}, "results": []}]}',
+    "mutation": '{"schemaVersion": "2", "files": {"a.js": {"language": "javascript", "mutants": [{"id": "1", "mutatorName": "m", "status": "Killed", "location": {"start": {"line": 1, "column": 1}}}]}}}',
 }
 
 
@@ -223,7 +224,7 @@ def _report_file(tmp_path, fmt):
     return str(path)
 
 
-@pytest.mark.parametrize("fmt,category", [("junit", "functional"), ("ctrf", "functional"), ("sarif", "security")])
+@pytest.mark.parametrize("fmt,category", [("junit", "functional"), ("ctrf", "functional"), ("sarif", "security"), ("mutation", "functional")])
 def test_ingest_category_defaults_by_format(executed, qa_cli, tmp_path, fmt, category):  # T18-R5
     code, out = qa_cli("ingest", fmt, _report_file(tmp_path, fmt), "--from", executed)
     assert code == 0 and out["event"].startswith("EVT-")
@@ -534,6 +535,8 @@ WRITE_ARGV = {
     "gate policy propose": ("gate", "policy", "propose", "suite_executed", "--override", "{}", "--rationale", "r"),
     "gate policy accept": ("gate", "policy", "accept", "EVT-X", "--approval", "q"),
     "gate evaluate": ("gate", "evaluate", "--profile", "change"),
+    "worktree add": ("worktree", "add", "HEAD"),
+    "worktree remove": ("worktree", "remove", ".qa/work/wt-000000000000"),
     "run": ("run", "--", "true"),
     "ingest": ("ingest", "junit", "missing.xml", "--from", "EXE-X"),
     "result reclassify": ("result", "reclassify", "RES-X", "blocked", "--reason", "r", "--evidence", "EXE-X"),
@@ -546,6 +549,21 @@ WRITE_ARGV = {
     "report bundle": ("report", "bundle", "--output", "x.tar.gz"),
     "plan create": ("plan", "create", "--template", "missing.json"),
     "plan update": ("plan", "update", "PLAN-0001", "S01", "--status", "blocked", "--reason", "r"),
+    "req add": ("req", "add", "--json", "missing.json"),
+    "req import": ("req", "import", "--json", "missing.json"),
+    "req confirm": ("req", "confirm", "REQ-001", "--approval", "q"),
+    "ac add": ("ac", "add", "--json", "missing.json"),
+    "asm add": ("asm", "add", "--json", "missing.json"),
+    "asm decide": ("asm", "decide", "ASM-001", "confirmed", "--approval", "q"),
+    "risk add": ("risk", "add", "--json", "missing.json"),
+    "tc add": ("tc", "add", "--json", "missing.json"),
+    "tc import": ("tc", "import", "--json", "missing.json"),
+    "trace link": ("trace", "link", "AC-001.1", "verified_by", "TC-001"),
+    "trace scan": ("trace", "scan"),
+    "trace matrix": ("trace", "matrix"),
+    "fix add": ("fix", "add", "--json", "missing.json"),
+    "changes record": ("changes", "record", "tests/x.py", "--kind", "created"),
+    "revalidate": ("revalidate", "FIX-001", "--f2p", "EXE-X:EXE-Y", "--p2p", "EXE-X:EXE-Y", "--defect-test", "t.py::test_x"),
 }
 READ_ARGV = {
     "doctor": ("doctor",),
@@ -563,6 +581,8 @@ READ_ARGV = {
     "detect tests": ("detect", "tests"),
     "plan status": ("plan", "status"),
     "catalog list": ("catalog", "list"),
+    "req list": ("req", "list"),
+    "changes list": ("changes", "list"),
     "compare": ("compare", "EXE-" + "0" * 25 + "A", "EXE-" + "0" * 25 + "B"),  # the test below records both
 }
 READ_COMMANDS = set(READ_ARGV) | {"init"}  # init writes, but runs without find_workspace and rewrites nothing

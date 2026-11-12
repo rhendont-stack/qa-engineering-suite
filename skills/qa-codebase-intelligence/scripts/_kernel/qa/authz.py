@@ -69,6 +69,9 @@ _BARE_BRACKETED = re.compile(r"\[([^\]]*)\](?::[0-9]{1,5})?")
 _IPV6_TEXT = re.compile(r"[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?")
 _UNTRUSTED = ("untrusted project: run it with `qa run --container IMAGE@DIGEST`, "
               "or approve `qa config set project.trust trusted`")
+# A run inside a suite worktree cannot be containerised (its archive would hold the main tree), so only trust is offered.
+UNTRUSTED_IN_WORKTREE = "untrusted project: a run inside a suite worktree needs `qa config set project.trust trusted` approved"
+UNTRUSTED = _UNTRUSTED
 
 
 def _count(value: Any) -> bool:
@@ -160,7 +163,7 @@ def _read_target(target: Any) -> Tuple[Optional[str], str]:
         if not parts.hostname:
             return None, "a URL target must name a host"
         if "@" in parts.netloc:
-            return None, "a URL target must not carry userinfo: secrets stay out of arguments (§12.5)"
+            return None, "a URL target must not carry userinfo: secrets stay out of arguments"
         return parts.hostname, ""
     match = _BARE_NAME.fullmatch(target)
     if match:
@@ -256,7 +259,7 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     _check_activities(env, activities)
     per_target = [a for a in activities if a in vocab.PER_TARGET_ACTIVITIES]
     if per_target and not targets:
-        raise QaError("targets_required", "%s needs a grant that lists its targets (§12.2)" % per_target[0],
+        raise QaError("targets_required", "%s needs a grant that lists its targets" % per_target[0],
                       activity=per_target[0])
     _check_targets(cfg, environment_id, targets)
     _check_limits(env, activities, limits)

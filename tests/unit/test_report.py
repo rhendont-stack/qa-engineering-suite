@@ -7,8 +7,12 @@ import stat
 
 import pytest
 
+import test_compare
+import test_records
+import test_trace
+
 from helpers import REPO, WRITE_JUNIT, base, req
-from qa import execution, findings, gate, ledger, report, schema, state
+from qa import execution, findings, gate, ledger, records, report, schema, state, trace
 from qa.canonical import dumps, loads, sha256_bytes
 from qa.errors import QaError
 from qa.report import check_markdown, md_cell, render, render_json, render_markdown
@@ -62,6 +66,24 @@ def test_no_gate_no_verdict(ws):
 def test_rendered_report_passes_check(trusted, actor, py):
     execution.execute(trusted, actor, req(py, WRITE_JUNIT, "{evidence}/junit.xml", "fail")); st = state.load(trusted)
     assert report.check_markdown(report.render_markdown(st), st) == []
+
+
+def test_a_rendered_report_with_failing_criteria_and_critical_test_cases_passes_its_own_check(trusted, actor):
+    """K2: render, then check, on a gate whose requirements_verified and no_blocked_critical are NOT_MET."""
+    import test_gate
+    test_trace.chain(trusted, actor, criticality="critical")   # REQ-001, AC-001.1, TC-001 (critical) automated_by TEST_ID
+    records.add(trusted, actor, "testcase", test_records.tc(criticality="critical", links=("AC-001.1",)))   # TC-002
+    trace.link(trusted, actor, "TC-002", "automated_by", "tests.test_other::test_two")
+    test_gate._trace_run(trusted, actor, "A", "failed", execution_status="failed", reason="assertion", minute=1)
+    test_gate._trace_run(trusted, actor, "B", "passed", execution_status="inconclusive", reason="exit_code_mismatch", minute=2,
+                         test_id="tests.test_other::test_two")
+    g = gate.evaluate(trusted, actor, profile="release", target_commit=test_gate.COMMIT)["data"]
+    outcomes = {c["type"]: c["outcome"] for c in g["criteria"]}
+    assert (outcomes["requirements_verified"], outcomes["no_blocked_critical"]) == ("NOT_MET", "NOT_MET")
+    st = state.load(trusted)
+    md = report.render_markdown(st)
+    assert "TC-001 last\\_failed; TC-002 last\\_inconclusive" in md   # md_cell escapes the underscore
+    assert report.check_markdown(md, st) == []
 
 
 def test_check_problem_kinds(trusted, actor, py):
@@ -177,7 +199,7 @@ def test_the_headline_stands_without_a_gate(ws):
 def test_sections_come_in_order(ws):
     md = render_markdown(state.load(ws))
     heads = [l for l in md.splitlines() if l.startswith("#")]
-    assert heads == ["# QA report: unnamed project", "## Gate", "## Executions", "## Findings", "## Integrity", "## Limitations"]
+    assert heads == ["# QA report: unnamed project", "## Gate", "## Executions", "## Findings", "## Traceability", "## Integrity", "## Limitations"]
 
 
 def test_gate_rows_keep_policy_order_and_conditions_follow(trusted, actor):
@@ -444,9 +466,11 @@ def test_not_run_matches_the_not_run_status(trusted, actor, py):
     assert check_markdown("%s was not run\n" % exe, st) == [] and kinds("%s failed\n" % exe, st) == ["status_mismatch"]
 
 
-def test_two_executions_on_a_line_are_not_compared(trusted, actor, py):
+def test_a_repeated_id_is_judged_at_each_of_its_occurrences(trusted, actor, py):
     a, b = run(trusted, actor, py, "fail"), run(trusted, actor, py, "pass")
-    assert check_markdown("%s failed and %s passed, also %s passed\n" % (a, b, a), state.load(trusted)) == []
+    st = state.load(trusted)  # a failed, b passed
+    assert check_markdown("%s failed and %s passed, also %s failed\n" % (a, b, a), st) == []
+    assert kinds("%s failed and %s passed, also %s passed\n" % (a, b, a), st) == ["status_mismatch"]
 
 
 def test_a_result_is_compared_too(trusted, actor, py):
@@ -456,10 +480,12 @@ def test_a_result_is_compared_too(trusted, actor, py):
     assert check_markdown("%s failed\n" % res, st) == [] and kinds("%s passed\n" % res, st) == ["status_mismatch"]
 
 
-def test_an_execution_and_a_result_on_one_line_are_two_ids_so_not_compared(trusted, actor, py):
+def test_an_execution_and_a_result_on_one_line_are_each_judged_by_the_nearest_id(trusted, actor, py):
     exe = run(trusted, actor, py, "fail")
     res = next(iter(state.load(trusted)["results"]))
-    assert check_markdown("%s and %s passed\n" % (exe, res), state.load(trusted)) == []
+    st = state.load(trusted)
+    assert check_markdown("%s failed and %s failed\n" % (exe, res), st) == []
+    assert kinds("%s and %s passed\n" % (exe, res), st) == ["status_mismatch"]  # "passed" belongs to the result, which failed
 
 
 def test_each_unknown_id_is_reported_once_per_line(ws):
@@ -824,3 +850,66 @@ def test_a_plain_verdict_line_is_refused_while_the_gate_did_not_see_the_problem(
     assert "**Verdict:**" in forged and [p.kind for p in report.check(trusted, forged)] == ["ledger_integrity"]
     both = honest + "\n" + "\n".join(l for l in lines if l.startswith("**Verdict:**")) + "\n"
     assert [p.kind for p in report.check(trusted, both)] == ["ledger_integrity"]
+
+
+# --------------------------------------------------------------------------- the traceability section
+
+COMMIT = "a" * 40
+
+
+def _traced_state(ws, actor):
+    """REQ-001, AC-001.1, TC-001 automated and run on COMMIT without a red check, REQ-002 with no AC."""
+    test_trace.chain(ws, actor)
+    test_trace.record_run(ws, actor, "A", COMMIT, [(test_trace.TEST_ID, "passed", {})], 1)
+    records.add(ws, actor, "requirement", test_records.req(statement="A second rule."))
+    return state.load(ws)
+
+
+def test_the_report_has_a_traceability_section_with_counts_and_one_row_per_gap(ws, actor):
+    st = _traced_state(ws, actor)
+    lines = section(render_markdown(st), "Traceability")
+    matrix = trace.matrix(st, COMMIT)
+    assert "Target commit: %s (newest execution; no gate recorded)" % COMMIT[:12] in lines
+    for kind in trace.GAP_KINDS:
+        assert "| %s | %d |" % (md_cell(kind), matrix["counts"][kind]) in lines
+    rows = [l for l in lines if l.startswith("| ") and any(l.startswith("| %s | %s |" % (g["id"], md_cell(g["kind"]))) for g in matrix["gaps"])]
+    assert len(rows) == len(matrix["gaps"]) and len(matrix["gaps"]) >= 2
+    assert "| REQ-002 | %s |" % md_cell("req_without_ac") in lines and "| TC-001 | %s |" % md_cell("tc_unproven") in lines
+
+
+def test_the_traceability_section_is_byte_stable(ws, actor):
+    st = _traced_state(ws, actor)
+    assert render_markdown(st) == render_markdown(state.load(ws)) == render_markdown(st)
+    assert section(render_markdown(st), "Traceability") == section(render_markdown(state.load(ws)), "Traceability")
+
+
+def _fake_gate(commit):
+    return {"GATE-001": {"id": "GATE-001", "target": {"commit": commit}, "criteria": [], "conditions": [],
+                         "verdict": "INSUFFICIENT_EVIDENCE", "profile": "change", "independence": "I1", "state_hash": SHA}}
+
+
+def test_the_traceability_target_is_the_gates_when_there_is_one(ws, actor):
+    st = _traced_state(ws, actor)
+    st["gates"] = _fake_gate("b" * 40)
+    assert "Target commit: %s (the target of GATE-001)" % ("b" * 12) in section(render_markdown(st), "Traceability")
+
+
+def test_a_gate_with_no_commit_labels_the_fallback_commit(ws, actor):
+    st = _traced_state(ws, actor)
+    st["gates"] = _fake_gate(None)
+    assert "Target commit: %s (newest execution; GATE-001 recorded no commit)" % COMMIT[:12] in section(render_markdown(st), "Traceability")
+
+
+def test_without_a_gate_the_commit_is_labelled_as_the_newest_execution(ws, actor):
+    st = _traced_state(ws, actor)
+    assert "Target commit: %s (newest execution; no gate recorded)" % COMMIT[:12] in section(render_markdown(st), "Traceability")
+
+
+def test_the_traceability_section_without_records_says_so(ws):
+    assert [l for l in section(render_markdown(state.load(ws)), "Traceability") if l] == ["No requirements or test cases recorded."]
+
+
+def test_the_traceability_section_without_a_commit_says_so(ws, actor):
+    test_trace.chain(ws, actor)
+    lines = [l for l in section(render_markdown(state.load(ws)), "Traceability") if l]
+    assert lines == ["No execution on a recorded commit; the matrix needs one."]

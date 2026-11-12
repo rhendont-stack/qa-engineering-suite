@@ -315,3 +315,127 @@ def test_qa_plan_create_runs_no_repository_program(trusted, qa_cli, tmp_path, ho
     code, out = qa_cli("plan", "create", "--template", str(template))
     assert not marker.exists()
     assert code == 0, out
+
+
+@pytest.mark.parametrize("key, expected", [
+    ("lfs.extension.x.clean", True), ("lfs.extension.x.smudge", True), ("LFS.Extension.Dotted.Name.CLEAN", True),
+    ("lfs.extension.x.priority", False), ("lfs.extension.clean", False), ("lfs.clean", False), ("lfs.url", False),
+    ("lfs.customtransfer.agent.path", True), ("lfs.customtransfer.a.b.args", True), ("lfs.standalonetransferagent", True),
+    ("lfs.customtransfer.agent.concurrent", False), ("lfs.customtransfer.path", False), ("lfs.standalonetransferagent.x", False),
+    ("credential.helper", True), ("credential.https://example.invalid.helper", True), ("credential.username", False),
+    ("core.sshCommand", True), ("core.askPass", True), ("core.gitProxy", True), ("core.editor", False), ("core.sshcommand.x", False),
+    ("remote.origin.uploadpack", True), ("remote.a.b.receivepack", True), ("remote.origin.vcs", True), ("remote.origin.url", False),
+    ("remote.uploadpack", False), ("lfs.https://example.invalid/x.standalonetransferagent", True),
+    ("filter.x.clean", True), ("diff.x.textconv", True), ("core.editor", False),
+])
+def test_names_a_program(key, expected):
+    assert gitinfo._names_a_program(key) is expected
+
+
+def test_repository_lfs_extension_is_blanked_and_the_users_is_kept(repo, tmp_path, monkeypatch):
+    user = tmp_path / "user.gitconfig"
+    user.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git(repo, "config", "lfs.extension.mine.clean", "evil")
+    git(repo, "config", "lfs.extension.both.smudge", "evil")
+    subprocess.run(["git", "config", "-f", str(user), "lfs.extension.both.smudge", "trusted"], check=True)
+    git(repo, "config", "lfs.extension.mine.priority", "0")
+    options = gitinfo._program_overrides("git", repo)
+    assert options == ["-c", "lfs.extension.mine.clean=", "-c", "lfs.extension.both.smudge=trusted"]
+
+
+def test_repository_transfer_agent_keys_are_blanked_and_the_users_is_kept(repo, tmp_path, monkeypatch):
+    user = tmp_path / "user.gitconfig"
+    user.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git(repo, "config", "lfs.standalonetransferagent", "evil")
+    git(repo, "config", "lfs.customtransfer.evil.path", "x")
+    git(repo, "config", "lfs.customtransfer.evil.args", "y")
+    subprocess.run(["git", "config", "-f", str(user), "lfs.customtransfer.evil.args", "mine"], check=True)
+    assert gitinfo._program_overrides("git", repo) == ["-c", "lfs.standalonetransferagent=", "-c", "lfs.customtransfer.evil.path=",
+                                                       "-c", "lfs.customtransfer.evil.args=mine"]
+
+
+def test_repository_transport_keys_are_blanked_and_the_users_credential_helpers_all_stay(repo, tmp_path, monkeypatch):
+    user = tmp_path / "user.gitconfig"
+    user.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(user))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git(repo, "config", "core.sshCommand", "x")
+    git(repo, "config", "credential.https://example.invalid.helper", "!x")
+    git(repo, "config", "remote.origin.vcs", "z")
+    subprocess.run(["git", "config", "-f", str(user), "--add", "credential.helper", "one"], check=True)
+    subprocess.run(["git", "config", "-f", str(user), "--add", "credential.helper", "two"], check=True)
+    assert gitinfo._program_overrides("git", repo) == [
+        "-c", "core.sshcommand=", "-c", "credential.https://example.invalid.helper=", "-c", "remote.origin.vcs=",
+        "-c", "credential.helper=one", "-c", "credential.helper=two"]  # after the resets: every helper the user configured
+
+
+@pytest.mark.parametrize("key", ["remote.origin.uploadpack", "remote.a.b.receivepack", "core.gitProxy"])
+def test_a_repository_key_that_cannot_be_overridden_is_refused(repo, key):
+    git(repo, "config", key, "x")
+    with pytest.raises(gitinfo.Unavailable) as caught:
+        gitinfo._program_overrides("git", repo)
+    assert key.lower() in str(caught.value)
+    assert gitinfo.git_info(repo) == (None, "git_unavailable")
+
+
+def test_a_partial_clone_is_refused_only_where_lazy_fetch_cannot_be_switched_off(repo, monkeypatch):
+    git(repo, "config", "extensions.partialClone", "origin")
+    git(repo, "config", "remote.origin.promisor", "true")
+    monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: True)
+    assert gitinfo._program_overrides("git", repo) == []
+    monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: False)
+    with pytest.raises(gitinfo.Unavailable, match="partial"):
+        gitinfo._program_overrides("git", repo)
+
+
+@pytest.mark.parametrize("value, partial", [
+    ("true", True), ("yes", True), ("on", True), ("1", True), ("2", True), ("-1", True), ("garbage", True), ("", True),
+    (None, True),  # a key with no value at all, which git reads as true
+    ("false", False), ("no", False), ("off", False), ("0", False), ("FALSE", False),
+])
+def test_a_promisor_remote_counts_unless_it_is_explicitly_false(repo, monkeypatch, value, partial):
+    if value is None:
+        with open(str(repo / ".git" / "config"), "a") as handle:
+            handle.write('[remote "origin"]\n\tpromisor\n')
+    else:
+        git(repo, "config", "remote.origin.promisor", value)
+    monkeypatch.setattr(gitinfo, "lazy_fetch_blocked", lambda: False)  # a git that cannot switch lazy fetch off
+    if partial:
+        with pytest.raises(gitinfo.Unavailable, match="partial"):
+            gitinfo._program_overrides("git", repo)
+    else:
+        assert gitinfo._program_overrides("git", repo) == []
+
+
+# --------------------------------------------------------------------------- K5: a repository git refuses is not "nothing tracked"
+
+def _no_repository_above(path):
+    here = path.resolve()
+    return not any((parent / ".git").exists() for parent in (here, *here.parents))
+
+
+def test_tracked_files_outside_any_repository_is_the_empty_set(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    if not _no_repository_above(plain):
+        pytest.skip("the temporary directory lies inside a git repository")
+    assert gitinfo.tracked_files(plain) == set()
+
+
+def test_tracked_files_of_a_repository_git_refuses_is_unknown(tmp_path):
+    root = tmp_path / "broken"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "a.txt").write_text("1")
+    git(root, "add", "a.txt")
+    git(root, "commit", "-q", "-m", "c")
+    assert gitinfo.tracked_files(root) == {"a.txt"}
+    shutil.rmtree(str(root / ".git"))
+    (root / ".git").write_text("gitdir: %s\n" % (tmp_path / "gone"))   # a repository is there, and git cannot read it
+    assert gitinfo.tracked_files(root) is None
+    (root / "sub").mkdir()
+    assert gitinfo.tracked_files(root / "sub") is None   # a .git entry above the root counts too

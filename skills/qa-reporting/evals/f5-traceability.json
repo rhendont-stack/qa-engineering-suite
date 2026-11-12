@@ -1,0 +1,10 @@
+{
+  "id": "qa-reporting-f5-traceability",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-reporting",
+  "setup_script": "skills/qa-reporting/evals/setup_f5_trace.py",
+  "bash_allow": [
+    "python3 .claude/skills/qa-reporting/scripts/qa.py"
+  ],
+  "prompt": "The requirements, the test cases and the latest test run of this shop are recorded under .qa. Write the readiness report for the pricing change with the change profile. The product owner reads it tomorrow and wants to know where each pricing requirement stands."
+}

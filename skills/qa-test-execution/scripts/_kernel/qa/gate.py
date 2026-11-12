@@ -15,10 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from . import KERNEL_VERSION, config, gitinfo, ids, integrity, ledger, resource_dir, schema, state, vocab
+from . import KERNEL_VERSION, config, execution, gitinfo, ids, ingest, integrity, ledger, resource_dir, schema, state, trace, vocab
 from .canonical import hash_obj, loads
 from .errors import QaError
 from .findings import SEVERITIES
+from .ingest import mutation
 from .workspace import Workspace, read_config, write_atomic
 
 # QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, unknown_criterion,
@@ -41,13 +42,17 @@ _INDEPENDENCE = ("I0", "I1", "I2", "I3")
 _SUITE_ACTIVITY = "test-execution-local"
 _UNRESOLVED_STATES = ("open", "reopened", "fix_submitted")
 _NEEDS = {
-    "requirements_verified": ("traceability", 3), "no_blocked_critical": ("traceability", 3),
-    "mutation_score_min": ("mutation ingestion", 3),
     "security_scans_executed": ("scan and performance skills", 4),
     "performance_objectives_met": ("scan and performance skills", 4),
     "migrations_validated": ("database skills", 4), "rollback_validated": ("database skills", 4),
 }
 
+# Parameters a criterion reads that no policy file lists: an accepted override sets them (the policy files stay as the profile table).
+_OPTIONAL_PARAMS = {"mutation_score_min": ("paths",)}
+_DEFAULT_MIN_SCORE = 70
+_MUTATION_FILES_SHOWN = 20
+
+_PRIORITIES = ("must", "should", "could", "wont")  # a requirement's priority, most binding first
 _Outcome = Tuple[str, str, List[str]]  # outcome, detail, evidence
 
 
@@ -80,9 +85,10 @@ def _off_justification(criterion: dict, override: dict) -> Optional[str]:
 def _effective_criterion(criterion: dict, override: dict) -> dict:
     """``criterion`` with ``override`` applied. A config accepted as it stands can hold what ``propose`` refuses."""
     params = {**criterion["params"], **override.get("params", {})}
-    errors = schema.errors({name: params[name] for name in criterion["params"]}, _PARAMS)
+    read = list(criterion["params"]) + [name for name in _OPTIONAL_PARAMS.get(criterion["type"], ()) if name in params]
+    errors = schema.errors({name: params[name] for name in read}, _PARAMS)
     if "not_applicable" in override and _blank(override["not_applicable"]):
-        errors.append("not_applicable is blank: §11.2 requires a recorded justification")
+        errors.append("not_applicable is blank: a criterion is not applicable only with a recorded justification")
     if errors:
         raise QaError("config_invalid", "an accepted gate override cannot be applied", criterion=criterion["id"], errors=errors)
     effective = dict(criterion, params=params, blocking=override.get("blocking", criterion["blocking"]))
@@ -160,8 +166,12 @@ def _no_unresolved_findings(c: dict, st: dict, ctx: GateContext) -> _Outcome:
 
 
 def _is_suite_run(record: dict) -> bool:
-    """A clean scan is not a suite run, and a dirty scan does not fail one."""
-    return record["activity"] == _SUITE_ACTIVITY and (record["report"] is None or record["report"]["kind"] != "alerts")
+    """A clean scan is not a suite run, and a dirty scan does not fail one. Nor is a run that declared only measurement
+    reports: a coverage file says how much code ran, not that the tests passed."""
+    reports = record.get("reports") or []
+    measured_only = bool(reports) and all(ingest.is_measurement(declared["format"]) for declared in reports)
+    return (record["activity"] == _SUITE_ACTIVITY and not measured_only
+            and (record["report"] is None or record["report"]["kind"] != "alerts"))
 
 
 def _on_target(record: dict, target: Optional[str]) -> bool:
@@ -296,9 +306,219 @@ def _independence_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     return _NOT_MET, "%s < %s" % (ctx.independence, minimum), []
 
 
+def _verifying_cases(matrix: dict, links: List[str]) -> List[dict]:
+    cases = {case["id"]: case for case in matrix["testcases"]}
+    return [cases[tc] for tc in links if tc in cases]
+
+
+def _structured(st: dict, case: dict) -> bool:
+    """Every execution behind the test case's latest results is of strength ``structured``: an exit code proves no assertion."""
+    return all(st["executions"].get(test["execution"], {}).get("strength") == "structured" for test in case["tests"])
+
+
+def _ac_state(st: dict, matrix: dict, links: List[str]) -> Tuple[str, List[str]]:
+    """``failed``, ``verified`` or ``unverified`` for one acceptance criterion, and the executions its test cases rest on."""
+    cases = _verifying_cases(matrix, links)
+    executions = sorted({test["execution"] for case in cases for test in case["tests"] if test["execution"]})
+    if any(case["status"] == "failed" for case in cases):
+        return "failed", executions
+    verified = any(case["status"] == "passed" and case["oracle"] != "characterization" and _structured(st, case) for case in cases)
+    return ("verified" if verified else "unverified"), executions
+
+
+def _tree_matrix(st: dict, ctx: GateContext) -> dict:
+    """The matrix on the target commit; when the working tree itself is evaluated, only runs on this tree count (T16-R5)."""
+    return trace.matrix(st, ctx.target_commit, diff_hash=ctx.diff_hash)
+
+
+def _where(ctx: GateContext) -> str:
+    return "commit %s%s" % (ctx.target_commit, " and this working tree" if ctx.diff_hash is not None else "")
+
+
+def _requirements_verified(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.1, §6.4 B: every requirement at or above ``min_priority`` is verified by its acceptance criteria on the target commit.
+
+    A documented or confirmed requirement is judged by its criteria: each needs a verifying test case whose latest result on the
+    target is a pass from a ``structured`` execution and whose oracle is not ``characterization``. An inferred or assumed one
+    nobody confirmed is listed and caps the outcome at NO_EVIDENCE, never MET and never NOT_MET on its own account.
+    """
+    if not st["requirements"]:
+        return _NO_EVIDENCE, "no documented requirements", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    minimum = c["params"].get("min_priority", "must")
+    scope = [rid for rid in sorted(st["requirements"], key=trace._order)
+             if _PRIORITIES.index(st["requirements"][rid]["priority"]) <= _PRIORITIES.index(minimum)]
+    if not scope:
+        return _NO_EVIDENCE, "no requirement at priority %s or above" % minimum, []
+    matrix = _tree_matrix(st, ctx)
+    verified_by = trace._by_source(st, "verified_by")
+    criteria_of: Dict[str, List[str]] = {}
+    for ac in sorted(st["criteria"], key=trace._order):
+        criteria_of.setdefault(st["criteria"][ac]["requirement"], []).append(ac)
+    unconfirmed: List[str] = []
+    bare: List[str] = []
+    failed: List[str] = []
+    unverified: List[str] = []
+    evidence: Set[str] = set()
+    for rid in scope:
+        record = st["requirements"][rid]
+        if record["provenance"] != "documented" and not record.get("confirmed"):
+            unconfirmed.append(rid)
+            continue
+        if not criteria_of.get(rid):
+            bare.append(rid)
+        for ac in criteria_of.get(rid, []):
+            outcome, executions = _ac_state(st, matrix, verified_by.get(ac, []))
+            evidence.update(executions)
+            if outcome != "verified":
+                (failed if outcome == "failed" else unverified).append(ac)
+    parts = []
+    if failed:  # no bare status word: a report renders this detail, and its checker reads one as a claim needing a run ID
+        parts.append("a verifying test case has a failing last result: " + ", ".join(failed))
+    if unverified:
+        parts.append("not verified by a passing structured test on %s: %s" % (_where(ctx), ", ".join(unverified)))
+    if bare:
+        parts.append("no acceptance criterion: " + ", ".join(bare))
+    if unconfirmed:
+        parts.append("unconfirmed %s: %s" % ("requirement" if len(unconfirmed) == 1 else "requirements", ", ".join(unconfirmed)))
+    result = _NOT_MET if failed else (_NO_EVIDENCE if parts else _MET)
+    detail = "; ".join(parts) or "%d %s verified: %s" % (len(scope), "requirement" if len(scope) == 1 else "requirements", ", ".join(scope))
+    return result, detail, sorted(evidence)
+
+
+def _no_blocked_critical(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.2: no critical test case is blocked, and none is unexecuted: an untested system is not a passing system."""
+    critical = [tc for tc in sorted(st["testcases"], key=trace._order) if st["testcases"][tc]["criticality"] == "critical"]
+    if not critical:
+        return _NO_EVIDENCE, "no test case is linked to a critical component", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    cases = {case["id"]: case for case in _tree_matrix(st, ctx)["testcases"]}
+    bad = [tc for tc in critical if cases[tc]["status"] in ("blocked", "inconclusive", "failed")]
+    missing = [tc for tc in critical if cases[tc]["status"] in (None, "not_run")]
+    evidence = sorted({test["execution"] for tc in critical for test in cases[tc]["tests"] if test["execution"]})
+    if bad:  # last_<status>: no bare status word, which a rendered report's checker would read as an uncited claim
+        return _NOT_MET, "; ".join("%s last_%s" % (tc, cases[tc]["status"]) for tc in bad), evidence
+    if missing:
+        return _NO_EVIDENCE, "no executed result on %s for: %s" % (_where(ctx), ", ".join(missing)), evidence
+    return _MET, "%d critical test %s with a passing last result on %s" % (
+        len(critical), "case" if len(critical) == 1 else "cases", _where(ctx)), evidence
+
+
+def _glob(pattern: str) -> "re.Pattern[str]":
+    """``*`` and ``?`` stay inside one path segment, ``**`` crosses segments (``**/`` may also match nothing); all else is literal."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        else:
+            out.append("[^/]*" if pattern[i] == "*" else "[^/]" if pattern[i] == "?" else re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _selected(path: str, patterns: List["re.Pattern[str]"]) -> bool:
+    """A recorded path leaving the project (``..``, absolute) is a name the tool gave, not a file of this project: no glob selects it."""
+    while path.startswith("./"):
+        path = path[2:]
+    if ingest.outside_project(path) or ingest.is_absolute(path):
+        return False
+    return any(pattern.fullmatch(path) for pattern in patterns)
+
+
+def _percent(value: float, minimum: Optional[float] = None) -> str:
+    """Two decimals, but never rounded across the minimum: 69.999 under a minimum of 70 must not read as 70."""
+    text = "%.2f" % value
+    if minimum is not None and (float(text) >= minimum) != (value >= minimum):
+        text = "%.6f" % value
+    return text.rstrip("0").rstrip(".")
+
+
+def _latest_mutation_report(st: dict, ctx: GateContext) -> Tuple[Optional[Tuple[dict, dict, Optional[str]]], List[str]]:
+    """The run, the totals and (for an ingested file) the ingest event of the last mutation report recorded on the target
+    commit for this tree, and the ingest events that were set aside.
+
+    A report counts only from a run that passed or failed (a mutation tool's exit code says nothing about the code under test,
+    but a blocked or inconclusive run measured under conditions nobody can vouch for). A report the run recorded itself came from
+    the tool; one attached with ``qa ingest`` counts only when it is ``structured`` (the file is in the run's intact manifest): an
+    attested file is a person's JSON, and scores come only from tool reports. Within a run, a report attached later is later.
+    """
+    latest = None
+    ignored: List[str] = []
+    for record in st["executions"].values():
+        if not (_on_target(record, ctx.target_commit) and _on_this_tree(record, ctx)):
+            continue
+        for item in execution.readable_measurements(record):
+            if item.get("kind") == "mutants":
+                latest = (record, item["totals"], None)
+        for item in execution.readable_ingested(record):
+            if item.get("kind") != "mutants":
+                continue
+            if item.get("strength") == "structured":
+                latest = (record, item["totals"], item.get("event"))
+            else:
+                ignored.append("%s in %s" % (item.get("event"), record["id"]))
+    return latest, ignored
+
+
+def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.1: the mutation score of the files in ``paths``, from the last mutation report on the target commit.
+
+    Scores come only from a mutation tool's report. Line coverage is never read as one, and ``paths`` is required: a project
+    chooses which files must withstand mutation (``qa-mutation`` proposes them from the critical components). A report with
+    Pending mutants in those files is partial, and a partial measurement is not evidence.
+    """
+    params = c["params"]
+    paths = params.get("paths")
+    if not paths:
+        return _NO_EVIDENCE, "mutation_score_min needs paths: the globs of the files whose mutants are scored (an accepted override sets them)", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    found, ignored = _latest_mutation_report(st, ctx)
+    skipped = "; ignored attested ingest %s: scores come only from a tool's report" % ", ".join(ignored) if ignored else ""
+    if found is None:
+        return _NO_EVIDENCE, "no mutation report on commit %s%s" % (ctx.target_commit, skipped), []
+    record, totals, event = found
+    cited = [record["id"]] + ([event] if event else [])
+    minimum = params.get("min_score", _DEFAULT_MIN_SCORE)
+    patterns = [_glob(pattern) for pattern in paths]
+    scored = {path: counts for path, counts in totals["by_file"].items() if _selected(path, patterns)}
+    pending = {path: counts["Pending"] for path, counts in sorted(scored.items()) if counts.get("Pending")}
+    if pending:
+        names = sorted(pending)
+        where = ", ".join(names[:_MUTATION_FILES_SHOWN]) + (" and %d more" % (len(names) - _MUTATION_FILES_SHOWN)
+                                                           if len(names) > _MUTATION_FILES_SHOWN else "")
+        return (_NO_EVIDENCE, "%d Pending in %s: the report is partial (a tool that stopped early leaves mutants unrun)%s"
+                % (sum(pending.values()), where, skipped), cited)
+    overall: Dict[str, int] = {}
+    per_file = []
+    for path in sorted(scored):
+        for status, number in scored[path].items():
+            overall[status] = overall.get(status, 0) + number
+        value = mutation.score_of_counts(scored[path])
+        if value is not None:
+            per_file.append("%s (%s)" % (path, _percent(value, minimum)))
+    value = mutation.score_of_counts(overall)
+    if value is None:
+        return _NO_EVIDENCE, "%s has no mutant that counts in %s%s" % (record["id"], ", ".join(paths), skipped), cited
+    met = value >= minimum
+    shown = ", ".join(per_file[:_MUTATION_FILES_SHOWN]) + (" and %d more" % (len(per_file) - _MUTATION_FILES_SHOWN)
+                                                          if len(per_file) > _MUTATION_FILES_SHOWN else "")
+    detail = "%s %s %s over %s%s" % (_percent(value, minimum), ">=" if met else "<", _percent(minimum), shown, skipped)
+    return (_MET if met else _NOT_MET), detail, cited
+
+
 _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
     "no_unresolved_findings": _no_unresolved_findings, "suite_executed": _suite_executed, "flaky_rate_max": _flaky_rate_max,
     "test_integrity": _test_integrity, "independence_min": _independence_min,
+    "requirements_verified": _requirements_verified, "no_blocked_critical": _no_blocked_critical,
+    "mutation_score_min": _mutation_score_min,
 }
 
 
@@ -409,10 +629,10 @@ def evaluate(ws: Workspace, actor: ledger.Actor, *, profile: Optional[str] = Non
 
 def _declared_params(criterion_id: object) -> Set[str]:
     """The parameters the criterion declares in any profile; refuses an ID in no profile."""
-    found = [c["params"] for profile in vocab.PROFILES for c in _read_policy(profile)["criteria"] if c["id"] == criterion_id]
+    found = [c for profile in vocab.PROFILES for c in _read_policy(profile)["criteria"] if c["id"] == criterion_id]
     if not found:
         raise QaError("unknown_criterion", "no profile has such a criterion", criterion=criterion_id)
-    return set().union(*found)
+    return set().union(*(c["params"] for c in found), *(_OPTIONAL_PARAMS.get(c["type"], ()) for c in found))
 
 
 def propose(ws: Workspace, actor: ledger.Actor, criterion_id: str, override: dict, rationale: str) -> dict:

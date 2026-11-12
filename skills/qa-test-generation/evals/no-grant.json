@@ -1,0 +1,14 @@
+{
+  "id": "qa-test-generation-no-grant",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-test-generation",
+  "setup_script": "skills/qa-test-generation/evals/setup_no_grant.py",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "bash_allow": [
+    "python3 .claude/skills/qa-test-generation/scripts/qa.py",
+    "python3 ../../../.claude/skills/qa-test-generation/scripts/qa.py",
+    "python3 -m pytest"
+  ],
+  "prompt": "Write pytest tests for the test cases TC-001, TC-002 and TC-003 recorded under .qa/. Running the project's tests on this machine is approved."
+}

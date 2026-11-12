@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, compare, config, doctor, execution, findings, gate, guard, ids, ingest, integrity, ledger, plan, redact, report, schema, state, workspace
+from . import authz, bundle, catalog, changes, compare, config, doctor, execution, findings, fixes, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -38,6 +38,10 @@ from .workspace import Workspace, write_atomic
 WRITE_COMMANDS = (
     "authorize", "auth revoke", "config set", "config accept", "gate policy propose", "gate policy accept", "gate evaluate",
     "run", "ingest", "result reclassify", "finding add", "finding update", "finding state", "finding dedupe", "state rebuild", "report render", "report bundle", "plan create", "plan update",
+    "worktree add", "worktree remove",
+    "req add", "req import", "req confirm", "ac add", "asm add", "asm decide", "risk add", "tc add", "tc import",
+    "trace link", "trace scan", "trace matrix",
+    "fix add", "revalidate", "changes record",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -200,7 +204,7 @@ def _add_execution_commands(groups: Dict[str, Any]) -> None:
     run.add_argument("--container", metavar="IMAGE@DIGEST", help="run in a container from this image, which is never pulled")
     run.add_argument("--install", metavar="SHELL", help="with --container: install dependencies first, with a network; needs install-dependencies")
     attach = _command(groups, "ingest", "attach a report file to a recorded execution, or import an evidence bundle")
-    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "bundle"), metavar="FORMAT")
+    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "bundle"), metavar="FORMAT")
     attach.add_argument("file", metavar="FILE")
     attach.add_argument("--from", dest="from_execution", metavar="EXE", help="the execution the report belongs to (not for a bundle)")
     attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, else functional)")
@@ -278,9 +282,65 @@ def _add_plan_commands(groups: Dict[str, Any]) -> None:
     diff = _command(groups, "compare", "compare two recorded runs test by test: new failures, fixes, appeared, disappeared, flaky")
     diff.add_argument("base", metavar="BASE", help="the earlier execution ID")
     diff.add_argument("head", metavar="HEAD", help="the later execution ID")
+    _group(groups, "worktree", "check a commit out into a worktree the suite owns, so a run never touches your working tree")
+    add = _command(groups, "worktree add", "create .qa/work/wt-<12 hex of the commit> at COMMIT and record it")
+    add.add_argument("commit", metavar="COMMIT")
+    drop = _command(groups, "worktree remove", "remove a worktree this suite created")
+    drop.add_argument("path", metavar="PATH", help="as `worktree add` printed it")
+    _group(groups, "changes", "record and list the files the suite wrote into the project")
+    rec = _command(groups, "changes record", "record files the suite wrote, inside a write-tests grant, with their sha256")
+    rec.add_argument("paths", nargs="+", metavar="PATH", help="relative to the project root")
+    rec.add_argument("--kind", required=True, choices=("created", "modified"))
+    rec.add_argument("--tc", metavar="TC", help="the test case the files implement")
+    rec.add_argument("--justification", metavar="R", help="why a tracked file was changed (needed for a tracked file)")
+    rec.add_argument("--approval", metavar="Q", help="the user's words approving that change (needed for a tracked file)")
+    _command(groups, "changes list", "list every recorded change with the file's current sha256 and whether it changed since")
     _group(groups, "catalog", "list the skills installed beside this one")
     listing = _command(groups, "catalog list", "list the suite skills with their roles and artifact types")
     listing.add_argument("--skills-dir", metavar="PATH", help="the directory holding the skills (default: next to this skill)")
+
+
+def _add_record_commands(groups: Dict[str, Any]) -> None:
+    def file_command(name: str, text: str) -> None:
+        _command(groups, name, text).add_argument("--json", dest="json_file", required=True, metavar="FILE")
+
+    _group(groups, "req", "record requirements and confirm them")
+    file_command("req add", "record a requirement; with an id in the file, change that requirement")
+    file_command("req import", "record a JSON list of requirements, all or none")
+    confirm = _command(groups, "req confirm", "record the user's confirmation of a requirement")
+    confirm.add_argument("requirement", metavar="REQ")
+    confirm.add_argument("--approval", required=True, metavar="Q", help="the user's words")
+    _command(groups, "req list", "print the requirements")
+    _group(groups, "ac", "record acceptance criteria")
+    file_command("ac add", "record an acceptance criterion of an existing requirement")
+    _group(groups, "asm", "record assumptions and decide them")
+    file_command("asm add", "record an assumption, open until the user decides it")
+    decide = _command(groups, "asm decide", "record the user's decision on an assumption")
+    decide.add_argument("assumption", metavar="ASM")
+    decide.add_argument("decision", metavar="confirmed|rejected")
+    decide.add_argument("--approval", required=True, metavar="Q", help="the user's words")
+    _group(groups, "risk", "record risks")
+    file_command("risk add", "record a risk with mitigations (existing test cases) or an accepted gap")
+    _group(groups, "tc", "record test cases")
+    file_command("tc add", "record a test case; links (existing criteria) become verified_by trace links")
+    file_command("tc import", "record a JSON list of test cases, all or none")
+    _group(groups, "trace", "link records, map tests to test cases, and write the traceability matrix")
+    link = _command(groups, "trace link", "record one typed link (verified_by, mitigated_by, automated_by, executed_in, red_check, violates)")
+    link.add_argument("source", metavar="SOURCE")
+    link.add_argument("relation", metavar="RELATION")
+    link.add_argument("target", metavar="TARGET")
+    scan = _command(groups, "trace scan", "link test cases to tests from TC-nnn tags and .qa/trace/test-map.json; reads the project, writes nothing in it")
+    scan.add_argument("--root", metavar="PATH", help="the directory to scan (default: the workspace root)")
+    matrix = _command(groups, "trace matrix", "write .qa/trace/matrix.json and print the gap counts")
+    matrix.add_argument("--target", metavar="COMMIT", help="the commit to judge: a full id, or an abbreviation of 7+ digits that names one recorded commit (default: the current HEAD)")
+    _group(groups, "fix", "record fixes for findings")
+    file_command("fix add", "record a fix (findings, base_commit, fix_commit, description, ref?); its findings become fix_submitted")
+    reval = _command(groups, "revalidate", "revalidate a fix: FAIL_TO_PASS and PASS_TO_PASS over recorded runs decide verified_fixed or reopened")
+    reval.add_argument("fix", metavar="FIX")
+    reval.add_argument("--f2p", required=True, metavar="BASE:HEAD", help="the execution of the defect tests at the base commit, then at the fix")
+    reval.add_argument("--p2p", required=True, metavar="BASE:HEAD", help="the regression-set execution at the base commit, then at the fix")
+    reval.add_argument("--defect-test", dest="defect_tests", action="append", required=True, metavar="ID",
+                       help="a test that must fail by assertion at the base and pass at the fix (repeatable)")
 
 
 def build_parser() -> _Parser:
@@ -302,6 +362,7 @@ def build_parser() -> _Parser:
     _add_integrity_commands(groups)
     _add_detect_commands(groups)
     _add_plan_commands(groups)
+    _add_record_commands(groups)
     return parser
 
 
@@ -385,6 +446,13 @@ def _json_object(data: Union[bytes, str]) -> dict:
     return value
 
 
+def _json_list(data: Union[bytes, str]) -> list:
+    value = loads(data)
+    if not isinstance(value, list):
+        raise QaError("invalid_json", "expected a JSON list")
+    return value
+
+
 # --------------------------------------------------------------------------- the commands
 
 def cmd_init(args: argparse.Namespace, ctx: Context) -> int:
@@ -456,6 +524,123 @@ def cmd_plan_status(args: argparse.Namespace, ctx: Context) -> int:
 def cmd_plan_update(args: argparse.Namespace, ctx: Context) -> int:
     event = plan.update(ctx.ws, ctx.actor, args.plan, args.step, args.status, args.reason)
     ctx.reply(plan=args.plan, step=args.step, status=args.status, event=event["id"])
+    return 0
+
+
+def _record_one(kind: str, args: argparse.Namespace, ctx: Context) -> int:
+    done = records.add(ctx.ws, ctx.actor, kind, _json_object(_read_file(args.json_file)))
+    ctx.reply(**done)
+    return 0
+
+
+def _record_many(kind: str, args: argparse.Namespace, ctx: Context) -> int:
+    done = records.add_many(ctx.ws, ctx.actor, kind, _json_list(_read_file(args.json_file)))
+    ctx.reply(ids=[item["id"] for item in done], events=[item["event"] for item in done])
+    return 0
+
+
+def cmd_req_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("requirement", args, ctx)
+
+
+def cmd_req_import(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_many("requirement", args, ctx)
+
+
+def cmd_req_confirm(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**records.confirm_requirement(ctx.ws, ctx.actor, args.requirement, args.approval))
+    return 0
+
+
+def cmd_req_list(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(requirements=records.list_records(state.load(ctx.ws), "requirement"))
+    return 0
+
+
+def cmd_ac_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("criterion", args, ctx)
+
+
+def cmd_trace_link(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**trace.link(ctx.ws, ctx.actor, args.source, args.relation, args.target))
+    return 0
+
+
+def cmd_trace_scan(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**trace.scan(ctx.ws, ctx.actor, Path(args.root) if args.root is not None else ctx.ws.root))
+    return 0
+
+
+def cmd_trace_matrix(args: argparse.Namespace, ctx: Context) -> int:
+    st = state.load(ctx.ws)
+    facts = trace.target_facts(ctx.ws, st, args.target)
+    result, path = trace.write_matrix(ctx.ws, st, facts["commit"], target_source=facts["source"], tree_dirty=facts["dirty"])
+    ctx.reply(path=path.relative_to(ctx.ws.root).as_posix(), target=result["target"], target_source=facts["source"],
+              **({"tree_dirty": facts["dirty"]} if facts["source"] == "head" else {}), counts=result["counts"],
+              requirements=len(result["requirements"]), testcases=len(result["testcases"]))
+    return 0
+
+
+def cmd_fix_add(args: argparse.Namespace, ctx: Context) -> int:
+    done = fixes.add(ctx.ws, ctx.actor, _json_object(_read_file(args.json_file)))
+    ctx.reply(**done)
+    return 0
+
+
+def _execution_pair(text: str, name: str) -> Tuple[str, str]:
+    parts = text.split(":")
+    if len(parts) != 2 or not all(parts):
+        raise QaError("usage", "%s is BASE:HEAD, two execution ids" % name, value=text)
+    return parts[0], parts[1]
+
+
+def cmd_revalidate(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**fixes.revalidate(ctx.ws, ctx.actor, args.fix, f2p=_execution_pair(args.f2p, "--f2p"),
+                                 p2p=_execution_pair(args.p2p, "--p2p"), defect_tests=list(args.defect_tests)))
+    return 0
+
+
+def cmd_asm_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("assumption", args, ctx)
+
+
+def cmd_asm_decide(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**records.decide_assumption(ctx.ws, ctx.actor, args.assumption, args.decision, args.approval))
+    return 0
+
+
+def cmd_risk_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("risk", args, ctx)
+
+
+def cmd_tc_add(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_one("testcase", args, ctx)
+
+
+def cmd_tc_import(args: argparse.Namespace, ctx: Context) -> int:
+    return _record_many("testcase", args, ctx)
+
+
+def cmd_worktree_add(args: argparse.Namespace, ctx: Context) -> int:
+    done = worktree.add(ctx.ws, ctx.actor, args.commit)
+    ctx.reply(path=done["path"], commit=done["commit"], event=done["event"])
+    return 0
+
+
+def cmd_worktree_remove(args: argparse.Namespace, ctx: Context) -> int:
+    done = worktree.remove(ctx.ws, ctx.actor, args.path)
+    ctx.reply(path=done["path"], event=done["event"])
+    return 0
+
+
+def cmd_changes_record(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**changes.record(ctx.ws, ctx.actor, args.paths, kind=args.kind, testcase=args.tc,
+                               justification=args.justification, approval=args.approval))
+    return 0
+
+
+def cmd_changes_list(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(changes=changes.list_changes(ctx.ws, state.load(ctx.ws)))
     return 0
 
 

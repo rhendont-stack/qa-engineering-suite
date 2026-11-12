@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 
 import pytest
 
@@ -307,3 +308,115 @@ def test_an_escaped_quote_does_not_hide_the_value(ws, name, before, after):  # M
 def test_a_plain_quoted_value_is_masked_as_before(ws):  # M4
     out, _ = redact.load_redactor(ws, environ={}).text('password="two words here"')
     assert "two words" not in out and out.endswith('"')
+
+
+# --------------------------------------------------------------------------- K3: a JSON report is redacted value by value
+
+SECRET = "Zq8LmW4pR9" + "xTv"   # built at runtime
+CUTS = [   # strings whose serialised form the byte-level pass cuts through, so its output no longer parses
+    'token = os.environ["API_TOKEN_VALUE"]', 'password: abcd\\"efgh', 'token=abc123XYZ987\\\\"q', 'my_token: "%s\\"' % SECRET,
+]
+
+
+def _byte_secrets(redactor, data):
+    return [secret for _kind, secret in redactor._scan(data.decode("utf-8"))[2]]
+
+
+def test_a_document_with_nothing_to_redact_is_kept_byte_for_byte(redactor):
+    data = b'{"b": [1, 2.5, true, null],   "a": "plain text"}\n'
+    assert redactor.json_document(data) == (data, 0)
+
+
+@pytest.mark.parametrize("data", [b"<testsuite/>", b'{"a": 1', b'{"a": 1, "a": 2}', b"\xff", b'{"a": NaN}'])
+def test_what_is_not_one_json_document_is_left_to_the_byte_level_pass(redactor, data):
+    assert redactor.json_document(data) is None
+
+
+@pytest.mark.parametrize("value", CUTS)
+def test_a_secret_shaped_assignment_in_a_string_is_redacted_and_the_document_still_parses(redactor, value):
+    data = json.dumps({"files": {"src/a.py": {"mutants": [{"id": "1", "replacement": value}]}}}).encode("utf-8")
+    cut, _ = redactor.bytes_(data)
+    with pytest.raises(ValueError):
+        json.loads(cut)   # the case K3 fixes
+    stored, count = redactor.json_document(data)
+    doc = json.loads(stored)
+    assert count >= 1 and "[REDACTED:" in doc["files"]["src/a.py"]["mutants"][0]["replacement"]
+    for secret in _byte_secrets(redactor, data):   # nothing the byte-level pass holds back reaches the stored copy
+        assert secret.rstrip("\\") not in json.dumps(doc, ensure_ascii=False)
+
+
+def test_the_value_of_a_secret_named_key_is_redacted_as_the_byte_level_pass_does(redactor):
+    data = json.dumps({"password": "hunter22", "api_key": "x" + SECRET, "token_count": 12345678}).encode("utf-8")
+    stored, count = redactor.json_document(data)
+    doc = json.loads(stored)
+    assert count == 3 and "hunter22" not in stored.decode() and SECRET not in stored.decode() and "12345678" not in stored.decode()
+    assert doc["password"].startswith("[REDACTED:password_assignment:") and doc["token_count"].startswith("[REDACTED:secret_assignment:")
+
+
+def test_a_secret_in_a_key_is_redacted_too(redactor):
+    data = json.dumps({"src/%s/a.js" % ("AKIA" + "ABCDEFGHIJKLMNOP"): {"mutants": []}}).encode("utf-8")
+    stored, count = redactor.json_document(data)
+    assert count == 1 and b"AKIA" not in stored and list(json.loads(stored))[0].startswith("src/[REDACTED:aws_access_key:")
+
+
+def test_a_private_key_in_a_string_is_redacted_whole(redactor):
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEbody" + "Q" * 20 + "\n-----END RSA PRIVATE KEY-----"
+    stored, count = redactor.json_document(json.dumps({"snippet": {"text": pem}}).encode("utf-8"))
+    assert count == 1 and "MIIEbody" not in stored.decode() and json.loads(stored)["snippet"]["text"].startswith("[REDACTED:private_key:")
+
+
+def test_an_environment_value_is_redacted_from_keys_and_strings():
+    value = "env-only-" + "v4lue-42"
+    redactor = redact.Redactor(b"k" * 32, redact.load_patterns(), {"QA_X_TOKEN": value})
+    stored, count = redactor.json_document(json.dumps({value: ["a %s b" % value]}).encode("utf-8"))
+    assert count == 2 and value not in stored.decode() and json.loads(stored)
+
+
+def _deepest_parsable():
+    """The deepest nesting, past the recursion limit, that ``json.loads`` still accepts; ``None`` when it accepts none."""
+    best = None
+    for depth in range(sys.getrecursionlimit() // 2, sys.getrecursionlimit() * 4, 50):
+        data = ("[" * depth + '"x"' + "]" * depth).encode("utf-8")
+        try:
+            json.loads(data)
+        except RecursionError:
+            break
+        best = data
+    return best
+
+
+def test_a_document_nested_past_the_recursion_limit_is_left_to_the_byte_level_pass(redactor):
+    data = _deepest_parsable()
+    if data is None or data.count(b"[") < sys.getrecursionlimit() - 300:
+        pytest.skip("this interpreter's JSON parser rejects a document nested near the recursion limit")
+    assert redactor.json_document(data) is None   # no RecursionError escapes
+
+
+def test_a_recursion_error_while_walking_the_document_gives_none(redactor, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise RecursionError("too deep")
+    monkeypatch.setattr(redact.Redactor, "_tree", boom)
+    assert redactor.json_document(json.dumps({"password": "hunter22"}).encode("utf-8")) is None
+
+
+def test_a_deeply_nested_text_holding_a_secret_is_still_redacted_as_bytes(redactor):
+    data = b"[" * 2000 + b'"password: hunter2xx"' + b"]" * 2000
+    out, n = redactor.bytes_(data)
+    assert n >= 1 and b"hunter2xx" not in out
+
+
+def test_a_form_of_only_punctuation_does_not_touch_the_spaces_of_the_report(redactor):
+    assert redact._forms(" ") == [] and redact._forms("}, {") == [] and redact._forms(", ") == []
+    data = json.dumps({"by_file": {"src/a b.py": {"Killed": 1}}, "text": "see a b"}).encode("utf-8")
+    # a byte-level match made only of structural characters and a space
+    found = [("secret_assignment", "}, {")]
+    assert redact._literal_forms(found) == []
+    stored, count = redactor.json_document(data)
+    assert (stored, count) == (data, 0)
+
+
+def test_a_secret_is_still_redacted_beside_a_name_with_spaces(redactor):
+    data = json.dumps({"src/a b.py": {"replacement": "token = os.environ[\"API_TOKEN_VALUE\"]"}, "note": "a b"}).encode("utf-8")
+    stored, count = redactor.json_document(data)
+    doc = json.loads(stored)
+    assert count >= 1 and "src/a b.py" in doc and doc["note"] == "a b" and "[REDACTED:" in doc["src/a b.py"]["replacement"]

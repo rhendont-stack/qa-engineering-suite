@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "assumption.upserted event data",
+  "description": "An assumption, new or changed: statement and impact. Its status is not here: it is open until a signed assumption.decided says otherwise.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.schema.json#/$defs/asm_id"
+    },
+    "statement": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "impact": {
+      "$ref": "records.schema.json#/$defs/text"
+    }
+  },
+  "required": [
+    "id",
+    "statement",
+    "impact"
+  ],
+  "additionalProperties": false
+}

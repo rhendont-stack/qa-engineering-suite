@@ -3,14 +3,18 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import test_compare
+import test_records
+import test_trace
 from helpers import WRITE_JUNIT, WRITE_SARIF, base, req, without_mac, write_event_at
-from qa import KERNEL_VERSION, config, execution, findings, gate, gitinfo, ids, integrity, ledger, resource_dir, schema, state, vocab
+from qa import KERNEL_VERSION, config, execution, findings, gate, gitinfo, ids, integrity, ledger, records, resource_dir, schema, state, trace, vocab
 from qa.errors import QaError
 from qa.ledger import Problem
 from qa.workspace import Workspace
@@ -74,8 +78,8 @@ def test_accepted_risk_conditions_then_expiry(repo_ws, actor, py, frozen_now):
     assert gate.evaluate(repo_ws, actor, profile="change")["data"]["verdict"] == "NOT_READY"
 def test_unevaluable_criteria_say_why(repo_ws, actor):
     g = gate.evaluate(repo_ws, actor, profile="release")["data"]
-    rv = next(x for x in g["criteria"] if x["type"] == "requirements_verified")
-    assert rv["outcome"] == "NO_EVIDENCE" and "milestone 3" in rv["detail"]
+    sc = next(x for x in g["criteria"] if x["type"] == "security_scans_executed")
+    assert sc["outcome"] == "NO_EVIDENCE" and "milestone 4" in sc["detail"]
 def test_opt_in_criterion_off_is_not_applicable(trusted, actor):
     g = gate.evaluate(trusted, actor, profile="release")["data"]
     m = next(x for x in g["criteria"] if x["type"] == "mutation_score_min")
@@ -319,7 +323,7 @@ def test_enabled_false_wins_over_a_not_applicable_text_and_blocking():
 
 
 def test_enabled_true_turns_an_opt_in_criterion_on():
-    on = _crit("release", "mutation_score_min", mutation_score_min={"enabled": True})
+    on = _crit("release", "mutation_score_min", mutation_score_min={"enabled": True, "params": {"paths": ["src/**"]}})
     r = gate.evaluate_criterion(on, _st(), _context())
     assert (r["outcome"], r["blocking"]) == ("NO_EVIDENCE", True) and "justification" not in r
 
@@ -371,9 +375,6 @@ def test_every_detail_is_a_string_and_only_not_applicable_is_justified(trusted, 
 
 
 @pytest.mark.parametrize("ctype,capability,milestone", [
-    ("requirements_verified", "traceability", 3),
-    ("no_blocked_critical", "traceability", 3),
-    ("mutation_score_min", "mutation ingestion", 3),
     ("security_scans_executed", "scan and performance skills", 4),
     ("performance_objectives_met", "scan and performance skills", 4),
     ("migrations_validated", "database skills", 4),
@@ -384,6 +385,199 @@ def test_an_unevaluable_type_names_what_it_needs(ctype, capability, milestone):
     r = gate.evaluate_criterion(criterion, _st(), _context())
     assert (r["outcome"], r["detail"], r["evidence"]) == (
         "NO_EVIDENCE", "not evaluable by kernel %s (needs %s, milestone %d)" % (KERNEL_VERSION, capability, milestone), [])
+
+
+# --------------------------------------------------------------------------- mutation_score_min (milestone 3)
+
+def _measured(by_file, execution_id="EXE-1", status="passed", **changes):
+    """An execution whose run recorded one mutation report with these per-file status counts."""
+    totals = {"files": len(by_file), "mutants": sum(sum(c.values()) for c in by_file.values()), "by_file": by_file}
+    entry = {"format": "mutation", "kind": "mutants", "file": "reports/mutation.json", "sha256": "sha256:" + "3" * 64, "totals": totals}
+    return _exe(execution_id, status=status, measurements=[entry], reports=[{"format": "mutation", "pattern": "m", "files": [], "error": None}],
+                **changes)
+
+
+def _mutation(st, paths=("src/**",), context=None, **params):
+    override = {"enabled": True, "params": dict({"paths": list(paths)} if paths is not None else {}, **params)}
+    return gate.evaluate_criterion(_crit("release", "mutation_score_min", mutation_score_min=override), st, context or _context())
+
+
+A_JS = "src/a.js"
+
+
+@pytest.mark.parametrize("killed,survived,outcome,detail", [
+    (699, 301, "NOT_MET", "69.9 < 70 over src/a.js (69.9)"), (700, 300, "MET", "70 >= 70 over src/a.js (70)"),
+    (1000, 0, "MET", "100 >= 70 over src/a.js (100)"), (0, 1, "NOT_MET", "0 < 70 over src/a.js (0)")])
+def test_mutation_score_min_truth_table(killed, survived, outcome, detail):
+    r = _mutation(_st(_measured({A_JS: {"Killed": killed, "Survived": survived}})))
+    assert (r["outcome"], r["detail"], r["evidence"]) == (outcome, detail, ["EXE-1"])
+
+
+def test_a_missed_score_names_the_score_the_minimum_and_the_files_in_paths_only():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 1, "Survived": 2}, "src/b.js": {"Killed": 3}, "docs/c.js": {"Survived": 9}})))
+    assert (r["outcome"], r["detail"]) == ("NOT_MET", "66.67 < 70 over src/a.js (33.33), src/b.js (100)")
+
+
+def test_a_score_a_hair_under_the_minimum_is_not_rounded_up_in_the_detail():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 6999, "Survived": 3001}})))
+    assert r["outcome"] == "NOT_MET" and r["detail"].startswith("69.99 < 70")
+    r = _mutation(_st(_measured({A_JS: {"Killed": 699999, "Survived": 300001}})))
+    assert r["outcome"] == "NOT_MET" and "69.9999" in r["detail"] and not r["detail"].startswith("70 ")
+
+
+def test_a_met_score_names_the_score_and_the_files_too():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Survived": 1}})))
+    assert r["outcome"] == "MET" and r["detail"] == "75 >= 70 over src/a.js (75)"
+
+
+def test_the_minimum_is_a_parameter_and_defaults_to_seventy():
+    st = _st(_measured({A_JS: {"Killed": 3, "Survived": 1}}))
+    assert _mutation(st)["outcome"] == "MET" and _mutation(st, min_score=80)["outcome"] == "NOT_MET"
+    assert _crit("release", "mutation_score_min")["params"] == {"min_score": 70}
+
+
+def test_only_the_files_in_paths_count():
+    st = _st(_measured({A_JS: {"Killed": 4}, "src/b.js": {"Survived": 4}, "lib/c.js": {"Survived": 4}}))
+    assert _mutation(st, paths=[A_JS])["outcome"] == "MET"
+    assert _mutation(st, paths=["src/**"])["outcome"] == "NOT_MET"
+    assert _mutation(st, paths=["lib/*.js", A_JS])["outcome"] == "NOT_MET"
+
+
+@pytest.mark.parametrize("pattern,path,matches", [
+    ("src/*.js", "src/a.js", True), ("src/*.js", "src/x/a.js", False), ("src/**", "src/x/y/a.js", True),
+    ("**/a.js", "a.js", True), ("**/a.js", "src/x/a.js", True), ("src/a?.js", "src/ab.js", True), ("src/a?.js", "src/a/.js", False),
+    ("src/a.js", "src/a.js", True), ("src/a.js", "src/ab.js", False), ("src/**/a.js", "src/a.js", True), ("src", "src/a.js", False),
+    ("src/[ab].js", "src/[ab].js", True), ("src/[ab].js", "src/a.js", False)])
+def test_paths_are_globs_with_star_inside_a_segment_and_double_star_across(pattern, path, matches):
+    r = _mutation(_st(_measured({path: {"Killed": 1}})), paths=[pattern])
+    assert (r["outcome"] == "MET") is matches, r["detail"]
+
+
+def test_a_path_outside_the_project_is_never_matched_by_a_glob():
+    outside = {"../src/a.js": {"Killed": 5}, "/elsewhere/a.js": {"Killed": 5}, "C:/x/a.js": {"Killed": 5}, "..\\b.js": {"Killed": 5}}
+    for paths in (["**"], ["../**"], ["**/a.js"], ["/elsewhere/*.js"]):
+        r = _mutation(_st(_measured(outside)), paths=paths)
+        assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", ["EXE-1"])
+
+
+def test_no_mutants_in_paths_is_no_evidence():
+    r = _mutation(_st(_measured({"lib/a.js": {"Killed": 5}})))
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == ["EXE-1"] and "src/**" in r["detail"]
+    assert _mutation(_st())["outcome"] == "NO_EVIDENCE"
+
+
+@pytest.mark.parametrize("statuses", [{"CompileError": 2}, {"Ignored": 1, "Pending": 1, "RuntimeError": 1}])
+def test_only_mutants_that_do_not_count_is_no_evidence(statuses):
+    assert _mutation(_st(_measured({A_JS: statuses})))["outcome"] == "NO_EVIDENCE"
+
+
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_pending_mutants_in_the_selected_files_make_the_report_partial_so_no_evidence(status):
+    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Pending": 997}}, status=status)))  # a tool that crashed halfway
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == ["EXE-1"]
+    assert "997 Pending" in r["detail"] and A_JS in r["detail"] and "partial" in r["detail"]
+
+
+def test_pending_mutants_outside_the_selected_files_do_not_matter():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 3, "Survived": 1}, "lib/b.js": {"Pending": 50}})))
+    assert r["outcome"] == "MET"
+
+
+def test_opted_in_without_paths_is_no_evidence_that_says_what_is_missing():
+    r = _mutation(_st(_measured({A_JS: {"Killed": 5}})), paths=None)
+    assert r["outcome"] == "NO_EVIDENCE" and "needs paths" in r["detail"] and r["evidence"] == []
+
+
+def test_coverage_is_never_read_as_a_score():
+    totals = {"files": 1, "lines_total": 10, "lines_covered": 10, "branches_total": 0, "branches_covered": 0}
+    entry = {"format": "lcov", "kind": "coverage", "file": "reports/c.info", "sha256": "sha256:" + "4" * 64, "totals": totals}
+    r = _mutation(_st(_exe("EXE-1", measurements=[entry], reports=[{"format": "lcov", "pattern": "c", "files": [], "error": None}])))
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == []
+
+
+def test_a_long_list_of_pending_files_is_cut_with_a_count():
+    many = {"src/f%02d.js" % i: {"Killed": 1, "Pending": 1} for i in range(23)}
+    r = _mutation(_st(_measured(many)))
+    assert r["outcome"] == "NO_EVIDENCE" and "23 Pending" in r["detail"] and "and 3 more" in r["detail"]
+    assert "src/f19.js" in r["detail"] and "src/f20.js" not in r["detail"]
+
+
+@pytest.mark.parametrize("status,outcome", [("passed", "MET"), ("failed", "MET"), ("blocked", "NO_EVIDENCE"), ("inconclusive", "NO_EVIDENCE"),
+                                           ("not_run", "NO_EVIDENCE")])
+def test_a_mutation_report_is_read_only_from_a_passed_or_failed_run(status, outcome):
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}}, status=status)))["outcome"] == outcome
+
+
+def test_the_latest_mutation_report_on_the_target_commit_decides():
+    good, bad = {A_JS: {"Killed": 9}}, {A_JS: {"Killed": 1, "Survived": 9}}
+    assert _mutation(_st(_measured(good, "EXE-1"), _measured(bad, "EXE-2")))["outcome"] == "NOT_MET"
+    r = _mutation(_st(_measured(bad, "EXE-1"), _measured(good, "EXE-2")))
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-2"])
+    # a later run with no mutation report does not take the place of the last one that had it
+    assert _mutation(_st(_measured(good, "EXE-1"), _exe("EXE-2")))["evidence"] == ["EXE-1"]
+
+
+def test_a_report_from_another_commit_or_another_tree_is_not_about_the_target():
+    elsewhere = _measured({A_JS: {"Killed": 5}}, git=dict(GIT, commit=OTHER_COMMIT))
+    assert _mutation(_st(elsewhere))["outcome"] == "NO_EVIDENCE"
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}})), context=_context(target_commit=None, git_limitation="no git"))["outcome"] == "NO_EVIDENCE"
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}})), context=_context(diff_hash=OTHER_TREE))["outcome"] == "NO_EVIDENCE"
+    assert _mutation(_st(_measured({A_JS: {"Killed": 5}})), context=_context(diff_hash=TREE))["outcome"] == "MET"
+
+
+def _ingested(strength, status="passed"):
+    run = _exe("EXE-1", status=status)
+    run["ingested"] = [{"format": "mutation", "kind": "mutants", "strength": strength, "event": "EVT-1",
+                        "totals": {"files": 1, "mutants": 5, "by_file": {A_JS: {"Killed": 5}}}}]
+    return run
+
+
+def test_a_structured_mutation_report_ingested_into_an_execution_counts_and_cites_the_event():
+    r = _mutation(_st(_ingested("structured")))
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-1", "EVT-1"])
+    assert _mutation(_st(_ingested("structured", "blocked")))["outcome"] == "NO_EVIDENCE"
+
+
+def test_an_attested_mutation_report_is_never_read_and_the_detail_names_it():
+    r = _mutation(_st(_ingested("attested")))
+    assert r["outcome"] == "NO_EVIDENCE" and "EVT-1" in r["detail"] and "attested" in r["detail"] and r["evidence"] == []
+    older = _measured({A_JS: {"Killed": 1, "Survived": 1}}, "EXE-0")
+    r = _mutation(_st(older, _ingested("attested")))  # the hand-written file does not mask the tool's own report
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-0"]) and "ignored attested" in r["detail"] and "EVT-1" in r["detail"]
+
+
+def test_a_mutation_report_from_a_real_run_is_judged_by_the_evaluated_gate(repo_ws, actor, py):
+    doc = json.dumps({"schemaVersion": "1.0", "files": {A_JS: {"language": "javascript", "source": "", "mutants": [
+        {"id": str(i), "mutatorName": "m", "status": s, "location": {"start": {"line": 1, "column": 1}}} for i, s in enumerate(["Killed", "Survived"])]}}})
+    _accept(repo_ws, actor, "mutation_score_min", {"enabled": True, "params": {"paths": ["src/**"]}})
+    write = "import sys, pathlib; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
+    run = execution.execute(repo_ws, actor, execution.RunRequest(command=py.argv(write, "{evidence}/m.json", doc),
+                                                                 reports=(("mutation", "{evidence}/m.json"),)))
+    c = _criterion(gate.evaluate(repo_ws, actor, profile="release"), "mutation_score_min")
+    assert (c["outcome"], c["blocking"], c["evidence"], c["detail"]) == ("NOT_MET", True, [run["execution"]], "50 < 70 over src/a.js (50)")
+
+
+@pytest.mark.parametrize("paths", ["src/**", [], [""], [1], ["src", None], {"a": 1}, ["a", " "]])
+def test_an_accepted_override_with_unreadable_paths_is_refused_not_applied(paths):
+    with pytest.raises(QaError) as caught:
+        gate.load_policy("release", _config(mutation_score_min={"enabled": True, "params": {"paths": paths}}))
+    assert caught.value.code == "config_invalid"
+
+
+def test_paths_are_proposed_and_accepted_like_any_parameter(trusted, actor):
+    _accept(trusted, actor, "mutation_score_min", {"enabled": True, "params": {"paths": ["src/core/**"], "min_score": 80}})
+    policy, _hash = gate.load_policy("release", config.load_config(trusted))
+    c = _from(policy, "mutation_score_min")
+    assert c["params"] == {"min_score": 80, "paths": ["src/core/**"]} and "not_applicable" not in c
+    for criterion, override in (("mutation_score_min", {"params": {"paths": []}}), ("suite_executed", {"params": {"paths": ["a"]}})):
+        with pytest.raises(QaError) as caught:  # only the mutation criterion reads paths, and it needs at least one
+            gate.propose(trusted, actor, criterion, override, "r")
+        assert caught.value.code == "invalid_override"
+
+
+def test_the_policy_hash_covers_the_paths():
+    one, two = (_config(mutation_score_min={"enabled": True, "params": {"paths": p}}) for p in (["src/**"], ["lib/**"]))
+    assert gate.load_policy("release", one)[1] != gate.load_policy("release", two)[1]
 
 
 # --------------------------------------------------------------------------- T16-R3, T16-R14: findings
@@ -510,6 +704,26 @@ DISQUALIFIED = {
     "another_commit": {"git": dict(GIT, commit=OTHER_COMMIT)},
 }
 WEAK = {"attested": {"strength": "attested"}, "no_strength_at_all": {"strength": None}}
+
+
+def _declared(*formats):
+    return [{"format": fmt, "pattern": "{evidence}/x", "files": ["reports/x"], "error": None} for fmt in formats]
+
+
+@pytest.mark.parametrize("formats", [("lcov",), ("cobertura",), ("jacoco",), ("lcov", "jacoco")])
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_coverage_run_is_not_a_suite_run_for_the_gate(formats, status):
+    r = _suite(_st(_exe(status=status, report=None, reports=_declared(*formats))))
+    assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", []) and "no execution qualified" in r["detail"]
+
+
+def test_coverage_beside_tests_still_counts_as_a_suite_run():
+    assert _suite(_st(_exe(reports=_declared("junit", "lcov"))))["outcome"] == "MET"
+    assert _suite(_st(_exe(status="failed", reports=_declared("junit", "cobertura"))))["outcome"] == "NOT_MET"
+
+
+def test_a_run_with_no_declared_reports_is_still_a_suite_run():
+    assert _suite(_st(_exe(report=None, reports=[])))["outcome"] == "MET"
 
 
 @pytest.mark.parametrize("change", DISQUALIFIED.values(), ids=DISQUALIFIED)
@@ -1283,3 +1497,293 @@ def test_the_gate_events_replay_to_the_same_state(trusted, actor):
     gate.evaluate(trusted, actor, profile="change")
     assert state.fold(ledger.iter_all_events(trusted))["config"] == state.load(trusted)["config"]
     assert integrity.problems(trusted, state.load(trusted)) == []
+
+
+# --------------------------------------------------------------------------- requirements_verified and no_blocked_critical (milestone 3)
+
+TEST_ID = test_trace.TEST_ID
+
+
+def _trace_run(ws, actor, letter, status, *, strength="structured", commit=COMMIT, minute=1, test_id=TEST_ID, execution_status="passed", **changes):
+    """An execution on ``commit`` of ``strength`` holding one result of ``test_id``."""
+    exe = test_trace.exe_id(letter)
+    data = dict(test_compare._execution(exe), strength=strength, status=execution_status, **changes)
+    data["started_at"] = data["ended_at"] = "2026-11-10T10:%02d:00.000Z" % minute
+    data["git"] = {"commit": commit, "branch": None, "dirty": False, "diff_hash": TREE}
+    ledger.append(ws, actor, "execution.recorded", data)
+    ledger.append(ws, actor, "result.recorded", test_compare._result(minute * 100, exe, test_id, status))
+    return exe
+
+
+@pytest.fixture
+def traced(trusted, actor):
+    """REQ-001 (must, documented), AC-001.1, TC-001 verifying it and automated_by TEST_ID; no execution yet."""
+    test_trace.chain(trusted, actor)
+    return trusted
+
+
+def _rv(ws, **overrides):
+    return gate.evaluate_criterion(_crit("release", "requirements_verified", **overrides), state.load(ws), _context())
+
+
+def _critical(ws, **overrides):
+    return gate.evaluate_criterion(_crit("release", "no_blocked_critical", **overrides), state.load(ws), _context())
+
+
+def _add_requirement(ws, actor, number, **changes):
+    """REQ-<number> with its AC and a TC automated_by its own test."""
+    records.add(ws, actor, "requirement", test_records.req(statement="Requirement %d holds." % number, **changes))
+    records.add(ws, actor, "criterion", test_records.ac("REQ-%03d" % number))
+    records.add(ws, actor, "testcase", test_records.tc(links=("AC-%03d.1" % number,)))
+    test_id = "tests.test_other::test_%d" % number
+    trace.link(ws, actor, "TC-%03d" % number, "automated_by", test_id)
+    return test_id
+
+
+def test_no_requirements_is_no_evidence(trusted):
+    r = _rv(trusted)
+    assert (r["outcome"], r["detail"], r["evidence"]) == ("NO_EVIDENCE", "no documented requirements", [])
+
+
+def test_every_must_ac_passed_structured_is_met(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    r = _rv(traced)
+    assert r["outcome"] == "MET" and "REQ-001" in r["detail"]
+
+
+def test_a_should_requirement_is_out_of_scope_by_default(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    _add_requirement(traced, actor, 2, priority="should")   # no result for it: outside min_priority
+    assert _rv(traced)["outcome"] == "MET"
+
+
+def test_characterization_oracle_never_verifies(trusted, actor):
+    test_trace.chain(trusted, actor, oracle="characterization")
+    _trace_run(trusted, actor, "A", "passed")
+    r = _rv(trusted)
+    assert r["outcome"] == "NO_EVIDENCE" and "AC-001.1" in r["detail"]
+
+
+def test_exit_code_strength_does_not_verify(traced, actor):
+    _trace_run(traced, actor, "A", "passed", strength="exit_code")
+    r = _rv(traced)
+    assert r["outcome"] == "NO_EVIDENCE" and "AC-001.1" in r["detail"]
+
+
+def test_a_result_on_another_commit_does_not_verify(traced, actor):
+    _trace_run(traced, actor, "A", "passed", commit=OTHER_COMMIT)
+    assert _rv(traced)["outcome"] == "NO_EVIDENCE"
+
+
+def test_failed_latest_result_is_not_met(traced, actor):
+    _trace_run(traced, actor, "A", "passed", minute=1)
+    _trace_run(traced, actor, "B", "failed", minute=2)
+    r = _rv(traced)
+    assert r["outcome"] == "NOT_MET" and "AC-001.1" in r["detail"]
+
+
+def test_the_latest_result_decides_not_the_first(traced, actor):
+    _trace_run(traced, actor, "A", "failed", minute=1)
+    _trace_run(traced, actor, "B", "passed", minute=2)
+    assert _rv(traced)["outcome"] == "MET"
+
+
+def test_unconfirmed_inferred_requirement_is_no_evidence(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    other = _add_requirement(traced, actor, 2, provenance="inferred")
+    _trace_run(traced, actor, "B", "passed", minute=2, test_id=other)
+    r = _rv(traced)
+    assert r["outcome"] == "NO_EVIDENCE" and "REQ-002" in r["detail"] and "unconfirmed" in r["detail"]
+    records.confirm_requirement(traced, actor, "REQ-002", "yes, that is the rule")
+    assert _rv(traced)["outcome"] == "MET"
+
+
+def test_an_unconfirmed_requirement_never_makes_the_criterion_not_met_alone(trusted, actor):
+    other = _add_requirement(trusted, actor, 1, provenance="assumed")
+    _trace_run(trusted, actor, "A", "failed", test_id=other)   # its own test fails, but nobody confirmed the requirement
+    assert _rv(trusted)["outcome"] == "NO_EVIDENCE"
+
+
+def test_an_unconfirmed_requirement_does_not_hide_a_documented_failure(traced, actor):
+    _trace_run(traced, actor, "A", "failed")
+    _add_requirement(traced, actor, 2, provenance="inferred")
+    assert _rv(traced)["outcome"] == "NOT_MET"
+
+
+def test_a_stale_confirmation_replayed_after_an_edit_leaves_the_requirement_unconfirmed(trusted, actor):
+    records.add(trusted, actor, "requirement", test_records.req(provenance="inferred"))
+    records.confirm_requirement(trusted, actor, "REQ-001", "yes")
+    old = next(e for e in ledger.iter_all_events(trusted) if e["type"] == "requirement.confirmed")["data"]
+    records.add(trusted, actor, "requirement", {"id": "REQ-001", "statement": "Changed: a discount may reach 90 percent."})
+    write_event_at(trusted, actor, T0, "requirement.confirmed", old, signed=False)   # the old signed line, verbatim
+    folded = state.load(trusted)
+    assert "confirmed" not in folded["requirements"]["REQ-001"]
+    assert {"event": folded["violations"][-1]["event"], "kind": "stale_confirmation"} in folded["violations"]
+    records.add(trusted, actor, "criterion", test_records.ac())
+    records.add(trusted, actor, "testcase", test_records.tc())
+    trace.link(trusted, actor, "TC-001", "automated_by", TEST_ID)
+    _trace_run(trusted, actor, "A", "passed")
+    assert _rv(trusted)["outcome"] == "NO_EVIDENCE"   # the changed statement is unconfirmed, whatever the tests say
+
+
+def test_a_stale_assumption_decision_replayed_after_an_edit_does_not_decide(trusted, actor):
+    records.add(trusted, actor, "assumption", {"statement": "Prices are in euros.", "impact": "totals"})
+    records.decide_assumption(trusted, actor, "ASM-001", "confirmed", "yes")
+    old = next(e for e in ledger.iter_all_events(trusted) if e["type"] == "assumption.decided")["data"]
+    records.add(trusted, actor, "assumption", {"id": "ASM-001", "statement": "Prices are in dollars."})
+    assert state.load(trusted)["assumptions"]["ASM-001"]["status"] == "open"
+    write_event_at(trusted, actor, T0, "assumption.decided", old, signed=False)
+    assert state.load(trusted)["assumptions"]["ASM-001"]["status"] == "open"
+
+
+def test_a_confirmation_of_the_current_statement_still_counts(trusted, actor):
+    records.add(trusted, actor, "requirement", test_records.req(provenance="inferred"))
+    records.add(trusted, actor, "requirement", {"id": "REQ-001", "statement": "Edited first."})
+    records.confirm_requirement(trusted, actor, "REQ-001", "yes")
+    assert state.load(trusted)["requirements"]["REQ-001"]["confirmed"]["approval"] == "yes"
+
+
+def test_a_confirmation_without_a_statement_hash_binds_nothing_and_does_not_fold(trusted, actor):
+    records.add(trusted, actor, "requirement", test_records.req(provenance="inferred"))
+    write_event_at(trusted, actor, T0, "requirement.confirmed", {"id": "REQ-001", "approval": "yes"})
+    folded = state.load(trusted)
+    assert "confirmed" not in folded["requirements"]["REQ-001"]
+    assert folded["violations"][-1]["kind"] == "invalid_data"   # the schema requires the hash, so the fold refuses the event
+
+
+def test_an_assumption_decision_without_a_statement_hash_does_not_fold(trusted, actor):
+    records.add(trusted, actor, "assumption", {"statement": "Prices are in euros.", "impact": "totals"})
+    write_event_at(trusted, actor, T0, "assumption.decided",
+                   {"id": "ASM-001", "status": "confirmed", "confirmed_by": "user", "approval": "yes"})
+    assert state.load(trusted)["assumptions"]["ASM-001"]["status"] == "open"
+
+
+def test_the_decision_schemas_require_the_statement_hash():
+    for name in ("requirement.confirmed", "assumption.decided"):
+        assert "statement_hash" in schema.load_schema("events/%s.schema.json" % name)["required"]
+
+
+def test_a_single_requirement_is_not_pluralised(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    assert _rv(traced)["detail"].startswith("1 requirement verified: ")
+
+
+def _critical_chain(ws, actor, **tc_changes):
+    test_trace.chain(ws, actor, criticality="critical", **tc_changes)
+
+
+@pytest.mark.parametrize("status,outcome", [("passed", "MET"), ("blocked", "NOT_MET"), ("inconclusive", "NOT_MET"),
+                                            ("failed", "NOT_MET"), ("not_run", "NO_EVIDENCE"), (None, "NO_EVIDENCE")])
+def test_no_blocked_critical_truth_table(trusted, actor, status, outcome):
+    _critical_chain(trusted, actor)
+    if status is not None:
+        _trace_run(trusted, actor, "A", status)
+    r = _critical(trusted)
+    assert r["outcome"] == outcome and (outcome == "MET" or "TC-001" in r["detail"])
+
+
+def test_no_critical_test_case_is_no_evidence(traced, actor):   # TC-001 here is criticality high
+    r = _critical(traced)
+    assert (r["outcome"], r["detail"]) == ("NO_EVIDENCE", "no test case is linked to a critical component")
+
+
+def test_a_critical_test_case_without_an_automated_test_is_no_evidence(trusted, actor):
+    _critical_chain(trusted, actor, automated=False)
+    r = _critical(trusted)
+    assert r["outcome"] == "NO_EVIDENCE" and "TC-001" in r["detail"]
+
+
+def test_a_critical_result_on_another_commit_is_no_evidence(trusted, actor):
+    _critical_chain(trusted, actor)
+    _trace_run(trusted, actor, "A", "passed", commit=OTHER_COMMIT)
+    assert _critical(trusted)["outcome"] == "NO_EVIDENCE"
+
+
+def test_a_blocked_critical_outranks_a_missing_one(trusted, actor):
+    _critical_chain(trusted, actor)
+    records.add(trusted, actor, "testcase", test_records.tc(criticality="critical"))   # TC-002, never executed
+    trace.link(trusted, actor, "TC-002", "automated_by", "tests.test_other::test_two")
+    _trace_run(trusted, actor, "A", "blocked")
+    r = _critical(trusted)
+    assert r["outcome"] == "NOT_MET" and "TC-001" in r["detail"]
+
+
+def test_require_passed_still_holds_with_requirements_met(traced, actor):
+    """A failed suite is NOT_READY even when every acceptance criterion is verified."""
+    suite = _trace_run(traced, actor, "A", "passed", execution_status="failed", scope="full")   # the execution failed; its one test passed
+    evaluator = dataclasses.replace(actor, role="evaluator", independence="I2")
+    g = gate.evaluate(traced, evaluator, profile="release", target_commit=COMMIT)["data"]
+    assert _criterion({"data": g}, "requirements_verified")["outcome"] == "MET"
+    assert _criterion({"data": g}, "suite_executed")["outcome"] == "NOT_MET" and suite in _criterion({"data": g}, "suite_executed")["detail"]
+    assert g["verdict"] == "NOT_READY"
+
+
+def test_the_gate_reads_the_target_commit_from_its_context(traced, actor):
+    _trace_run(traced, actor, "A", "passed")
+    r = gate.evaluate_criterion(_crit("release", "requirements_verified"), state.load(traced), _context(target_commit=None, git_limitation="no git"))
+    assert r["outcome"] == "NO_EVIDENCE" and "no target commit" in r["detail"]
+
+
+# --------------------------------------------------------------------------- K1: runs that did not conclude, and the tree filter
+
+@pytest.mark.parametrize("execution_status,reason", [
+    ("inconclusive", "exit_code_mismatch"), ("inconclusive", "timeout"), ("inconclusive", "network_not_isolated"),
+    ("blocked", "dependency_unavailable"), ("not_run", "all_skipped"),
+])
+def test_rows_that_read_passed_in_a_run_that_did_not_conclude_verify_nothing(traced, actor, execution_status, reason):
+    """A structured run whose rows all read passed, but which neither passed nor failed, is no evidence about its tests."""
+    records.add(traced, actor, "testcase", test_records.tc(criticality="critical", links=("AC-001.1",)))   # TC-002
+    trace.link(traced, actor, "TC-002", "automated_by", TEST_ID)
+    _trace_run(traced, actor, "A", "passed", execution_status=execution_status, reason=reason)
+    assert _rv(traced)["outcome"] == "NO_EVIDENCE"
+    critical = _critical(traced)
+    if execution_status == "not_run":
+        assert critical["outcome"] == "NO_EVIDENCE" and "TC-002" in critical["detail"]
+    else:
+        assert (critical["outcome"], critical["detail"]) == ("NOT_MET", "TC-002 last_%s" % execution_status)
+
+
+def test_a_later_inconclusive_run_withdraws_an_earlier_pass(traced, actor):
+    _trace_run(traced, actor, "A", "passed", minute=1)
+    assert _rv(traced)["outcome"] == "MET"
+    _trace_run(traced, actor, "B", "passed", minute=2, execution_status="inconclusive", reason="timeout")
+    assert _rv(traced)["outcome"] == "NO_EVIDENCE"
+
+
+def test_a_run_on_another_tree_at_the_same_commit_does_not_verify_when_the_tree_is_evaluated(traced, actor):
+    _trace_run(traced, actor, "A", "passed")   # recorded on TREE
+    here = "sha256:" + "2" * 64
+    st = state.load(traced)
+    assert gate.evaluate_criterion(_crit("release", "requirements_verified"), st, _context(diff_hash=TREE))["outcome"] == "MET"
+    r = gate.evaluate_criterion(_crit("release", "requirements_verified"), st, _context(diff_hash=here))
+    assert r["outcome"] == "NO_EVIDENCE" and "this working tree" in r["detail"] and "AC-001.1" in r["detail"]
+
+
+def test_a_critical_run_on_another_tree_is_not_evidence_when_the_tree_is_evaluated(trusted, actor):
+    _critical_chain(trusted, actor)
+    _trace_run(trusted, actor, "A", "passed")
+    st = state.load(trusted)
+    crit = _crit("release", "no_blocked_critical")
+    assert gate.evaluate_criterion(crit, st, _context(diff_hash=TREE))["outcome"] == "MET"
+    r = gate.evaluate_criterion(crit, st, _context(diff_hash="sha256:" + "2" * 64))
+    assert r["outcome"] == "NO_EVIDENCE" and "TC-001" in r["detail"]
+
+
+def test_the_two_details_hold_no_bare_status_word(traced, actor):
+    """K2: a rendered report shows these details, and its checker reads a bare status word as a claim needing a run ID."""
+    records.add(traced, actor, "testcase", test_records.tc(criticality="critical", links=("AC-001.1",)))   # TC-002
+    trace.link(traced, actor, "TC-002", "automated_by", TEST_ID)
+    _trace_run(traced, actor, "A", "failed", execution_status="failed", reason="assertion")
+    rv, critical = _rv(traced), _critical(traced)
+    assert (rv["outcome"], critical["outcome"]) == ("NOT_MET", "NOT_MET")
+    assert rv["detail"] == "a verifying test case has a failing last result: AC-001.1"
+    assert critical["detail"] == "TC-002 last_failed"
+    for detail in (rv["detail"], critical["detail"]):
+        assert not re.search(r"(?<!\w)(passed|failed|blocked|inconclusive|not\s+run)(?!\w)", detail, re.IGNORECASE)
+
+
+def test_the_met_detail_of_no_blocked_critical_holds_no_bare_status_word(trusted, actor):
+    _critical_chain(trusted, actor)
+    _trace_run(trusted, actor, "A", "passed")
+    r = _critical(trusted)
+    assert (r["outcome"], r["detail"]) == ("MET", "1 critical test case with a passing last result on commit %s" % COMMIT)

@@ -1,0 +1,25 @@
+{
+    "exit_code_by_key": {
+        "shipping.label.x_label__mutmut_1": 33,
+        "shipping.label.x_label__mutmut_2": 33,
+        "shipping.label.x_label__mutmut_3": 33,
+        "shipping.label.x_label__mutmut_4": 33,
+        "shipping.label.x_label__mutmut_5": 33,
+        "shipping.label.x_label__mutmut_6": 33,
+        "shipping.label.x_label__mutmut_7": 33
+    },
+    "hash_by_function_name": {
+        "x_label": "aa9846e9d23b"
+    },
+    "type_check_error_by_key": {},
+    "durations_by_key": {},
+    "estimated_durations_by_key": {
+        "shipping.label.x_label__mutmut_1": 0,
+        "shipping.label.x_label__mutmut_2": 0,
+        "shipping.label.x_label__mutmut_3": 0,
+        "shipping.label.x_label__mutmut_4": 0,
+        "shipping.label.x_label__mutmut_5": 0,
+        "shipping.label.x_label__mutmut_6": 0,
+        "shipping.label.x_label__mutmut_7": 0
+    }
+}

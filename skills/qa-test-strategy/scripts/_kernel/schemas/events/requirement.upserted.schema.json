@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "requirement.upserted event data",
+  "description": "A requirement as its author states it, new or changed: the whole record. The reducer replaces the record, keeping a confirmation only while the statement is unchanged. A requirement's confirmation is the signed requirement.confirmed event, never a field here.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.schema.json#/$defs/req_id"
+    },
+    "statement": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "type": {
+      "enum": [
+        "functional",
+        "performance-efficiency",
+        "compatibility",
+        "interaction-capability",
+        "reliability",
+        "security",
+        "maintainability",
+        "flexibility",
+        "safety"
+      ]
+    },
+    "source": {
+      "$ref": "records.schema.json#/$defs/source"
+    },
+    "provenance": {
+      "enum": [
+        "documented",
+        "inferred",
+        "assumed"
+      ]
+    },
+    "priority": {
+      "enum": [
+        "must",
+        "should",
+        "could",
+        "wont"
+      ]
+    },
+    "quality_issues": {
+      "type": "array",
+      "items": {
+        "$ref": "records.schema.json#/$defs/text"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "statement",
+    "type",
+    "source",
+    "provenance",
+    "priority",
+    "quality_issues"
+  ],
+  "additionalProperties": false
+}

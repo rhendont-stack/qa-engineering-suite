@@ -1,0 +1,169 @@
+[
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "category": "security",
+   "commit": null,
+   "component": {
+    "criticality": "normal",
+    "path": "app/orders/views.py"
+   },
+   "description": "Any user can read another user's order.",
+   "evidence": [],
+   "fingerprint": "sha256:e6f3bfad636cb6cf686d3679404e24cddaba6d86a8fa5622920102fe3eb7a54f",
+   "id": "FND-001",
+   "impact": null,
+   "key_attributes": {},
+   "links": {},
+   "priority": "P1",
+   "probable_cause": null,
+   "recommendation": null,
+   "refs": {
+    "cwe": [
+     "CWE-639"
+    ],
+    "location": "app/orders/views.py",
+    "rule": "R1"
+   },
+   "reproduction_steps": [],
+   "severity": "HIGH",
+   "severity_rationale": {
+    "anchor": "SEC-H1",
+    "modifiers": []
+   },
+   "source": {
+    "end_line": 5,
+    "method": "static",
+    "skill": "qa-test-execution",
+    "start_line": 1,
+    "tool": "scanner-a"
+   },
+   "state": "open",
+   "title": "IDOR on /orders/{id}",
+   "verification_status": "suspected"
+  },
+  "hash": "sha256:6262c29d28dab6f25bef3f424ddc04a460c3bf24880f89feaa7383df6a61b292",
+  "id": "EVT-01M73DJSW84AG8V2SA0T8BDBPS",
+  "prev": null,
+  "seq": 1,
+  "ts": "2026-11-10T19:04:59.016Z",
+  "type": "finding.opened",
+  "v": 1
+ },
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "category": "security",
+   "commit": null,
+   "component": {
+    "criticality": "normal",
+    "path": "app/orders/views.py"
+   },
+   "description": "Any user can read another user's order.",
+   "evidence": [],
+   "fingerprint": "sha256:1194dca98ae821e780d8bbf0a708865b7604f9a5c9244862941e61c73a04d415",
+   "id": "FND-002",
+   "impact": null,
+   "key_attributes": {},
+   "links": {},
+   "priority": "P1",
+   "probable_cause": null,
+   "recommendation": null,
+   "refs": {
+    "cwe": [
+     "CWE-639"
+    ],
+    "location": "app/orders/views.py",
+    "rule": "R2"
+   },
+   "reproduction_steps": [],
+   "severity": "HIGH",
+   "severity_rationale": {
+    "anchor": "SEC-H1",
+    "modifiers": []
+   },
+   "source": {
+    "end_line": 8,
+    "method": "static",
+    "skill": "qa-test-execution",
+    "start_line": 3,
+    "tool": "scanner-b"
+   },
+   "state": "open",
+   "title": "IDOR on /orders/{id}",
+   "verification_status": "suspected"
+  },
+  "hash": "sha256:e88f4c120baad6e2ddc61d76d3e33b3ea5556f48a4947205500cc7fdb99675ec",
+  "id": "EVT-01M73DJSWA1Q6WPGQN332B024N",
+  "prev": "sha256:6262c29d28dab6f25bef3f424ddc04a460c3bf24880f89feaa7383df6a61b292",
+  "seq": 2,
+  "ts": "2026-11-10T19:04:59.018Z",
+  "type": "finding.opened",
+  "v": 1
+ },
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "basis": {
+    "cwe": [
+     "CWE-639"
+    ],
+    "lines": [
+     1,
+     8
+    ],
+    "path": "app/orders/views.py"
+   },
+   "duplicate_of": "FND-001",
+   "evidence_added": [],
+   "id": "FND-002",
+   "source_label": "scanner-b"
+  },
+  "hash": "sha256:6ce8507fdbdcfbe75ee89afaa7efc07daa298293f883a2d7b8ecf60e2df47935",
+  "id": "EVT-01M73DJSWKWHQAF9325YENKQV7",
+  "prev": "sha256:e88f4c120baad6e2ddc61d76d3e33b3ea5556f48a4947205500cc7fdb99675ec",
+  "seq": 3,
+  "ts": "2026-11-10T19:04:59.027Z",
+  "type": "finding.deduplicated",
+  "v": 1
+ },
+ {
+  "actor": {
+   "role": "verifier",
+   "session": "S-00000000000000000000000000",
+   "skill": "qa-test-execution"
+  },
+  "data": {
+   "changes": {
+    "links": {
+     "duplicate_sources": [
+      "scanner-b"
+     ],
+     "duplicates": [
+      "FND-002"
+     ]
+    }
+   },
+   "id": "FND-001"
+  },
+  "hash": "sha256:e8c0d79b854c27eae1a8c2e52622639db859578c8e5585def4e8b68197e3eb7c",
+  "id": "EVT-01M73DJSWPVSQXW5DV86TKN35V",
+  "prev": "sha256:6ce8507fdbdcfbe75ee89afaa7efc07daa298293f883a2d7b8ecf60e2df47935",
+  "seq": 4,
+  "ts": "2026-11-10T19:04:59.030Z",
+  "type": "finding.updated",
+  "v": 1
+ }
+]

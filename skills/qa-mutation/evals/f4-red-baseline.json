@@ -1,0 +1,26 @@
+{
+  "id": "qa-mutation-f4-red-baseline",
+  "fixture": "fixtures/tested-app",
+  "skill": "skills/qa-mutation",
+  "setup_script": "skills/qa-mutation/evals/setup_red.py",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "bash_allow": [
+    "python3 .claude/skills/qa-mutation/scripts/qa.py",
+    "python3 ../../../.claude/skills/qa-mutation/scripts/qa.py",
+    "python3 .claude/skills/qa-mutation/scripts/mutmut_to_report.py",
+    "python3 .claude/skills/qa-mutation/scripts/pit_to_report.py",
+    "python3 .claude/skills/qa-mutation/scripts/test_smells.py",
+    "python3 .claude/skills/qa-mutation/scripts/git_read.py",
+    "python3 ../../../.claude/skills/qa-mutation/scripts/mutmut_to_report.py",
+    "python3 ../../../.claude/skills/qa-mutation/scripts/pit_to_report.py",
+    "python3 ../../../.claude/skills/qa-mutation/scripts/test_smells.py",
+    "python3 ../../../.claude/skills/qa-mutation/scripts/git_read.py",
+    "python3 -m pytest",
+    "python3 -m coverage",
+    "mutmut run",
+    "mutmut results",
+    "mutmut show"
+  ],
+  "prompt": "Are the tests in tested_app/pricing.py any good? Running the project's tests on this machine is approved."
+}

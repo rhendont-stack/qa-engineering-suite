@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "execution.recorded event data",
+  "description": "One command the kernel decided about (Appendix A.2 and section 8.4). A run blocked before it started has a null evidence_manifest, null exit_code and null report.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/exe_id"},
+    "command": {"$ref": "#/$defs/command"},
+    "started_at": {"$ref": "defs.schema.json#/$defs/timestamp"},
+    "ended_at": {"$ref": "defs.schema.json#/$defs/timestamp"},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "exit_code": {"type": ["integer", "null"]},
+    "signal": {"type": ["integer", "null"]},
+    "timed_out": {"type": "boolean"},
+    "git": {"anyOf": [{"$ref": "#/$defs/git"}, {"type": "null"}]},
+    "environment": {"$ref": "#/$defs/environment"},
+    "environment_id": {"type": "string"},
+    "env_names": {"type": "array", "items": {"type": "string"}},
+    "env_values": {
+      "type": "object",
+      "properties": {"CI": {"type": "string"}, "NODE_ENV": {"type": "string"}},
+      "additionalProperties": false
+    },
+    "isolation": {"enum": ["host", "container"]},
+    "container": {"$ref": "#/$defs/container"},
+    "evidence_manifest": {"anyOf": [{"$ref": "#/$defs/evidence_manifest"}, {"type": "null"}]},
+    "reports": {"type": "array", "items": {"$ref": "#/$defs/declared_report"}},
+    "report": {"anyOf": [{"$ref": "#/$defs/test_report"}, {"$ref": "#/$defs/alert_report"}, {"type": "null"}]},
+    "measurements": {"type": "array", "items": {"$ref": "#/$defs/measurement"}, "minItems": 1, "description": "absent, never empty, when no measurement report parsed"},
+    "status": {"$ref": "defs.schema.json#/$defs/status"},
+    "reason": {"anyOf": [{"$ref": "defs.schema.json#/$defs/reason"}, {"type": "null"}]},
+    "strength": {"anyOf": [{"$ref": "defs.schema.json#/$defs/strength"}, {"type": "null"}]},
+    "anomalies": {"type": "array", "items": {"$ref": "defs.schema.json#/$defs/anomaly"}},
+    "classification": {"enum": ["deterministic", "heuristic"]},
+    "authorization": {"type": ["string", "null"]},
+    "authorizations": {"type": "array", "items": {"$ref": "#/$defs/allowed_check"}},
+    "activity": {"$ref": "defs.schema.json#/$defs/activity"},
+    "scope": {"enum": ["targeted", "full"]},
+    "category": {"$ref": "defs.schema.json#/$defs/category"},
+    "attempt_of": {
+      "description": "As requested: a refused attempt keeps whatever id it named.",
+      "type": ["string", "null"]
+    },
+    "config_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "kernel": {"$ref": "#/$defs/kernel"},
+    "actor": {"$ref": "defs.schema.json#/$defs/actor"},
+    "independence": {"$ref": "defs.schema.json#/$defs/independence"},
+    "redactions": {"type": "integer", "minimum": 0},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": [
+    "id", "command", "started_at", "ended_at", "duration_ms", "exit_code", "signal", "timed_out", "git",
+    "environment", "environment_id", "env_names", "env_values", "isolation", "evidence_manifest", "reports", "report",
+    "status", "reason", "strength", "anomalies", "classification", "authorization", "authorizations", "activity",
+    "scope", "category", "attempt_of", "config_hash", "kernel", "actor", "independence", "redactions", "limitations"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "command": {
+      "type": "object",
+      "properties": {
+        "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "shell": {"type": "boolean"},
+        "cwd": {"type": "string"}
+      },
+      "required": ["argv", "shell", "cwd"],
+      "additionalProperties": false
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "commit": {"type": "string"},
+        "branch": {"type": ["string", "null"]},
+        "dirty": {"type": "boolean"},
+        "diff_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "worktree": {"type": "string", "description": "present only when the run was inside a suite worktree: its path, relative to the workspace root; the facts above are then the worktree's"}
+      },
+      "required": ["commit", "branch", "dirty", "diff_hash"],
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "class": {"$ref": "defs.schema.json#/$defs/env_class"},
+        "platform": {"type": "string"},
+        "python": {"type": ["string", "null"]},
+        "implementation": {"type": ["string", "null"]},
+        "cpu_count": {"type": ["integer", "null"]},
+        "memory_bytes": {"type": ["integer", "null"]},
+        "tools": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},
+        "launcher": {"$ref": "#/$defs/launcher"}
+      },
+      "required": ["class", "platform", "python", "implementation", "cpu_count", "memory_bytes", "tools"],
+      "additionalProperties": false
+    },
+    "launcher": {
+      "description": "The machine that started a container run; the fields above then describe where it ran.",
+      "type": "object",
+      "properties": {
+        "platform": {"type": "string"},
+        "python": {"type": "string"},
+        "implementation": {"type": "string"},
+        "cpu_count": {"type": ["integer", "null"]},
+        "memory_bytes": {"type": ["integer", "null"]}
+      },
+      "required": ["platform", "python", "implementation", "cpu_count", "memory_bytes"],
+      "additionalProperties": false
+    },
+    "container": {
+      "description": "How a run that reached the engine was isolated. image_id, daemon_version and network_mode are null when the engine did not say. engine_kind never names the host.",
+      "type": "object",
+      "properties": {
+        "image": {"type": "string"},
+        "image_id": {"type": ["string", "null"]},
+        "engine_kind": {"enum": ["local", "ssh"]},
+        "daemon_version": {"type": ["string", "null"]},
+        "network_mode": {"type": ["string", "null"]},
+        "install_ran": {"type": "boolean"}
+      },
+      "required": ["image", "image_id", "engine_kind", "daemon_version", "network_mode", "install_ran"],
+      "additionalProperties": false
+    },
+    "evidence_manifest": {
+      "type": "object",
+      "properties": {
+        "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "files": {"type": "array", "items": {"type": "string"}},
+        "ids": {"type": "object", "additionalProperties": {"$ref": "defs.schema.json#/$defs/ev_id"}}
+      },
+      "required": ["sha256", "files", "ids"],
+      "additionalProperties": false
+    },
+    "declared_report": {
+      "type": "object",
+      "properties": {
+        "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation"]},
+        "pattern": {"type": "string"},
+        "files": {"type": "array", "items": {"type": "string"}},
+        "error": {"enum": ["report_missing", "report_invalid", null]}
+      },
+      "required": ["format", "pattern", "files", "error"],
+      "additionalProperties": false
+    },
+    "test_report": {
+      "type": "object",
+      "properties": {
+        "format": {"enum": ["junit", "ctrf", "sarif", "mixed"]},
+        "kind": {"const": "tests"},
+        "tests": {"type": "integer", "minimum": 0},
+        "failures": {"type": "integer", "minimum": 0},
+        "errors": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0}
+      },
+      "required": ["format", "kind", "tests", "failures", "errors", "skipped"],
+      "additionalProperties": false
+    },
+    "alert_report": {
+      "type": "object",
+      "properties": {
+        "format": {"enum": ["junit", "ctrf", "sarif", "mixed"]},
+        "kind": {"const": "alerts"},
+        "alerts": {"type": "integer", "minimum": 0},
+        "runs": {"type": "integer", "minimum": 0}
+      },
+      "required": ["format", "kind", "alerts", "runs"],
+      "additionalProperties": false
+    },
+    "measurement": {
+      "description": "A measurement report that parsed (coverage or mutation). It never decides the run's status; the totals are those of the stored copy named by file.",
+      "type": "object",
+      "properties": {
+        "format": {"enum": ["lcov", "cobertura", "jacoco", "mutation"]},
+        "kind": {"enum": ["coverage", "mutants"]},
+        "file": {"type": "string"},
+        "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "totals": {"$ref": "#/$defs/measurement_totals"},
+        "anomalies": {"type": "array", "items": {"enum": ["path_outside_project", "partial"]}, "minItems": 1}
+      },
+      "required": ["format", "kind", "file", "sha256", "totals"],
+      "additionalProperties": false
+    },
+    "measurement_totals": {"anyOf": [{"$ref": "#/$defs/coverage_totals"}, {"$ref": "#/$defs/mutation_totals"}]},
+    "mutation_totals": {
+      "description": "Per file, how many mutants had each status (only the statuses that occur): all a reader needs to score any set of paths. Paths are as the report wrote them.",
+      "type": "object",
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "mutants": {"type": "integer", "minimum": 0},
+        "by_file": {"type": "object", "additionalProperties": {"$ref": "#/$defs/status_counts"}}
+      },
+      "required": ["files", "mutants", "by_file"],
+      "additionalProperties": false
+    },
+    "status_counts": {
+      "type": "object",
+      "properties": {
+        "Killed": {"type": "integer", "minimum": 1}, "Survived": {"type": "integer", "minimum": 1},
+        "NoCoverage": {"type": "integer", "minimum": 1}, "Timeout": {"type": "integer", "minimum": 1},
+        "CompileError": {"type": "integer", "minimum": 1}, "RuntimeError": {"type": "integer", "minimum": 1},
+        "Ignored": {"type": "integer", "minimum": 1}, "Pending": {"type": "integer", "minimum": 1}
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    },
+    "coverage_totals": {
+      "type": "object",
+      "properties": {
+        "files": {"type": "integer", "minimum": 0},
+        "lines_total": {"type": "integer", "minimum": 0},
+        "lines_covered": {"type": "integer", "minimum": 0},
+        "branches_total": {"type": "integer", "minimum": 0},
+        "branches_covered": {"type": "integer", "minimum": 0}
+      },
+      "required": ["files", "lines_total", "lines_covered", "branches_total", "branches_covered"],
+      "additionalProperties": false
+    },
+    "allowed_check": {
+      "type": "object",
+      "properties": {
+        "activity": {"$ref": "defs.schema.json#/$defs/activity"},
+        "environment": {"type": "string"},
+        "authorization": {"type": "string"}
+      },
+      "required": ["activity", "environment", "authorization"],
+      "additionalProperties": false
+    },
+    "kernel": {
+      "type": "object",
+      "properties": {
+        "version": {"type": "string"},
+        "manifest": {"anyOf": [{"$ref": "defs.schema.json#/$defs/sha256"}, {"type": "null"}]}
+      },
+      "required": ["version", "manifest"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,675 @@
+"""The release gate: profiles, criteria and the verdict (§11).
+
+``load_policy`` applies the overrides the user accepted to a profile file (§11.1). ``evaluate_criterion`` gives one
+criterion one of §11.2's four outcomes, and ``verdict`` follows from them mechanically. ``evaluate`` does both against
+a fresh fold and records the result with what recomputing it needs: the policy hash, the state hash, and the time,
+because an accepted risk's expiry depends on it.
+
+Never MET by default: a type this kernel has nothing to read for is NO_EVIDENCE and names what it needs (deviation 17).
+"""
+from __future__ import annotations
+
+import re
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
+
+from . import KERNEL_VERSION, config, execution, gitinfo, ids, ingest, integrity, ledger, resource_dir, schema, state, trace, vocab
+from .canonical import hash_obj, loads
+from .errors import QaError
+from .findings import SEVERITIES
+from .ingest import mutation
+from .workspace import Workspace, read_config, write_atomic
+
+# QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, unknown_criterion,
+# invalid_override, blank_rationale, approval_required, unknown_proposal, already_accepted; plus ledger.append's.
+
+_POLICY_SCHEMA = "gate-policy.schema.json"
+_PARAMS = {"$ref": _POLICY_SCHEMA + "#/$defs/params"}
+_OVERRIDE = {"$ref": "events/gate.policy_proposed.schema.json#/$defs/override"}
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+
+_MET, _NOT_MET, _NO_EVIDENCE, _NOT_APPLICABLE = "MET", "NOT_MET", "NO_EVIDENCE", "NOT_APPLICABLE"
+_NOT_OPTED_IN = "Project has not opted in (config.gate.overrides)"
+_DISABLED = "Disabled by config.gate.overrides (%s)"
+_SOURCE_CHECKOUT = "kernel manifest applies to vendored copies (milestone 2)"
+_TREE_CHANGED = ("the working tree changed since the execution %s was recorded; "
+                 "files a run leaves in the tree count unless they are git-ignored")
+
+_STRENGTHS = ("claimed", "attested", "exit_code", "structured")
+_INDEPENDENCE = ("I0", "I1", "I2", "I3")
+_SUITE_ACTIVITY = "test-execution-local"
+_UNRESOLVED_STATES = ("open", "reopened", "fix_submitted")
+_NEEDS = {
+    "security_scans_executed": ("scan and performance skills", 4),
+    "performance_objectives_met": ("scan and performance skills", 4),
+    "migrations_validated": ("database skills", 4), "rollback_validated": ("database skills", 4),
+}
+
+# Parameters a criterion reads that no policy file lists: an accepted override sets them (the policy files stay as the profile table).
+_OPTIONAL_PARAMS = {"mutation_score_min": ("paths",)}
+_DEFAULT_MIN_SCORE = 70
+_MUTATION_FILES_SHOWN = 20
+
+_PRIORITIES = ("must", "should", "could", "wont")  # a requirement's priority, most binding first
+_Outcome = Tuple[str, str, List[str]]  # outcome, detail, evidence
+
+
+def _blank(value: object) -> bool:
+    return not isinstance(value, str) or not value.strip()
+
+
+def _in_id_order(names: Iterable[str]) -> List[str]:
+    """By number: FND-1000 comes after FND-999, as with the gate anchors (T14-R17)."""
+    return sorted(names, key=lambda name: (len(name), name))
+
+
+# --------------------------------------------------------------------------- policy
+
+def _read_policy(profile: str) -> dict:
+    doc = loads((resource_dir("policies") / ("gate.%s.json" % profile)).read_bytes())
+    schema.validate(doc, _POLICY_SCHEMA)
+    return doc
+
+
+def _off_justification(criterion: dict, override: dict) -> Optional[str]:
+    """Why the criterion does not evaluate at all, or None when it does."""
+    if override.get("enabled") is False:
+        return _DISABLED % override.get("accepted_in")
+    if criterion["opt_in"] and override.get("enabled") is not True:
+        return _NOT_OPTED_IN
+    return None
+
+
+def _effective_criterion(criterion: dict, override: dict) -> dict:
+    """``criterion`` with ``override`` applied. A config accepted as it stands can hold what ``propose`` refuses."""
+    params = {**criterion["params"], **override.get("params", {})}
+    read = list(criterion["params"]) + [name for name in _OPTIONAL_PARAMS.get(criterion["type"], ()) if name in params]
+    errors = schema.errors({name: params[name] for name in read}, _PARAMS)
+    if "not_applicable" in override and _blank(override["not_applicable"]):
+        errors.append("not_applicable is blank: a criterion is not applicable only with a recorded justification")
+    if errors:
+        raise QaError("config_invalid", "an accepted gate override cannot be applied", criterion=criterion["id"], errors=errors)
+    effective = dict(criterion, params=params, blocking=override.get("blocking", criterion["blocking"]))
+    if override:
+        effective["accepted_in"] = override.get("accepted_in")
+    off = _off_justification(criterion, override)
+    if off is not None:
+        effective.update(blocking=False, not_applicable=off)
+    elif "not_applicable" in override:
+        effective["not_applicable"] = override["not_applicable"]
+    return effective
+
+
+def load_policy(profile: str, cfg: dict) -> Tuple[dict, str]:
+    """The profile with the accepted overrides applied, and the hash of that. No criterion is ever dropped (§11.2)."""
+    if profile not in vocab.PROFILES:
+        raise QaError("unknown_profile", "no such gate profile", profile=profile)
+    overrides = cfg["gate"]["overrides"]
+    policy = _read_policy(profile)
+    effective = {"profile": policy["profile"],
+                 "criteria": [_effective_criterion(c, overrides.get(c["id"], {})) for c in policy["criteria"]]}
+    return effective, hash_obj(effective)
+
+
+# --------------------------------------------------------------------------- criteria
+
+@dataclass(frozen=True)
+class GateContext:
+    """What a criterion reads besides the state."""
+    target_commit: Optional[str]
+    independence: str
+    integrity_problems: list
+    kernel: dict
+    now: datetime
+    diff_hash: Optional[str] = None  # set only when the working tree itself is what is evaluated (T16-R5)
+    git_limitation: Optional[str] = None  # why there is no target commit (T16-R4)
+
+
+def _rank(order: Tuple[str, ...], value: Optional[str]) -> int:
+    return order.index(value) if value in order else -1
+
+
+def _expired(finding: dict, now: datetime) -> bool:
+    """An acceptance with no readable expiry has none to honor (§10.6), so it counts as expired."""
+    try:
+        return ids.parse_ts(finding.get("expires_at")) <= now
+    except QaError:
+        return True
+
+
+def _unresolved(finding: dict, now: datetime) -> bool:
+    """The one definition of "unresolved" (§10.6, §11.1). A ``suspected`` finding is unresolved, not ignored.
+
+    A ``false_positive`` is dismissed only with its justification: §10.6 says "disproved, with justification".
+    """
+    if finding["verification_status"] == "false_positive" and not _blank(finding.get("justification")):
+        return False
+    return finding["state"] in _UNRESOLVED_STATES or (finding["state"] == "accepted_risk" and _expired(finding, now))
+
+
+def _no_unresolved_findings(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    minimum = c["params"]["min_severity"]
+    floor = SEVERITIES.index(minimum)
+    unresolved = _in_id_order(fid for fid, finding in st["findings"].items()
+                              if SEVERITIES.index(finding["severity"]) >= floor and _unresolved(finding, ctx.now))
+    if not unresolved:
+        return _MET, "no unresolved finding at %s or above" % minimum, []
+
+    def entry(fid: str) -> str:
+        finding = st["findings"][fid]
+        where = "accepted_risk expired" if finding["state"] == "accepted_risk" else finding["state"]
+        return "%s (%s, %s)" % (fid, finding["severity"], where)
+
+    return _NOT_MET, "; ".join(entry(fid) for fid in unresolved), unresolved
+
+
+def _is_suite_run(record: dict) -> bool:
+    """A clean scan is not a suite run, and a dirty scan does not fail one. Nor is a run that declared only measurement
+    reports: a coverage file says how much code ran, not that the tests passed."""
+    reports = record.get("reports") or []
+    measured_only = bool(reports) and all(ingest.is_measurement(declared["format"]) for declared in reports)
+    return (record["activity"] == _SUITE_ACTIVITY and not measured_only
+            and (record["report"] is None or record["report"]["kind"] != "alerts"))
+
+
+def _on_target(record: dict, target: Optional[str]) -> bool:
+    return record["git"] is not None and record["git"]["commit"] == target
+
+
+def _on_this_tree(record: dict, ctx: GateContext) -> bool:
+    """A run followed by another uncommitted edit is evidence about different code (T16-R5).
+
+    The hash is taken before the command runs, so a run that writes an untracked file also reads as an edit. That fails
+    safe, and ``_TREE_CHANGED`` tells the reader what to do about it (T16-R18).
+    """
+    return ctx.diff_hash is None or record["git"]["diff_hash"] == ctx.diff_hash
+
+
+def _about_target(record: dict, ctx: GateContext) -> bool:
+    return _is_suite_run(record) and _on_target(record, ctx.target_commit) and _on_this_tree(record, ctx)
+
+
+def _strong_enough(record: dict, minimum: Optional[str]) -> bool:
+    """The floor is on what a pass may claim; a failure at any strength is still a failure."""
+    if minimum is None or record["status"] != "passed":
+        return True
+    return _rank(_STRENGTHS, record["strength"]) >= _rank(_STRENGTHS, minimum)
+
+
+def _described(record: dict) -> str:
+    reason = " (%s)" % record["reason"] if record["reason"] else ""
+    return "%s %s%s" % (record["id"], record["status"], reason)
+
+
+def _none_qualified(c: dict, ctx: GateContext) -> str:
+    wanted = ["scope %s" % c["params"]["scope"]]
+    if c["min_strength"] is not None:
+        wanted.append("strength >= %s" % c["min_strength"])
+    if c["params"].get("clean_tree"):
+        wanted.append("clean tree")
+    return "no execution qualified for commit %s (%s)" % (ctx.target_commit, ", ".join(wanted))
+
+
+def _same_conditions(one: dict, other: dict) -> bool:
+    return (one["git"]["commit"], one["git"]["diff_hash"], one["environment_id"], one["scope"]) == (
+        other["git"]["commit"], other["git"]["diff_hash"], other["environment_id"], other["scope"])
+
+
+def _judge_pass(latest: dict, qualifying: List[dict], st: dict, params: dict) -> _Outcome:
+    """Whether the latest pass still stands: a reclassified result withdraws it (§8.3), and so does an earlier failure.
+
+    Running a suite again until it is green is what §5.1 forbids, and §8.3 keeps mixed outcomes on one commit and
+    environment failed for gating. Only a change of tree, environment or scope lets a pass stand after a failure.
+    """
+    detail, evidence = _described(latest), [latest["id"]]
+    withdrawn = sorted(rid for rid, result in st["results"].items()
+                       if result["execution"] == latest["id"] and result["reclassifications"] and result["status"] != "passed")
+    if withdrawn:
+        return _NO_EVIDENCE, "%s, but reclassified: %s" % (detail, ", ".join(withdrawn)), evidence + withdrawn
+    if params.get("require_passed", True):
+        failed = [record["id"] for record in qualifying if record["status"] == "failed" and _same_conditions(record, latest)]
+        if failed:
+            return _NOT_MET, "mixed outcomes on one tree: %s failed, then %s passed" % (", ".join(failed), latest["id"]), failed + evidence
+    return _MET, detail, evidence
+
+
+def _suite_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    params = c["params"]
+    # A rerun has no say: §8.3 keeps a failed test failed for gating purposes.
+    runs = [record for record in st["executions"].values()
+            if _is_suite_run(record) and record["attempt_of"] is None and _on_target(record, ctx.target_commit)
+            and not (params.get("clean_tree") and record["git"]["dirty"])
+            and (params["scope"] == "targeted" or record["scope"] == "full")
+            and _strong_enough(record, c["min_strength"])]
+    qualifying = [record for record in runs if _on_this_tree(record, ctx)]
+    if not qualifying:
+        if runs:
+            return _NO_EVIDENCE, _TREE_CHANGED % runs[-1]["id"], []
+        return _NO_EVIDENCE, _none_qualified(c, ctx), []
+    latest = qualifying[-1]
+    detail, evidence = _described(latest), [latest["id"]]
+    if latest["status"] == "passed":
+        return _judge_pass(latest, qualifying, st, params)
+    if latest["status"] != "failed":
+        return _NO_EVIDENCE, detail, evidence
+    if params.get("require_passed", True):
+        return _NOT_MET, detail, evidence
+    return _MET, detail + "; a pass is not required", evidence
+
+
+def _flaky_rate_max(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    limit = c["params"]["max_ratio"]
+    executed = flaky = 0
+    roots: Set[str] = set()
+    for chains in st["tests"].values():
+        counted = {root: entry for root, entry in chains.items()
+                   if entry["attempts"] > 0 and _about_target(st["executions"][root], ctx)}
+        flaky_roots = [root for root, entry in counted.items() if entry["flaky"]]
+        executed += bool(counted)
+        flaky += bool(flaky_roots)
+        roots.update(flaky_roots)
+    if not executed:
+        return _NO_EVIDENCE, "no executed tests on the target commit", []
+    ratio = flaky / executed
+    outcome, compared = (_MET, "<=") if ratio <= limit else (_NOT_MET, ">")
+    return outcome, "%d/%d flaky (%g %s %g)" % (flaky, executed, ratio, compared, limit), sorted(roots)
+
+
+def _test_integrity(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    kinds = Counter(problem.kind for problem in ctx.integrity_problems)
+    findings = _in_id_order(fid for fid, finding in st["findings"].items()
+                            if finding["category"] == "test-quality" and _unresolved(finding, ctx.now))
+    status = ctx.kernel["status"]
+    source_checkout = status == "absent" and ctx.kernel["source_checkout"]
+    failures = []
+    if kinds:
+        failures.append("integrity problems: " + ", ".join("%d %s" % (kinds[kind], kind) for kind in sorted(kinds)))
+    if findings:
+        failures.append("unresolved test-quality findings: " + ", ".join(findings))
+    if status != "ok" and not source_checkout:
+        failures.append("kernel %s" % status)
+    if failures:
+        return _NOT_MET, "; ".join(failures), findings
+    if source_checkout:
+        return _MET, _SOURCE_CHECKOUT, []
+    return _MET, "no integrity problems, no unresolved test-quality findings, kernel ok", []
+
+
+def _independence_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    minimum = c["params"]["min"]
+    if _rank(_INDEPENDENCE, ctx.independence) >= _rank(_INDEPENDENCE, minimum):
+        return _MET, "%s >= %s" % (ctx.independence, minimum), []
+    return _NOT_MET, "%s < %s" % (ctx.independence, minimum), []
+
+
+def _verifying_cases(matrix: dict, links: List[str]) -> List[dict]:
+    cases = {case["id"]: case for case in matrix["testcases"]}
+    return [cases[tc] for tc in links if tc in cases]
+
+
+def _structured(st: dict, case: dict) -> bool:
+    """Every execution behind the test case's latest results is of strength ``structured``: an exit code proves no assertion."""
+    return all(st["executions"].get(test["execution"], {}).get("strength") == "structured" for test in case["tests"])
+
+
+def _ac_state(st: dict, matrix: dict, links: List[str]) -> Tuple[str, List[str]]:
+    """``failed``, ``verified`` or ``unverified`` for one acceptance criterion, and the executions its test cases rest on."""
+    cases = _verifying_cases(matrix, links)
+    executions = sorted({test["execution"] for case in cases for test in case["tests"] if test["execution"]})
+    if any(case["status"] == "failed" for case in cases):
+        return "failed", executions
+    verified = any(case["status"] == "passed" and case["oracle"] != "characterization" and _structured(st, case) for case in cases)
+    return ("verified" if verified else "unverified"), executions
+
+
+def _tree_matrix(st: dict, ctx: GateContext) -> dict:
+    """The matrix on the target commit; when the working tree itself is evaluated, only runs on this tree count (T16-R5)."""
+    return trace.matrix(st, ctx.target_commit, diff_hash=ctx.diff_hash)
+
+
+def _where(ctx: GateContext) -> str:
+    return "commit %s%s" % (ctx.target_commit, " and this working tree" if ctx.diff_hash is not None else "")
+
+
+def _requirements_verified(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.1, §6.4 B: every requirement at or above ``min_priority`` is verified by its acceptance criteria on the target commit.
+
+    A documented or confirmed requirement is judged by its criteria: each needs a verifying test case whose latest result on the
+    target is a pass from a ``structured`` execution and whose oracle is not ``characterization``. An inferred or assumed one
+    nobody confirmed is listed and caps the outcome at NO_EVIDENCE, never MET and never NOT_MET on its own account.
+    """
+    if not st["requirements"]:
+        return _NO_EVIDENCE, "no documented requirements", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    minimum = c["params"].get("min_priority", "must")
+    scope = [rid for rid in sorted(st["requirements"], key=trace._order)
+             if _PRIORITIES.index(st["requirements"][rid]["priority"]) <= _PRIORITIES.index(minimum)]
+    if not scope:
+        return _NO_EVIDENCE, "no requirement at priority %s or above" % minimum, []
+    matrix = _tree_matrix(st, ctx)
+    verified_by = trace._by_source(st, "verified_by")
+    criteria_of: Dict[str, List[str]] = {}
+    for ac in sorted(st["criteria"], key=trace._order):
+        criteria_of.setdefault(st["criteria"][ac]["requirement"], []).append(ac)
+    unconfirmed: List[str] = []
+    bare: List[str] = []
+    failed: List[str] = []
+    unverified: List[str] = []
+    evidence: Set[str] = set()
+    for rid in scope:
+        record = st["requirements"][rid]
+        if record["provenance"] != "documented" and not record.get("confirmed"):
+            unconfirmed.append(rid)
+            continue
+        if not criteria_of.get(rid):
+            bare.append(rid)
+        for ac in criteria_of.get(rid, []):
+            outcome, executions = _ac_state(st, matrix, verified_by.get(ac, []))
+            evidence.update(executions)
+            if outcome != "verified":
+                (failed if outcome == "failed" else unverified).append(ac)
+    parts = []
+    if failed:  # no bare status word: a report renders this detail, and its checker reads one as a claim needing a run ID
+        parts.append("a verifying test case has a failing last result: " + ", ".join(failed))
+    if unverified:
+        parts.append("not verified by a passing structured test on %s: %s" % (_where(ctx), ", ".join(unverified)))
+    if bare:
+        parts.append("no acceptance criterion: " + ", ".join(bare))
+    if unconfirmed:
+        parts.append("unconfirmed %s: %s" % ("requirement" if len(unconfirmed) == 1 else "requirements", ", ".join(unconfirmed)))
+    result = _NOT_MET if failed else (_NO_EVIDENCE if parts else _MET)
+    detail = "; ".join(parts) or "%d %s verified: %s" % (len(scope), "requirement" if len(scope) == 1 else "requirements", ", ".join(scope))
+    return result, detail, sorted(evidence)
+
+
+def _no_blocked_critical(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.2: no critical test case is blocked, and none is unexecuted: an untested system is not a passing system."""
+    critical = [tc for tc in sorted(st["testcases"], key=trace._order) if st["testcases"][tc]["criticality"] == "critical"]
+    if not critical:
+        return _NO_EVIDENCE, "no test case is linked to a critical component", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    cases = {case["id"]: case for case in _tree_matrix(st, ctx)["testcases"]}
+    bad = [tc for tc in critical if cases[tc]["status"] in ("blocked", "inconclusive", "failed")]
+    missing = [tc for tc in critical if cases[tc]["status"] in (None, "not_run")]
+    evidence = sorted({test["execution"] for tc in critical for test in cases[tc]["tests"] if test["execution"]})
+    if bad:  # last_<status>: no bare status word, which a rendered report's checker would read as an uncited claim
+        return _NOT_MET, "; ".join("%s last_%s" % (tc, cases[tc]["status"]) for tc in bad), evidence
+    if missing:
+        return _NO_EVIDENCE, "no executed result on %s for: %s" % (_where(ctx), ", ".join(missing)), evidence
+    return _MET, "%d critical test %s with a passing last result on %s" % (
+        len(critical), "case" if len(critical) == 1 else "cases", _where(ctx)), evidence
+
+
+def _glob(pattern: str) -> "re.Pattern[str]":
+    """``*`` and ``?`` stay inside one path segment, ``**`` crosses segments (``**/`` may also match nothing); all else is literal."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        else:
+            out.append("[^/]*" if pattern[i] == "*" else "[^/]" if pattern[i] == "?" else re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def _selected(path: str, patterns: List["re.Pattern[str]"]) -> bool:
+    """A recorded path leaving the project (``..``, absolute) is a name the tool gave, not a file of this project: no glob selects it."""
+    while path.startswith("./"):
+        path = path[2:]
+    if ingest.outside_project(path) or ingest.is_absolute(path):
+        return False
+    return any(pattern.fullmatch(path) for pattern in patterns)
+
+
+def _percent(value: float, minimum: Optional[float] = None) -> str:
+    """Two decimals, but never rounded across the minimum: 69.999 under a minimum of 70 must not read as 70."""
+    text = "%.2f" % value
+    if minimum is not None and (float(text) >= minimum) != (value >= minimum):
+        text = "%.6f" % value
+    return text.rstrip("0").rstrip(".")
+
+
+def _latest_mutation_report(st: dict, ctx: GateContext) -> Tuple[Optional[Tuple[dict, dict, Optional[str]]], List[str]]:
+    """The run, the totals and (for an ingested file) the ingest event of the last mutation report recorded on the target
+    commit for this tree, and the ingest events that were set aside.
+
+    A report counts only from a run that passed or failed (a mutation tool's exit code says nothing about the code under test,
+    but a blocked or inconclusive run measured under conditions nobody can vouch for). A report the run recorded itself came from
+    the tool; one attached with ``qa ingest`` counts only when it is ``structured`` (the file is in the run's intact manifest): an
+    attested file is a person's JSON, and scores come only from tool reports. Within a run, a report attached later is later.
+    """
+    latest = None
+    ignored: List[str] = []
+    for record in st["executions"].values():
+        if not (_on_target(record, ctx.target_commit) and _on_this_tree(record, ctx)):
+            continue
+        for item in execution.readable_measurements(record):
+            if item.get("kind") == "mutants":
+                latest = (record, item["totals"], None)
+        for item in execution.readable_ingested(record):
+            if item.get("kind") != "mutants":
+                continue
+            if item.get("strength") == "structured":
+                latest = (record, item["totals"], item.get("event"))
+            else:
+                ignored.append("%s in %s" % (item.get("event"), record["id"]))
+    return latest, ignored
+
+
+def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """§11.1: the mutation score of the files in ``paths``, from the last mutation report on the target commit.
+
+    Scores come only from a mutation tool's report. Line coverage is never read as one, and ``paths`` is required: a project
+    chooses which files must withstand mutation (``qa-mutation`` proposes them from the critical components). A report with
+    Pending mutants in those files is partial, and a partial measurement is not evidence.
+    """
+    params = c["params"]
+    paths = params.get("paths")
+    if not paths:
+        return _NO_EVIDENCE, "mutation_score_min needs paths: the globs of the files whose mutants are scored (an accepted override sets them)", []
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    found, ignored = _latest_mutation_report(st, ctx)
+    skipped = "; ignored attested ingest %s: scores come only from a tool's report" % ", ".join(ignored) if ignored else ""
+    if found is None:
+        return _NO_EVIDENCE, "no mutation report on commit %s%s" % (ctx.target_commit, skipped), []
+    record, totals, event = found
+    cited = [record["id"]] + ([event] if event else [])
+    minimum = params.get("min_score", _DEFAULT_MIN_SCORE)
+    patterns = [_glob(pattern) for pattern in paths]
+    scored = {path: counts for path, counts in totals["by_file"].items() if _selected(path, patterns)}
+    pending = {path: counts["Pending"] for path, counts in sorted(scored.items()) if counts.get("Pending")}
+    if pending:
+        names = sorted(pending)
+        where = ", ".join(names[:_MUTATION_FILES_SHOWN]) + (" and %d more" % (len(names) - _MUTATION_FILES_SHOWN)
+                                                           if len(names) > _MUTATION_FILES_SHOWN else "")
+        return (_NO_EVIDENCE, "%d Pending in %s: the report is partial (a tool that stopped early leaves mutants unrun)%s"
+                % (sum(pending.values()), where, skipped), cited)
+    overall: Dict[str, int] = {}
+    per_file = []
+    for path in sorted(scored):
+        for status, number in scored[path].items():
+            overall[status] = overall.get(status, 0) + number
+        value = mutation.score_of_counts(scored[path])
+        if value is not None:
+            per_file.append("%s (%s)" % (path, _percent(value, minimum)))
+    value = mutation.score_of_counts(overall)
+    if value is None:
+        return _NO_EVIDENCE, "%s has no mutant that counts in %s%s" % (record["id"], ", ".join(paths), skipped), cited
+    met = value >= minimum
+    shown = ", ".join(per_file[:_MUTATION_FILES_SHOWN]) + (" and %d more" % (len(per_file) - _MUTATION_FILES_SHOWN)
+                                                          if len(per_file) > _MUTATION_FILES_SHOWN else "")
+    detail = "%s %s %s over %s%s" % (_percent(value, minimum), ">=" if met else "<", _percent(minimum), shown, skipped)
+    return (_MET if met else _NOT_MET), detail, cited
+
+
+_EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
+    "no_unresolved_findings": _no_unresolved_findings, "suite_executed": _suite_executed, "flaky_rate_max": _flaky_rate_max,
+    "test_integrity": _test_integrity, "independence_min": _independence_min,
+    "requirements_verified": _requirements_verified, "no_blocked_critical": _no_blocked_critical,
+    "mutation_score_min": _mutation_score_min,
+}
+
+
+def _reproduced(st: dict, commit: Optional[str]) -> Set[str]:
+    """Local executions an imported bundle re-ran with the same result at ``commit`` (a ``bundle.compared`` that matched)."""
+    return {comparison["local"] for bundle in st["bundles"].values() for comparison in bundle["comparisons"]
+            if comparison["matching"] and comparison["commit"] == commit
+            and (st["executions"][comparison["local"]]["git"] or {}).get("commit") == commit}
+
+
+def _needs_reproduction(outcome: _Outcome, st: dict, ctx: GateContext) -> _Outcome:
+    """§5.3: a criterion that needs I3 is met only by executions an imported run reproduced at the same commit.
+
+    Only a MET outcome is held back: a failure stays a failure, and missing evidence stays missing. What the bundle's own
+    ledger claims about its independence, grants or results never reaches this; only the comparison the kernel recorded does.
+    """
+    result, detail, evidence = outcome
+    if result != _MET:
+        return outcome
+    run_ids = [item for item in evidence if item in st["executions"]]
+    reproduced = _reproduced(st, ctx.target_commit)
+    missing = [item for item in run_ids if item not in reproduced]
+    if run_ids and not missing:
+        return _MET, "%s; reproduced by an imported bundle" % detail, evidence
+    why = ", ".join(missing) if missing else "no execution"
+    return (_NO_EVIDENCE, "%s; needs I3, and no matching comparison with an imported bundle at commit %s covers %s"
+            % (detail, ctx.target_commit, why), evidence)
+
+
+def evaluate_criterion(c: dict, st: dict, ctx: GateContext) -> dict:
+    result = {"id": c["id"], "type": c["type"], "blocking": c["blocking"]}
+    if "not_applicable" in c:  # never inferred: load_policy put an accepted or a stated justification here
+        return dict(result, outcome=_NOT_APPLICABLE, detail=c["not_applicable"], evidence=[], justification=c["not_applicable"])
+    evaluator = _EVALUATORS.get(c["type"])
+    if evaluator is None:
+        capability, milestone = _NEEDS[c["type"]]
+        detail = "not evaluable by kernel %s (needs %s, milestone %d)" % (KERNEL_VERSION, capability, milestone)
+        return dict(result, outcome=_NO_EVIDENCE, detail=detail, evidence=[])
+    judged = evaluator(c, st, ctx)
+    if c.get("min_independence") == "I3":
+        judged = _needs_reproduction(judged, st, ctx)
+    outcome, detail, evidence = judged
+    return dict(result, outcome=outcome, detail=detail, evidence=evidence)
+
+
+def verdict(criteria: List[dict], accepted_risks: List[str]) -> str:
+    """§11.2 rules 1-4."""
+    blocking = [c["outcome"] for c in criteria if c["blocking"]]
+    if _NOT_MET in blocking:
+        return "NOT_READY"
+    if _NO_EVIDENCE in blocking:
+        return "INSUFFICIENT_EVIDENCE"
+    if accepted_risks or any(c["outcome"] == _NOT_MET for c in criteria):
+        return "READY_WITH_CONDITIONS"
+    return "READY"
+
+
+# --------------------------------------------------------------------------- evaluating
+
+def _accepted_risks(st: dict, now: datetime) -> List[str]:
+    return _in_id_order(fid for fid, finding in st["findings"].items()
+                        if finding["state"] == "accepted_risk" and not _expired(finding, now)
+                        and finding["verification_status"] != "false_positive")
+
+
+def _conditions(criteria: List[dict], risks: List[str], st: dict) -> List[str]:
+    advisory = ["%s: %s" % (c["id"], c["detail"]) for c in criteria if not c["blocking"] and c["outcome"] == _NOT_MET]
+    return advisory + ["%s accepted_risk until %s" % (fid, st["findings"][fid]["expires_at"]) for fid in risks]
+
+
+def _refuse_drift(ws: Workspace, st: dict) -> None:
+    """§11.1: an override applies only after you accept it, so nothing goes on from a file edited by hand."""
+    if config.current_hash(ws) != config.accepted_hash(st):
+        raise QaError("config_drift", config.DRIFT_REFUSAL)
+
+
+def _context(ws: Workspace, st: dict, actor: ledger.Actor, target_commit: Optional[str]) -> GateContext:
+    diff_hash = limitation = None
+    if target_commit is None:
+        facts, limitation = gitinfo.git_info(ws.root)
+        if facts is not None:
+            target_commit, diff_hash = facts["commit"], facts["diff_hash"]
+    return GateContext(target_commit, actor.independence, integrity.problems(ws, st), integrity.kernel_integrity(),
+                       ids.now_utc(), diff_hash, limitation)
+
+
+def evaluate(ws: Workspace, actor: ledger.Actor, *, profile: Optional[str] = None, target_commit: Optional[str] = None) -> dict:
+    """Evaluate a profile against the ledger as it is now, record ``gate.evaluated`` and return that event."""
+    if target_commit is not None and not (isinstance(target_commit, str) and _COMMIT.fullmatch(target_commit)):
+        raise QaError("invalid_target", "a target commit is the full 40-character hash", target=target_commit)
+    with ws.lock():
+        st = state.load(ws)
+        cfg = config.load_config(ws)
+        policy, policy_hash = load_policy(cfg["gate"]["profile"] if profile is None else profile, cfg)
+        _refuse_drift(ws, st)
+        ctx = _context(ws, st, actor, target_commit)
+        criteria = [evaluate_criterion(c, st, ctx) for c in policy["criteria"]]
+        risks = _accepted_risks(st, ctx.now)
+        return ledger.append(ws, actor, "gate.evaluated", {
+            "id": ledger.next_human_id(ws, "GATE"), "profile": policy["profile"], "policy_hash": policy_hash,
+            "state_hash": state.state_hash(st), "target": {"commit": ctx.target_commit}, "diff_hash": ctx.diff_hash,
+            "criteria": criteria, "independence": actor.independence, "verdict": verdict(criteria, risks),
+            "conditions": _conditions(criteria, risks, st), "heads": ledger.heads(ws), "evaluated_at": ids.format_ts(ctx.now),
+        })
+
+
+# --------------------------------------------------------------------------- overrides
+
+def _declared_params(criterion_id: object) -> Set[str]:
+    """The parameters the criterion declares in any profile; refuses an ID in no profile."""
+    found = [c for profile in vocab.PROFILES for c in _read_policy(profile)["criteria"] if c["id"] == criterion_id]
+    if not found:
+        raise QaError("unknown_criterion", "no profile has such a criterion", criterion=criterion_id)
+    return set().union(*(c["params"] for c in found), *(_OPTIONAL_PARAMS.get(c["type"], ()) for c in found))
+
+
+def propose(ws: Workspace, actor: ledger.Actor, criterion_id: str, override: dict, rationale: str) -> dict:
+    """Record a proposed override. It changes nothing until ``accept`` (§11.1)."""
+    declared = _declared_params(criterion_id)
+    errors = schema.errors(override, _OVERRIDE)
+    if not errors:
+        undeclared = sorted(set(override.get("params", {})) - declared)
+        errors = ["params.%s is not a parameter of %s" % (name, criterion_id) for name in undeclared]
+    if errors:
+        raise QaError("invalid_override", "the override cannot be proposed", criterion=criterion_id, errors=errors)
+    if _blank(rationale):
+        raise QaError("blank_rationale", "a proposed override needs a rationale", criterion=criterion_id)
+    return ledger.append(ws, actor, "gate.policy_proposed",
+                         {"criterion": criterion_id, "override": override, "rationale": rationale})
+
+
+def accept(ws: Workspace, actor: ledger.Actor, proposal_event_id: str, approval: str) -> dict:
+    """Write a proposed override into config.json and record the user's approval, so that edit is not drift."""
+    if _blank(approval):
+        raise QaError("approval_required", "accepting a gate override needs the user's approval quote")
+    with ws.lock():
+        st = state.load(ws)
+        _refuse_drift(ws, st)
+        history = st["config"]["history"]
+        proposal = next((h for h in history if h["kind"] == "gate_policy_proposed" and h["event"] == proposal_event_id), None)
+        if proposal is None:
+            raise QaError("unknown_proposal", "no such gate policy proposal", proposal=proposal_event_id)
+        if any(h["kind"] == "gate_policy_accepted" and h["proposal"] == proposal_event_id for h in history):
+            raise QaError("already_accepted", "this proposal was already accepted", proposal=proposal_event_id)
+        cfg = config.load_config(ws)
+        before = read_config(ws)
+        cfg["gate"]["overrides"][proposal["criterion"]] = dict(proposal["override"], accepted_in=proposal_event_id)
+        new_hash = config.write_config(ws, cfg)
+        try:
+            return ledger.append(ws, actor, "gate.policy_accepted",
+                                 {"proposal": proposal_event_id, "approval": approval, "config_hash": new_hash})
+        except BaseException:
+            write_atomic(ws.path("config.json"), before)
+            raise

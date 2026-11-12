@@ -11,8 +11,10 @@ optional alias. An ID may be cited bare (``GATE-001``) or qualified by the ledge
 must be qualified; an ``EXE-`` or ``RES-`` ID is unique to its run, so two ledgers that hold it must record it identically.
 
 A verdict word is judged against every cited ``GATE-`` ID and against the gate each cited ``RPT-`` ID names: all must agree,
-and a verdict with neither is uncited. A sentence that sets an expectation beside a measurement labels the expected word
-``expected: TOKEN``; only that one token is left unjudged.
+and a verdict with neither is uncited. A status word is judged against the nearest ``EXE-``/``RES-`` ID before it on its line,
+or against the first such ID when none precedes it. A sentence that sets an expectation beside a measurement labels the
+expected word ``expected: TOKEN``; only that one token is left unjudged, and it must sit beside an unlabelled token of the
+same kind (a verdict for a verdict, a status for a status), the measurement: an expectation alone is unpaired.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from typing import List, Optional, Sequence, Tuple
 from .. import state
 from ..ledger import Problem
 
-# Problem.kind values: unknown_id, uncited_claim, status_mismatch, universal_claim, conflicting_id, ambiguous_id.
+# Problem.kind values: unknown_id, uncited_claim, status_mismatch, universal_claim, conflicting_id, ambiguous_id, unpaired_expectation.
 
 PROJECT_ALIAS = "project"
 ALIAS = re.compile(r"[a-z][a-z0-9-]{0,31}")
@@ -125,18 +127,35 @@ def _line_problems(ledgers: Sequence[Ledger], line: str, where: str) -> List[Pro
     problems += [Problem("ambiguous_id", where, "%s is held by more than one ledger; qualify it with the ledger's alias, as in "
                          "ALIAS:%s" % (c.token, c.token)) for c in cited if c.resolved and c.ambiguous]
     problems += [Problem("conflicting_id", where, "%s differs between the ledgers" % c.shown) for c in cited if c.resolved and c.conflicting]
-    judged = _EXPECTED.sub(lambda m: m.group(0) + "\0", line)  # a NUL right before the labelled token hides it from the scans
-    judged = re.sub(r"\0\S+", "", judged)
-    statuses = [_status_word(m) for m in _STATUS.findall(judged)]
+    judged, labelled = list(line), []  # the labelled token is blanked, same length, so offsets still match the line
+    for label in _EXPECTED.finditer(line):
+        token = re.compile(r"\S+").match(line, label.end())
+        labelled.append(token.group(0))
+        judged[token.start():token.end()] = " " * len(token.group(0))
+    judged = "".join(judged)
+    status_hits = [(m.start(), _status_word(m.group(1))) for m in _STATUS.finditer(judged)]
+    statuses = [word for _, word in status_hits]
     verdicts = _VERDICT.findall(judged)
+    for word in labelled:
+        kind_found = verdicts if _VERDICT.match(word) else statuses
+        if not kind_found:
+            problems.append(Problem("unpaired_expectation", where, "expected: %s has no measurement of its kind on the line: %s"
+                                    % (word, line.strip())))
     resolved = [c for c in cited if c.resolved]
     if (statuses or verdicts or _PERCENT.search(judged)) and not resolved:
         problems.append(Problem("uncited_claim", where, line.strip()))
-    records = [c for c in cited if c.token.startswith(("EXE-", "RES-"))]  # an unknown ID is still a cited one
-    if len(records) == 1 and records[0].usable and statuses:
-        current = _record(records[0].st, records[0].token)["status"]
-        if any(s != current for s in statuses):
-            problems.append(Problem("status_mismatch", where, "%s is %s" % (records[0].shown, current)))
+    by_citation = {(c.alias, c.token): c for c in cited if c.token.startswith(("EXE-", "RES-"))}  # unknown ones count too
+    records = [(found.start(), by_citation[(found.group(1) or None, found.group(2))]) for found in _ID.finditer(line)
+               if (found.group(1) or None, found.group(2)) in by_citation]  # every occurrence, in line order
+    wrong = set()
+    for at, status in status_hits:
+        if not records:
+            break
+        before = [c for place, c in records if place < at]
+        target = before[-1] if before else records[0][1]
+        if target.usable and status != _record(target.st, target.token)["status"]:
+            wrong.add("%s is %s" % (target.shown, _record(target.st, target.token)["status"]))
+    problems += [Problem("status_mismatch", where, detail) for detail in sorted(wrong)]
     if verdicts and resolved:
         gates = [c for c in cited if c.token.startswith(("GATE-", "RPT-"))]
         judges = [j for j in (_gate_verdicts(c) for c in gates if c.usable) if j is not None]

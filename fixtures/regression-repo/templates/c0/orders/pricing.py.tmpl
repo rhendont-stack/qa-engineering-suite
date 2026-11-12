@@ -1,0 +1,11 @@
+"""Price arithmetic. Amounts are integer cents."""
+
+
+def line_total(unit_cents, quantity):
+    """What ``quantity`` units at ``unit_cents`` each cost."""
+    return unit_cents * quantity
+
+
+def apply_discount(total_cents, percent):
+    """Take ``percent`` off ``total_cents``. The discount is rounded down to a whole cent."""
+    return total_cents - total_cents * percent // 100

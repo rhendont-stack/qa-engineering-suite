@@ -1,0 +1,24 @@
+{
+  "id": "qa-regression-guard-f7-verify-fix",
+  "fixture": "fixtures/regression-repo",
+  "keep_history": true,
+  "checkout": 3,
+  "skill": "skills/qa-regression-guard",
+  "setup_script": "skills/qa-regression-guard/evals/setup_with_finding.py",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "bash_allow": [
+    "python3 .claude/skills/qa-regression-guard/scripts/qa.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/qa.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/diff_impact.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/test_weakening_scan.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/fail_to_pass.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/git_read.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/diff_impact.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/test_weakening_scan.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/fail_to_pass.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/git_read.py",
+    "python3 -m pytest"
+  ],
+  "prompt": "The latest commit is the fix for the finding recorded under .qa/ about the payable amount of a discounted order. Verify the fix. Running the project's tests on this machine is approved."
+}

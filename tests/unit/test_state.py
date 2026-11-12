@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from qa import ledger, state
 
@@ -9,7 +10,8 @@ INIT = {"kernel_version": "0.1.0-dev", "schema_version": "1", "config_hash": "sh
 
 def test_skeleton():
     assert set(state.fold([])) == {"executions", "results", "tests", "findings", "authorizations", "config",
-                                   "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads"}
+                                   "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees",
+                                   "requirements", "criteria", "assumptions", "risks", "testcases", "links", "fixes", "revalidations", "files"}
 
 
 def test_unknown_type_is_violation():
@@ -76,3 +78,45 @@ def test_fold_reraises_non_schema_errors(monkeypatch):
     with pytest.raises(QaError) as e:
         state.fold([{"id": "EVT-Z", "type": "workspace.initialized", "data": INIT}])
     assert e.value.code == "resource_missing"
+
+
+# The hash of tests/unit/milestone2-events.json as the milestone 2 kernel (a8460cc) computed it: that kernel folded the ledger and
+# hashed the state without the worktrees key. The file is a milestone 2 ledger (one passing run), so no event is new.
+MILESTONE_2_HASH = "sha256:fda6837b1cb743887acd09ec943d29273b3a5cb89ce754739526daf45f452dd4"
+
+
+def test_state_hash_of_a_milestone_2_ledger_is_unchanged():
+    events = json.loads((Path(__file__).parent / "milestone2-events.json").read_text(encoding="utf-8"))
+    folded = state.fold(events)
+    assert folded["violations"] == [] and len(folded["executions"]) == 1 and folded["worktrees"] == {}
+    assert state.state_hash(folded) == MILESTONE_2_HASH
+
+
+# A second frozen ledger: two findings, a dedupe of one into the other, then a later `finding update` of the kept finding. The
+# hash is what the milestone 2 kernel (a8460cc) computed for it. Events settle in the order they were recorded, so the dedupe
+# links are replaced by the later update, not added to it twice.
+MILESTONE_2_DEDUPE_HASH = "sha256:c797354b801a0f494cd6e4a0a0fe5349979152a08527a836cc9280ef887e3d99"
+
+
+def test_state_hash_of_a_milestone_2_ledger_with_a_dedupe_then_an_update_is_unchanged():
+    events = json.loads((Path(__file__).parent / "milestone2-dedupe-events.json").read_text(encoding="utf-8"))
+    assert [e["type"] for e in events] == ["finding.opened", "finding.opened", "finding.deduplicated", "finding.updated"]
+    folded = state.fold(events)
+    assert folded["violations"] == [] and folded["findings"]["FND-001"]["links"]["duplicates"] == ["FND-002"]
+    assert state.state_hash(folded) == MILESTONE_2_DEDUPE_HASH
+
+
+def test_a_new_key_counts_once_it_holds_something():
+    base = state.fold([])
+    held = dict(base, worktrees={".qa/work/wt-0": {"commit": "0" * 40, "event": "EVT-1", "removed": None}})
+    assert state.state_hash(held) != state.state_hash(base)
+
+
+def test_new_record_keys_are_left_out_of_the_hash_while_empty():
+    base = state.fold([])
+    for key in ("requirements", "criteria", "assumptions", "risks", "testcases", "links"):
+        assert key in base and not base[key]
+    stripped = {k: v for k, v in base.items() if k not in ("requirements", "criteria", "assumptions", "risks", "testcases", "links")}
+    assert state.state_hash(base) == state.state_hash(stripped)
+    held = dict(base, links=[{"source": "AC-001.1", "relation": "verified_by", "target": "TC-001", "event": "EVT-1"}])
+    assert state.state_hash(held) != state.state_hash(base)

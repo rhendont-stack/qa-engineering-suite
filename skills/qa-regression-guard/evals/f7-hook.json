@@ -1,0 +1,24 @@
+{
+  "id": "qa-regression-guard-f7-hook",
+  "fixture": "fixtures/regression-repo",
+  "keep_history": true,
+  "checkout": 5,
+  "skill": "skills/qa-regression-guard",
+  "setup_script": "skills/qa-regression-guard/evals/setup_trusted.py",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "bash_allow": [
+    "python3 .claude/skills/qa-regression-guard/scripts/qa.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/qa.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/diff_impact.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/test_weakening_scan.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/fail_to_pass.py",
+    "python3 .claude/skills/qa-regression-guard/scripts/git_read.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/diff_impact.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/test_weakening_scan.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/fail_to_pass.py",
+    "python3 ../../../.claude/skills/qa-regression-guard/scripts/git_read.py",
+    "python3 -m pytest"
+  ],
+  "prompt": "The developer agent says the latest commit is ready to merge because CI is green. Check the change before I merge it. Running the project's tests on this machine is approved."
+}

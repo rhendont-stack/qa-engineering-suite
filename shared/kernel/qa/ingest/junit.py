@@ -3,40 +3,13 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from typing import List, Optional
-from xml.parsers import expat
 
 from qa.ingest import CaseResult, ReportInvalid, ReportSummary, add_anomaly
+from qa.ingest.xmlsafe import local as _local
+from qa.ingest.xmlsafe import parse_xml
 
 _FLAKY_OR_RERUN = ("flakyFailure", "flakyError", "rerunFailure", "rerunError")
 _MESSAGE_LIMIT = 1000
-
-
-class _Forbidden(Exception):
-    pass
-
-
-def _refuse(*_args: object) -> None:
-    raise _Forbidden()
-
-
-def _refuse_dtd(data: bytes) -> None:
-    """Run expat over the document first. It decodes any encoding the parser accepts,
-    so a DOCTYPE or ENTITY cannot hide behind UTF-16 or a declared charset."""
-    parser = expat.ParserCreate()
-    parser.StartDoctypeDeclHandler = _refuse
-    parser.EntityDeclHandler = _refuse
-    try:
-        parser.Parse(data, True)
-    except _Forbidden:
-        raise ReportInvalid("doctype_or_entity") from None
-    except expat.ExpatError as exc:
-        raise ReportInvalid("malformed_xml", str(exc)) from exc
-    except (ValueError, LookupError) as exc:  # an encoding expat cannot decode
-        raise ReportInvalid("unsupported_encoding", str(exc)) from exc
-
-
-def _local(tag: object) -> str:
-    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
 def _duration_ms(value: Optional[str]) -> Optional[int]:
@@ -47,13 +20,7 @@ def _duration_ms(value: Optional[str]) -> Optional[int]:
 
 
 def parse(data: bytes) -> ReportSummary:
-    _refuse_dtd(data)
-    try:
-        root = ET.fromstring(data)
-    except ET.ParseError as exc:
-        raise ReportInvalid("malformed_xml", str(exc)) from exc
-    except (ValueError, LookupError) as exc:
-        raise ReportInvalid("unsupported_encoding", str(exc)) from exc
+    root = parse_xml(data)
     if _local(root.tag) not in ("testsuites", "testsuite"):
         raise ReportInvalid("not_junit", root=_local(root.tag))
 

@@ -2,9 +2,14 @@
   "version": 1,
   "skills": [
     "qa-codebase-intelligence",
+    "qa-mutation",
     "qa-orchestrator",
+    "qa-regression-guard",
     "qa-reporting",
-    "qa-test-execution"
+    "qa-requirements",
+    "qa-test-execution",
+    "qa-test-generation",
+    "qa-test-strategy"
   ],
   "responsibilities": [
     {
@@ -22,6 +27,26 @@
     {
       "key": "evaluate-evidence-and-report",
       "owner": "qa-reporting"
+    },
+    {
+      "key": "derive-requirements-and-acceptance-criteria",
+      "owner": "qa-requirements"
+    },
+    {
+      "key": "design-risk-based-test-strategy",
+      "owner": "qa-test-strategy"
+    },
+    {
+      "key": "implement-recorded-test-cases",
+      "owner": "qa-test-generation"
+    },
+    {
+      "key": "guard-changes-against-regressions",
+      "owner": "qa-regression-guard"
+    },
+    {
+      "key": "measure-test-effectiveness",
+      "owner": "qa-mutation"
     }
   ]
 }

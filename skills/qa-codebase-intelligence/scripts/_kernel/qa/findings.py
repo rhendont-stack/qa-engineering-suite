@@ -26,7 +26,7 @@ from . import ids, ledger, resource_dir, schema, state
 from .canonical import hash_obj, loads
 from .errors import QaError
 from .ingest import Alert, ReportSummary
-from .vocab import MILESTONE_3_STATES, TRANSITIONS
+from .vocab import KERNEL_STATES, TRANSITIONS
 from .workspace import Workspace
 
 SEVERITIES = ("INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL")
@@ -378,8 +378,9 @@ def change_state(ws: Workspace, actor: ledger.Actor, fid: str, new_state: str, *
                  accepted_by: Optional[str] = None, expires_at: Optional[str] = None,
                  duplicate_of: Optional[str] = None) -> dict:
     """Move a finding along ``TRANSITIONS``; the fields a transition needs are checked, the others are recorded as null."""
-    if new_state in MILESTONE_3_STATES:
-        raise QaError("needs_milestone_3", "fixes and revalidation arrive in milestone 3", state=new_state)
+    if new_state in KERNEL_STATES:
+        raise QaError("set_by_fix_and_revalidation", "this state follows a recorded fix and its revalidation (qa fix add, qa revalidate)",
+                      state=new_state)
     with ws.lock():
         st = state.load(ws)
         current = st["findings"].get(fid)

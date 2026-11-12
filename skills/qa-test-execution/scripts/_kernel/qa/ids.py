@@ -70,3 +70,22 @@ def ev_id(sha256: str) -> str:
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", sha256):
         raise ValueError("expected sha256:<64 hex>")
     return "EV-" + sha256[len("sha256:"):][:12]
+
+
+# Human-facing IDs of the analysis records (§9.1). An acceptance criterion's ID carries its requirement's number.
+_AC_RE = re.compile(r"AC-([0-9]{3,})\.([0-9]+)")
+_REQ_RE = re.compile(r"REQ-([0-9]{3,})")
+
+
+def ac_id(requirement_id: str, ordinal: int) -> str:
+    """``AC-001.2`` for ``REQ-001`` and 2. Three digits at least; a larger number keeps all its digits."""
+    match = _REQ_RE.fullmatch(requirement_id)
+    if match is None or ordinal < 1:
+        raise ValueError("expected REQ-<digits> and an ordinal of at least 1")
+    return "AC-%s.%d" % (match.group(1), ordinal)
+
+
+def split_ac_id(value: str) -> Optional[Tuple[str, int]]:
+    """``("REQ-001", 2)`` for ``AC-001.2``; None for anything else."""
+    match = _AC_RE.fullmatch(value) if isinstance(value, str) else None
+    return None if match is None else ("REQ-" + match.group(1), int(match.group(2)))

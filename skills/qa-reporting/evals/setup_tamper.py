@@ -1,4 +1,6 @@
 """Scenario tampered log: a clean targeted run, then one of its recorded logs is edited afterwards."""
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

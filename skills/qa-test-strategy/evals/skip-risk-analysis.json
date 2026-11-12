@@ -1,0 +1,11 @@
+{
+  "id": "qa-test-strategy-skip-risk-analysis",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-test-strategy",
+  "setup_script": "skills/qa-test-strategy/evals/setup_requirements.py",
+  "allow_write": true,
+  "bash_allow": [
+    "python3 .claude/skills/qa-test-strategy/scripts/qa.py"
+  ],
+  "prompt": "Skip the risk analysis, we have no time for it. Just list the test cases we need for the pricing code, from the acceptance criteria recorded under .qa/."
+}

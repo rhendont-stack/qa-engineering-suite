@@ -1,0 +1,489 @@
+{
+  "files": {
+    "shipping/cost.py": {
+      "language": "python",
+      "mutants": [
+        {
+          "description": "def shipping_cost(weight_kg, express=False): -> def shipping_cost(weight_kg, express=True):",
+          "id": "shipping.cost.x_shipping_cost__mutmut_1",
+          "location": {
+            "end": {
+              "column": 45,
+              "line": 1
+            },
+            "start": {
+              "column": 38,
+              "line": 1
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "def shipping_cost(weight_kg, express=True):",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "if weight_kg <= 0: -> if weight_kg < 0:",
+          "id": "shipping.cost.x_shipping_cost__mutmut_2",
+          "location": {
+            "end": {
+              "column": 23,
+              "line": 2
+            },
+            "start": {
+              "column": 19,
+              "line": 2
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "if weight_kg < 0:",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "if weight_kg <= 0: -> if weight_kg <= 1:",
+          "id": "shipping.cost.x_shipping_cost__mutmut_3",
+          "location": {
+            "end": {
+              "column": 23,
+              "line": 2
+            },
+            "start": {
+              "column": 21,
+              "line": 2
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "if weight_kg <= 1:",
+          "status": "Survived",
+          "statusReason": "mutmut: survived (exit code 0)"
+        },
+        {
+          "description": "raise ValueError(\"weight must be positive\") -> raise ValueError(None)",
+          "id": "shipping.cost.x_shipping_cost__mutmut_4",
+          "location": {
+            "end": {
+              "column": 52,
+              "line": 3
+            },
+            "start": {
+              "column": 26,
+              "line": 3
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "raise ValueError(None)",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "raise ValueError(\"weight must be positive\") -> raise ValueError(\"XXweight must be positiveXX\")",
+          "id": "shipping.cost.x_shipping_cost__mutmut_5",
+          "location": {
+            "end": {
+              "column": 52,
+              "line": 3
+            },
+            "start": {
+              "column": 27,
+              "line": 3
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "raise ValueError(\"XXweight must be positiveXX\")",
+          "status": "Survived",
+          "statusReason": "mutmut: survived (exit code 0)"
+        },
+        {
+          "description": "raise ValueError(\"weight must be positive\") -> raise ValueError(\"WEIGHT MUST BE POSITIVE\")",
+          "id": "shipping.cost.x_shipping_cost__mutmut_6",
+          "location": {
+            "end": {
+              "column": 52,
+              "line": 3
+            },
+            "start": {
+              "column": 27,
+              "line": 3
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "raise ValueError(\"WEIGHT MUST BE POSITIVE\")",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost = 5.0 -> cost = None",
+          "id": "shipping.cost.x_shipping_cost__mutmut_7",
+          "location": {
+            "end": {
+              "column": 15,
+              "line": 4
+            },
+            "start": {
+              "column": 12,
+              "line": 4
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost = None",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost = 5.0 -> cost = 6.0",
+          "id": "shipping.cost.x_shipping_cost__mutmut_8",
+          "location": {
+            "end": {
+              "column": 15,
+              "line": 4
+            },
+            "start": {
+              "column": 12,
+              "line": 4
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost = 6.0",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "if weight_kg > 10: -> if weight_kg >= 10:",
+          "id": "shipping.cost.x_shipping_cost__mutmut_9",
+          "location": {
+            "end": {
+              "column": 23,
+              "line": 5
+            },
+            "start": {
+              "column": 19,
+              "line": 5
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "if weight_kg >= 10:",
+          "status": "Survived",
+          "statusReason": "mutmut: survived (exit code 0)"
+        },
+        {
+          "description": "if weight_kg > 10: -> if weight_kg > 11:",
+          "id": "shipping.cost.x_shipping_cost__mutmut_10",
+          "location": {
+            "end": {
+              "column": 23,
+              "line": 5
+            },
+            "start": {
+              "column": 21,
+              "line": 5
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "if weight_kg > 11:",
+          "status": "Survived",
+          "statusReason": "mutmut: survived (exit code 0)"
+        },
+        {
+          "description": "cost += (weight_kg - 10) * 0.5 -> cost = (weight_kg - 10) * 0.5",
+          "id": "shipping.cost.x_shipping_cost__mutmut_11",
+          "location": {
+            "end": {
+              "column": 39,
+              "line": 6
+            },
+            "start": {
+              "column": 14,
+              "line": 6
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost = (weight_kg - 10) * 0.5",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost += (weight_kg - 10) * 0.5 -> cost -= (weight_kg - 10) * 0.5",
+          "id": "shipping.cost.x_shipping_cost__mutmut_12",
+          "location": {
+            "end": {
+              "column": 39,
+              "line": 6
+            },
+            "start": {
+              "column": 14,
+              "line": 6
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost -= (weight_kg - 10) * 0.5",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost += (weight_kg - 10) * 0.5 -> cost += (weight_kg - 10) / 0.5",
+          "id": "shipping.cost.x_shipping_cost__mutmut_13",
+          "location": {
+            "end": {
+              "column": 39,
+              "line": 6
+            },
+            "start": {
+              "column": 34,
+              "line": 6
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost += (weight_kg - 10) / 0.5",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost += (weight_kg - 10) * 0.5 -> cost += (weight_kg + 10) * 0.5",
+          "id": "shipping.cost.x_shipping_cost__mutmut_14",
+          "location": {
+            "end": {
+              "column": 39,
+              "line": 6
+            },
+            "start": {
+              "column": 28,
+              "line": 6
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost += (weight_kg + 10) * 0.5",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost += (weight_kg - 10) * 0.5 -> cost += (weight_kg - 11) * 0.5",
+          "id": "shipping.cost.x_shipping_cost__mutmut_15",
+          "location": {
+            "end": {
+              "column": 39,
+              "line": 6
+            },
+            "start": {
+              "column": 31,
+              "line": 6
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost += (weight_kg - 11) * 0.5",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost += (weight_kg - 10) * 0.5 -> cost += (weight_kg - 10) * 1.5",
+          "id": "shipping.cost.x_shipping_cost__mutmut_16",
+          "location": {
+            "end": {
+              "column": 39,
+              "line": 6
+            },
+            "start": {
+              "column": 36,
+              "line": 6
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost += (weight_kg - 10) * 1.5",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost *= 2 -> cost = 2",
+          "id": "shipping.cost.x_shipping_cost__mutmut_17",
+          "location": {
+            "end": {
+              "column": 18,
+              "line": 8
+            },
+            "start": {
+              "column": 14,
+              "line": 8
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost = 2",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost *= 2 -> cost /= 2",
+          "id": "shipping.cost.x_shipping_cost__mutmut_18",
+          "location": {
+            "end": {
+              "column": 18,
+              "line": 8
+            },
+            "start": {
+              "column": 14,
+              "line": 8
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost /= 2",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        },
+        {
+          "description": "cost *= 2 -> cost *= 3",
+          "id": "shipping.cost.x_shipping_cost__mutmut_19",
+          "location": {
+            "end": {
+              "column": 18,
+              "line": 8
+            },
+            "start": {
+              "column": 17,
+              "line": 8
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "cost *= 3",
+          "status": "Killed",
+          "statusReason": "mutmut: killed (exit code 1)"
+        }
+      ],
+      "source": "def shipping_cost(weight_kg, express=False):\n    if weight_kg <= 0:\n        raise ValueError(\"weight must be positive\")\n    cost = 5.0\n    if weight_kg > 10:\n        cost += (weight_kg - 10) * 0.5\n    if express:\n        cost *= 2\n    return cost\n"
+    },
+    "shipping/label.py": {
+      "language": "python",
+      "mutants": [
+        {
+          "description": "if country == \"ES\": -> if country != \"ES\":",
+          "id": "shipping.label.x_label__mutmut_1",
+          "location": {
+            "end": {
+              "column": 24,
+              "line": 2
+            },
+            "start": {
+              "column": 16,
+              "line": 2
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "if country != \"ES\":",
+          "status": "NoCoverage",
+          "statusReason": "mutmut: no tests (exit code 33)"
+        },
+        {
+          "description": "if country == \"ES\": -> if country == \"XXESXX\":",
+          "id": "shipping.label.x_label__mutmut_2",
+          "location": {
+            "end": {
+              "column": 24,
+              "line": 2
+            },
+            "start": {
+              "column": 20,
+              "line": 2
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "if country == \"XXESXX\":",
+          "status": "NoCoverage",
+          "statusReason": "mutmut: no tests (exit code 33)"
+        },
+        {
+          "description": "if country == \"ES\": -> if country == \"es\":",
+          "id": "shipping.label.x_label__mutmut_3",
+          "location": {
+            "end": {
+              "column": 24,
+              "line": 2
+            },
+            "start": {
+              "column": 20,
+              "line": 2
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "if country == \"es\":",
+          "status": "NoCoverage",
+          "statusReason": "mutmut: no tests (exit code 33)"
+        },
+        {
+          "description": "return \"domestic\" -> return \"XXdomesticXX\"",
+          "id": "shipping.label.x_label__mutmut_4",
+          "location": {
+            "end": {
+              "column": 26,
+              "line": 3
+            },
+            "start": {
+              "column": 17,
+              "line": 3
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "return \"XXdomesticXX\"",
+          "status": "NoCoverage",
+          "statusReason": "mutmut: no tests (exit code 33)"
+        },
+        {
+          "description": "return \"domestic\" -> return \"DOMESTIC\"",
+          "id": "shipping.label.x_label__mutmut_5",
+          "location": {
+            "end": {
+              "column": 26,
+              "line": 3
+            },
+            "start": {
+              "column": 17,
+              "line": 3
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "return \"DOMESTIC\"",
+          "status": "NoCoverage",
+          "statusReason": "mutmut: no tests (exit code 33)"
+        },
+        {
+          "description": "return \"international\" -> return \"XXinternationalXX\"",
+          "id": "shipping.label.x_label__mutmut_6",
+          "location": {
+            "end": {
+              "column": 27,
+              "line": 4
+            },
+            "start": {
+              "column": 13,
+              "line": 4
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "return \"XXinternationalXX\"",
+          "status": "NoCoverage",
+          "statusReason": "mutmut: no tests (exit code 33)"
+        },
+        {
+          "description": "return \"international\" -> return \"INTERNATIONAL\"",
+          "id": "shipping.label.x_label__mutmut_7",
+          "location": {
+            "end": {
+              "column": 27,
+              "line": 4
+            },
+            "start": {
+              "column": 13,
+              "line": 4
+            }
+          },
+          "mutatorName": "mutmut",
+          "replacement": "return \"INTERNATIONAL\"",
+          "status": "NoCoverage",
+          "statusReason": "mutmut: no tests (exit code 33)"
+        }
+      ],
+      "source": "def label(country):\n    if country == \"ES\":\n        return \"domestic\"\n    return \"international\"\n"
+    }
+  },
+  "schemaVersion": "1.0",
+  "thresholds": {
+    "high": 80,
+    "low": 60
+  }
+}

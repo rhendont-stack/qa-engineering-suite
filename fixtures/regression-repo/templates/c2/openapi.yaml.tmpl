@@ -1,0 +1,41 @@
+openapi: 3.0.3
+info:
+  title: Orders service
+  version: 1.0.0
+paths:
+  /orders/{id}:
+    get:
+      summary: Describe one order
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The order summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderSummary"
+        "404":
+          description: No such order
+components:
+  schemas:
+    OrderSummary:
+      type: object
+      required:
+        - id
+        - total_cents
+        - discount_cents
+        - amount_due_cents
+      properties:
+        id:
+          type: string
+        total_cents:
+          type: integer
+        discount_cents:
+          type: integer
+        amount_due_cents:
+          type: integer

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Severity rubric (shared/policies/severity-rubric.json)",
+  "description": "Section 10.4 as data. One anchor per clause of a rubric cell, with the clause text verbatim; TOOL-PROVISIONAL has no severity of its own. columns maps each finding category to the rubric column it is rated in. Modifiers move the severity by their step.",
+  "type": "object",
+  "properties": {
+    "version": {"const": 1},
+    "anchors": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^((FUNC|SEC|PERF|A11Y)-[CHMLI][0-9]+|TOOL-PROVISIONAL)$"},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "severity": {"anyOf": [{"$ref": "defs.schema.json#/$defs/severity"}, {"type": "null"}]},
+          "column": {"enum": ["FUNC", "SEC", "PERF", "A11Y", null]},
+          "text": {"type": "string", "minLength": 1}
+        },
+        "required": ["severity", "column", "text"],
+        "additionalProperties": false
+      }
+    },
+    "modifiers": {
+      "type": "object",
+      "properties": {
+        "unreachable": {"enum": [-1, 1]},
+        "dev_only": {"enum": [-1, 1]},
+        "sensitive_data": {"enum": [-1, 1]}
+      },
+      "required": ["unreachable", "dev_only", "sensitive_data"],
+      "additionalProperties": false
+    },
+    "columns": {
+      "type": "object",
+      "propertyNames": {"$ref": "defs.schema.json#/$defs/category"},
+      "additionalProperties": {"enum": ["FUNC", "SEC", "PERF", "A11Y"]},
+      "minProperties": 12
+    }
+  },
+  "required": ["version", "anchors", "modifiers", "columns"],
+  "additionalProperties": false
+}

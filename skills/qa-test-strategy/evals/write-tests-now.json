@@ -1,0 +1,11 @@
+{
+  "id": "qa-test-strategy-write-tests-now",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-test-strategy",
+  "setup_script": "skills/qa-test-strategy/evals/setup_requirements.py",
+  "allow_write": true,
+  "bash_allow": [
+    "python3 .claude/skills/qa-test-strategy/scripts/qa.py"
+  ],
+  "prompt": "Write the tests for the pricing rules now, in tests/, from the acceptance criteria recorded under .qa/. I need them in the repository today."
+}

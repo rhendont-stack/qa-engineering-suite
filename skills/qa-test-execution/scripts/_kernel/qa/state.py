@@ -3,19 +3,24 @@ from __future__ import annotations
 import copy
 from typing import Callable, Dict, Iterable, Optional, Set
 
-from . import authority, ledger, schema
+from . import authority, ledger, regression, schema
 from .canonical import hash_obj
 from .errors import QaError
 from .status import can_reclassify
-from .vocab import TRANSITIONS
+from .vocab import FIX_TRANSITIONS, TRANSITIONS
 from .workspace import Workspace, config_bytes, write_atomic
 
 # State keys. Dict keys are keyed by ID; blocked_commands and violations are lists.
 _KEYS = ("executions", "results", "tests", "findings", "authorizations", "config",
-         "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads")
-_LISTS = ("blocked_commands", "violations")
+         "blocked_commands", "gates", "reports", "plans", "bundles", "violations", "heads", "worktrees",
+         "requirements", "criteria", "assumptions", "risks", "testcases", "links", "fixes", "revalidations", "files")
+_LISTS = ("blocked_commands", "violations", "links")
 # Derived from evaluation or rendering, or about the work rather than the evidence, so excluded from state_hash.
 _UNHASHED = ("gates", "reports", "plans", "heads")
+# Keys added after milestone 2. While one is empty it is left out of state_hash, so a ledger that predates the key keeps the hash
+# it had (a bundle and a gate.evaluated record that hash). Once it holds something it counts like any other key.
+_UNHASHED_WHEN_EMPTY = ("worktrees", "requirements", "criteria", "assumptions", "risks", "testcases", "links",
+                         "fixes", "revalidations", "files")
 
 
 def empty_state() -> dict:
@@ -105,6 +110,212 @@ def _execution_recorded(state: dict, event: dict) -> None:
         _violation(state, event, "duplicate_id")
         return
     state["executions"][data["id"]] = dict(copy.deepcopy(data), ingested=[])
+
+
+def _worktree_created(state: dict, event: dict) -> None:
+    data = event["data"]
+    known = state["worktrees"].get(data["path"])
+    if known is not None and known["removed"] is None:  # the first record of an open worktree stays
+        _violation(state, event, "duplicate_path")
+        return
+    state["worktrees"][data["path"]] = {"commit": data["commit"], "event": event["id"], "removed": None}
+
+
+def _worktree_removed(state: dict, event: dict) -> None:
+    known = state["worktrees"].get(event["data"]["path"])
+    if known is None or known["removed"] is not None:
+        _violation(state, event, "unknown_worktree")
+        return
+    known["removed"] = event["id"]
+
+
+# Files the suite wrote (§12.4): {path: [change record, ...]} in fold order. file.created and file.modified are plain records
+# and always fold. The user's approval of changing a tracked file is its own signed event, file.modification_approved, which
+# folds only when its MAC verifies; it attaches to the modification of the same path and bytes, and one that matches nothing
+# is a ``stale_approval``. fold drops the internal list before it returns.
+_FILE_APPROVALS = "_file_approvals"
+
+
+def _file_recorded(kind: str) -> Callable[[dict, dict], None]:
+    def reduce(state: dict, event: dict) -> None:
+        data = event["data"]
+        record = {"kind": kind, "sha256": data["sha256"], "event": event["id"], "grant": data["grant"],
+                  "testcase": data["testcase"], "approval": None}
+        for flag in ("tracked", "git_unknown"):  # stored only when true: a false flag carries nothing into the state hash
+            if data.get(flag) is True:
+                record[flag] = True
+        state["files"].setdefault(data["path"], []).append(record)
+    return reduce
+
+
+def _file_approved(state: dict, event: dict) -> None:
+    state.setdefault(_FILE_APPROVALS, []).append(event)
+
+
+def _settle_file_approvals(state: dict) -> None:
+    for event in state.pop(_FILE_APPROVALS, []):
+        data = event["data"]
+        matches = [r for r in state["files"].get(data["path"], [])
+                   if r["kind"] == "modified" and r.get("tracked") and r["sha256"] == data["sha256"]]
+        if not matches:
+            _violation(state, event, "stale_approval")
+        for record in matches:
+            if record["approval"] is None:  # the first approval of these bytes stays
+                record["approval"] = {"event": event["id"], "approval": data["approval"], "justification": data["justification"]}
+
+
+# Analysis records (§9.1). Each upsert replaces the whole record under its id. What a person decides is kept beside the record,
+# never inside what its author wrote: a requirement's ``confirmed`` and an assumption's ``status``, ``confirmed_by`` and
+# ``approval``. Those come from signed events, which fold only when their MAC verifies (authority.CONFERRING), and a changed
+# statement drops them, so an approval never outlives the words it approved.
+
+def statement_hash(statement: str) -> str:
+    """What a signed decision binds: the words approved. A replayed line cannot approve different words."""
+    return hash_obj(statement)
+
+
+def _requirement_upserted(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = copy.deepcopy(data)
+    prior = state["requirements"].get(data["id"])
+    if prior is not None and "confirmed" in prior and prior["statement"] == data["statement"]:
+        record["confirmed"] = prior["confirmed"]
+    state["requirements"][data["id"]] = record
+
+
+def _requirement_confirmed(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = state["requirements"].get(data["id"])
+    if record is None:
+        _violation(state, event, "unknown_requirement")
+    elif data.get("statement_hash") != statement_hash(record["statement"]):
+        _violation(state, event, "stale_confirmation")  # signed for words the requirement no longer has
+    else:
+        record["confirmed"] = {"approval": data["approval"], "event": event["id"]}
+
+
+def _criterion_upserted(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["requirement"] not in state["requirements"]:
+        _violation(state, event, "unknown_requirement")
+        return
+    state["criteria"][data["id"]] = copy.deepcopy(data)
+
+
+def _assumption_upserted(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = dict(copy.deepcopy(data), status="open")
+    prior = state["assumptions"].get(data["id"])
+    if prior is not None and prior["statement"] == data["statement"]:
+        record.update({name: prior[name] for name in ("status", "confirmed_by", "approval") if name in prior})
+    state["assumptions"][data["id"]] = record
+
+
+def _assumption_decided(state: dict, event: dict) -> None:
+    data = event["data"]
+    record = state["assumptions"].get(data["id"])
+    if record is None:
+        _violation(state, event, "unknown_assumption")
+    elif data.get("statement_hash") != statement_hash(record["statement"]):
+        _violation(state, event, "stale_decision")
+    else:
+        record.update(status=data["status"], confirmed_by=data["confirmed_by"], approval=data["approval"])
+
+
+def _stored(key: str) -> Callable[[dict, dict], None]:
+    def reduce(state: dict, event: dict) -> None:
+        state[key][event["data"]["id"]] = copy.deepcopy(event["data"])
+    return reduce
+
+
+def _trace_linked(state: dict, event: dict) -> None:
+    """Append the link, once. Whether source and target exist is not judged here: the commands that record a link check it
+    when they record it, and ``trace`` (milestone 3) reports a link whose end is missing as a gap."""
+    data = event["data"]
+    if not any(link["source"] == data["source"] and link["relation"] == data["relation"] and link["target"] == data["target"]
+               for link in state["links"]):
+        state["links"].append(dict(copy.deepcopy(data), event=event["id"]))
+
+
+def _fix_recorded(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["fixes"]:  # the first record stays
+        _violation(state, event, "duplicate_id")
+        return
+    if data["base_commit"] == data["fix_commit"]:  # no change was made, so nothing can be shown to have fixed anything
+        _violation(state, event, "same_commit")
+        return
+    if not data["description"].strip():
+        _violation(state, event, "invalid_data")
+        return
+    state["fixes"][data["id"]] = copy.deepcopy(data)
+    _queue(state, event)
+
+
+def _settle_fix_recorded(state: dict, event: dict) -> None:
+    """Each finding that can take a fix becomes fix_submitted; the finding remembers which fix, so only that fix's revalidation moves it."""
+    data = event["data"]
+    for fid in data["findings"]:
+        finding = state["findings"].get(fid)
+        if finding is None:
+            _violation(state, event, "unknown_finding")
+        elif "fix_submitted" not in FIX_TRANSITIONS.get(finding["state"], ()):
+            _violation(state, event, "invalid_transition")
+        else:
+            finding.update(state="fix_submitted", state_reason="fix " + data["id"] + " submitted", fix=data["id"])
+
+
+# Fold-internal: {revalidation event id: what the state held at that event's position says}, decided when the event reduces and
+# applied when it settles. fold drops the key before it returns.
+_REVALIDATIONS = "_revalidations"
+
+
+def _revalidation_recorded(state: dict, event: dict) -> None:
+    """Trust: the outcome is derived from the executions and results the state holds at this event's position in the fold,
+    never from the final state, so a later reclassification or result cannot rewrite a past revalidation. The recorded outcome
+    is only a claim: one that differs is a violation and the derived one is used, so writing ``passed`` verifies nothing."""
+    data = event["data"]
+    fix = state["fixes"].get(data["fix"])
+    if fix is None:
+        verdict: tuple = ("violation", "unknown_fix")
+    else:
+        f2p, p2p = (data["f2p"]["base"], data["f2p"]["head"]), (data["p2p"]["base"], data["p2p"]["head"])
+        used = set(f2p) | set(p2p)
+        view = {"executions": dict(state["executions"]),
+                "results": {rid: dict(r) for rid, r in state["results"].items() if r["execution"] in used}}
+        for pending in state.get(_SETTLE, []):  # reclassifications recorded before this event, not yet settled
+            if pending["type"] == "result.reclassified":
+                result = view["results"].get(pending["data"]["result"])
+                if result is not None and can_reclassify(result["status"], pending["data"]["new_status"]):
+                    result["status"] = pending["data"]["new_status"]
+        try:
+            regression.check_inputs(view, fix, f2p, p2p)
+            verdict = ("derived", regression.derive(view, fix, f2p, p2p, data["defect_tests"]))
+        except regression.Refused as refused:
+            verdict = ("violation", refused.code)
+    state.setdefault(_REVALIDATIONS, {})[event["id"]] = verdict
+    _queue(state, event)
+
+
+def _settle_revalidation_recorded(state: dict, event: dict) -> None:
+    data = event["data"]
+    if data["id"] in state["revalidations"]:  # also the same line twice: one verdict is kept per event id, fold drops them
+        _violation(state, event, "duplicate_id")
+        return
+    kind, payload = state[_REVALIDATIONS][event["id"]]
+    if kind == "violation":
+        _violation(state, event, payload)
+        return
+    fix = state["fixes"][data["fix"]]
+    if payload["outcome"] != data["outcome"]:
+        _violation(state, event, "outcome_mismatch")
+    state["revalidations"][data["id"]] = dict(copy.deepcopy(data), outcome=payload["outcome"], reason=payload["reason"],
+                                              fix_commit=fix["fix_commit"], base_commit=fix["base_commit"], event=event["id"])
+    new = {"passed": "verified_fixed", "failed": "reopened"}.get(payload["outcome"])
+    for fid in fix["findings"]:
+        finding = state["findings"].get(fid)
+        if new is not None and finding is not None and finding["state"] == "fix_submitted" and finding.get("fix") == fix["id"]:
+            finding.update(state=new, state_reason="revalidation %s %s" % (data["id"], payload["outcome"]))
 
 
 def _result_recorded(state: dict, event: dict) -> None:
@@ -286,7 +497,8 @@ _SETTLERS = {"result.recorded": _settle_result, "result.reclassified": _settle_r
              "finding.state_changed": _settle_finding_state_changed,
              "finding.deduplicated": _settle_finding_deduplicated,
              "gate.policy_accepted": _settle_gate_policy_accepted, "plan.step_updated": _settle_plan_step_updated,
-             "bundle.compared": _settle_bundle_compared}
+             "bundle.compared": _settle_bundle_compared, "fix.recorded": _settle_fix_recorded,
+             "revalidation.recorded": _settle_revalidation_recorded}
 
 
 def known_references(st: dict) -> Set[str]:
@@ -382,6 +594,21 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "plan.step_updated": _queue,
     "bundle.ingested": _bundle_ingested,
     "bundle.compared": _queue,
+    "worktree.created": _worktree_created,
+    "worktree.removed": _worktree_removed,
+    "requirement.upserted": _requirement_upserted,
+    "requirement.confirmed": _requirement_confirmed,
+    "criterion.upserted": _criterion_upserted,
+    "assumption.upserted": _assumption_upserted,
+    "assumption.decided": _assumption_decided,
+    "risk.upserted": _stored("risks"),
+    "testcase.upserted": _stored("testcases"),
+    "trace.linked": _trace_linked,
+    "fix.recorded": _fix_recorded,
+    "revalidation.recorded": _revalidation_recorded,
+    "file.created": _file_recorded("created"),
+    "file.modified": _file_recorded("modified"),
+    "file.modification_approved": _file_approved,
 }
 
 
@@ -420,6 +647,8 @@ def fold(events: Iterable[dict], backed: Optional[Callable[[dict], bool]] = None
     _forget_revocations(state, withheld_grants)
     state.pop(_EARLY_REVOCATIONS, None)  # its violations stay: no grant in the ledger holds those ids
     _settle(state)
+    _settle_file_approvals(state)
+    state.pop(_REVALIDATIONS, None)
     return state
 
 
@@ -440,4 +669,5 @@ def rebuild(ws: Workspace) -> dict:
 
 
 def state_hash(state: dict) -> str:
-    return hash_obj({k: v for k, v in state.items() if k not in _UNHASHED})
+    return hash_obj({k: v for k, v in state.items()
+                     if k not in _UNHASHED and not (k in _UNHASHED_WHEN_EMPTY and not v)})

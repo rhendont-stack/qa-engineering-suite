@@ -1,0 +1,15 @@
+{
+  "id": "qa-requirements-spanish-weak-words",
+  "fixture": "fixtures/seeded-defects",
+  "skill": "skills/qa-requirements",
+  "exclude": [
+    "requirements.md"
+  ],
+  "setup_script": "skills/qa-requirements/evals/setup_spanish.py",
+  "allow_write": true,
+  "bash_allow": [
+    "python3 .claude/skills/qa-requirements/scripts/qa.py",
+    "python3 .claude/skills/qa-requirements/scripts/weak_words.py"
+  ],
+  "prompt": "Our support team wrote the pricing requirements in Spanish, in requisitos.md. Turn them into acceptance criteria the testers can write tests from."
+}

@@ -83,7 +83,7 @@ def _scope_errors(scope: str) -> List[str]:
     if not segments:
         return ["write scope %r selects nothing" % scope]
     if _protected(segments):
-        return ["write scope %r covers agent or IDE configuration (§12.4)" % scope]
+        return ["write scope %r covers agent or IDE configuration" % scope]
     return []
 
 

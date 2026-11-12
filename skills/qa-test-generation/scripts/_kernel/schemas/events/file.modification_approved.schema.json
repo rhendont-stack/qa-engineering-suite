@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "file.modification_approved event data",
+  "description": "The user approved changing a file git tracks: why it was changed (justification) and their words (approval). sha256 is the hash of the bytes approved, inside the MAC; the state honours the approval only for a file.modified record of the same path and sha256. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority and folds to nothing.",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string", "minLength": 1},
+    "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "justification": {"type": "string", "minLength": 1},
+    "approval": {"type": "string", "minLength": 1},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
+  },
+  "required": ["path", "sha256", "justification", "approval"],
+  "additionalProperties": false
+}

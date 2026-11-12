@@ -1,6 +1,6 @@
 # blocked-env
 
-A project whose test commands cannot give a plain answer. Each one is run through `qa run`.
+A project whose test commands cannot give a plain result. Each one is run through `qa run`.
 
 Run the project's tests with:
 

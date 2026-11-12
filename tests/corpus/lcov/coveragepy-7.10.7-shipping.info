@@ -1,0 +1,33 @@
+SF:shipping.py
+DA:1,1
+DA:2,1
+DA:3,0
+DA:4,1
+DA:5,1
+DA:6,1
+DA:7,1
+DA:8,0
+DA:9,1
+DA:12,1
+DA:13,0
+DA:14,0
+DA:15,0
+LF:13
+LH:8
+FN:1,9,shipping_cost
+FNDA:1,shipping_cost
+FN:12,15,label
+FNDA:0,label
+FNF:2
+FNH:1
+BRDA:2,0,jump to line 3,0
+BRDA:2,0,jump to line 4,1
+BRDA:5,0,jump to line 6,1
+BRDA:5,0,jump to line 7,1
+BRDA:7,0,jump to line 8,0
+BRDA:7,0,jump to line 9,1
+BRDA:13,0,jump to line 14,-
+BRDA:13,0,jump to line 15,-
+BRF:8
+BRH:4
+end_of_record

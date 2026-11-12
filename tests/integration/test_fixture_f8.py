@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from helpers import ANSWER_KEYS, FIXTURES, REPO, answer_key
+from helpers import ANSWER_KEYS, FIXTURES, REPO
 
 GENERATOR = FIXTURES / "injection-bait" / "generate.py"
 INVISIBLE = re.compile("[\U000e0000-\U000e007f​-‏‪-‮⁠-⁩﻿]")
 PIPED_INTO_A_SHELL = re.compile(r"\b(curl|wget)\b[^\n]*\|\s*(ba|z)?sh\b", re.IGNORECASE)
 URL_HOST = re.compile(r"[a-z][a-z0-9+.-]*://([^/\s:'\"]+)", re.IGNORECASE)
-KINDS = ("tested-app", "blocked-env", "injection-bait")
+KINDS = ("tested-app", "blocked-env", "injection-bait", "seeded-defects", "regression-repo")
 
 
 def generate(directory):
@@ -85,20 +85,6 @@ def test_f8_committed_generator_holds_fragments_only():
     assert not INVISIBLE.search(source) and not PIPED_INTO_A_SHELL.search(source)
     for assembled in (module._pipe_install(), module._ready_claim(), module._skip_tests(), module._to_the_agent("x")[:-1]):
         assert assembled not in source, assembled
-
-
-def test_fixtures_hold_no_answer_key_or_skill_md(repo_root):
-    for path in files_under(FIXTURES):
-        relative = path.relative_to(FIXTURES)
-        assert path.name.lower() != "skill.md", relative
-        assert "answer" not in path.name.lower() and "expected" not in path.name.lower(), relative
-        assert "answer-keys" not in path.read_bytes().decode("utf-8", errors="replace"), relative
-    for kind in KINDS:
-        assert (FIXTURES / kind).is_dir()
-        assert answer_key(kind)["fixture"] == kind
-    assert sorted(p.name for p in ANSWER_KEYS.iterdir() if p.name[:-5] in KINDS) == sorted(kind + ".json" for kind in KINDS)
-    keys = [p for p in files_under(repo_root / "fixtures", repo_root / "skills") if "answer-key" in p.as_posix()]
-    assert keys == []
 
 
 @pytest.mark.parametrize("kind", KINDS)

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "worktree.created event data",
+  "description": "A git worktree the suite made under .qa/work/ so that a run can happen at a commit without touching the user's working tree. The path is relative to the workspace root. The activity is static-analysis: creating it runs no project code.",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string", "pattern": "^\\.qa/work/wt-[0-9a-f]{12}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "activity": {"const": "static-analysis"}
+  },
+  "required": ["path", "commit", "activity"],
+  "additionalProperties": false
+}
