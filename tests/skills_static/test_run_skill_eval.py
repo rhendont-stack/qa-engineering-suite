@@ -196,7 +196,9 @@ def world(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     exe = bin_dir / "claude"
-    exe.write_text(FAKE.replace("FAKE_SOURCE_PLACEHOLDER", FAKE_SOURCE).replace("#!/usr/bin/env python3", "#!" + sys.executable, 1))   # runs with a system-only PATH too
+    text = FAKE.replace("FAKE_SOURCE_PLACEHOLDER", FAKE_SOURCE).replace("#!/usr/bin/env python3", "#!" + sys.executable, 1)   # runs with a system-only PATH too
+    assert text.startswith("#!" + sys.executable + "\n")
+    exe.write_text(text)
     exe.chmod(0o755)
 
     fixture = tmp_path / "fixture"
