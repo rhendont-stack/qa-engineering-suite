@@ -162,28 +162,55 @@ def test_unicode_scan_writes_an_absolute_output_only_as_a_new_file_in_the_eviden
             module.write_bytes(bad, b"{}", tmp_path)
 
 
+def sarif_hits(root):
+    report = json.loads((root / ".qa" / "work" / "security" / "unicode.sarif").read_text(encoding="utf-8"))
+    return sorted((r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], r["ruleId"],
+                   r["locations"][0]["physicalLocation"]["region"]["startLine"], r["locations"][0]["physicalLocation"]["region"]["startColumn"])
+                  for r in report["runs"][0]["results"])
+
+
 def test_unicode_scan_numbers_lines_as_an_editor_does_and_counts_what_it_skips(tmp_path):
     module = load(UNICODE, "qa_security_unicode_scan_l")
     text = "one\u2028still one\x85still one\r\ntwo\rthree\na%sb\n" % BIDI_CHARS[0]
     assert [hit[1] for hit in module.scan_text(text)] == [4]
     root = tmp_path / "p"
     root.mkdir()
-    (root / "wide.txt").write_bytes(("x" + EN_PHRASE).encode("utf-16"))
-    (root / "wide-le.txt").write_bytes(("x" + EN_PHRASE).encode("utf-16-le"))
     (root / "blob.bin").write_bytes(b"\x00\x01\x02" + EN_PHRASE.encode())
+    (root / "cut.txt").write_bytes(("x" + EN_PHRASE).encode("utf-16-le") + b"A")      # UTF-16 cut short: no reading decodes
+    (root / "surrogate.txt").write_bytes(b"\xff\xfe" + b"\x00\xd8\x41\x00")            # a mark, then a lone surrogate
+    (root / "nul.txt").write_bytes(b"\xff\xfe" + b"A\x00B")                              # odd, and not text as UTF-8 either
     code, out, err = run(UNICODE, cwd=root)
-    assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"]) == (0, 2, 1, 0), (out, err)
-    for mark in (b"\xff\xfe", b"\xfe\xff"):                     # a byte-order mark alone, then single-byte text: scanned
-        assert module.utf16(mark + ("x " + EN_PHRASE).encode()) is False
-        assert module.utf16(mark + ("x " + EN_PHRASE).encode("utf-16-le" if mark == b"\xff\xfe" else "utf-16-be")) is True
-    (root / "marked.txt").write_bytes(b"\xff\xfe" + ("x\n" + EN_PHRASE + "\n").encode())
-    (root / "marked-be.txt").write_bytes(b"\xfe\xff" + ("x\n" + EN_PHRASE + "\n").encode())
+    assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"], out["results"]) == (0, 3, 1, 0, 0), (out, err)
+
+
+def test_unicode_scan_decodes_utf16_and_scans_a_mark_before_single_byte_text(tmp_path):
+    module = load(UNICODE, "qa_security_unicode_scan_w")
+    root = tmp_path / "p"
+    root.mkdir()
+    cyrillic = "".join(chr(n) for n in (0x041F, 0x0440, 0x0438, 0x0432, 0x0435, 0x0442))       # a word in Cyrillic
+    han = "".join(chr(n) for n in (0x4E2D, 0x6587, 0x6D4B, 0x8BD5))
+    files = {
+        "wide.txt": ("x " + EN_PHRASE).encode("utf-16"),                                     # a mark, Latin text
+        "wide-le.txt": ("x " + EN_PHRASE).encode("utf-16-le"),                               # no mark: the NUL pattern
+        "wide-be.txt": ("x\n" + ES_PHRASE).encode("utf-16-be"),
+        "cyrillic.txt": ("%s %s\n%s %s %s\n" % (cyrillic, cyrillic, cyrillic, BIDI_CHARS[1], cyrillic)).encode("utf-16"),
+        "han.txt": (han + BIDI_CHARS[2] + han).encode("utf-16"),                              # no NUL byte at all
+        "tags.txt": "".join(chr(0xE0000 + ord(c)) for c in "hidden").encode("utf-16"),       # tag characters only
+        "marked.txt": b"\xff\xfe" + ("x\n" + EN_PHRASE + "\n").encode(),                     # a mark alone, then ASCII
+        "marked-be.txt": b"\xfe\xff" + ("xy\n" + EN_PHRASE + "\n").encode(),
+    }
+    for name, data in files.items():
+        (root / name).write_bytes(data)
+    assert module.utf16_order(files["wide-le.txt"]) == "utf-16-le" and module.utf16_order(files["wide-be.txt"]) == "utf-16-be"
+    assert module.utf16_order(files["han.txt"]) is None and module.utf16_order(files["marked.txt"][2:]) is None
     code, out, err = run(UNICODE, cwd=root)
-    assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"]) == (0, 2, 1, 2), (out, err)
-    report = json.loads((root / ".qa" / "work" / "security" / "unicode.sarif").read_text(encoding="utf-8"))
-    hits = sorted((r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], r["locations"][0]["physicalLocation"]["region"]["startLine"])
-                  for r in report["runs"][0]["results"] if r["ruleId"] == "qa-injection-marker")
-    assert hits == [("marked-be.txt", 2), ("marked.txt", 2)], report
+    assert (code, out["skipped"], out["files_scanned"]) == (0, {"large": 0, "utf16": 0, "binary": 0, "vanished": 0, "missing": 0}, 8), (out, err)
+    assert sarif_hits(root) == sorted([
+        ("wide.txt", "qa-injection-marker", 1, 3), ("wide-le.txt", "qa-injection-marker", 1, 3),
+        ("wide-be.txt", "qa-injection-marker", 2, 1),
+        ("cyrillic.txt", "qa-bidi-control", 2, 8), ("han.txt", "qa-bidi-control", 1, 5),
+        ("marked.txt", "qa-injection-marker", 2, 1), ("marked-be.txt", "qa-injection-marker", 2, 1)]
+        + [("tags.txt", "qa-unicode-tag-character", 1, n) for n in range(1, 7)]), (out, err)
 
 
 def test_unicode_scan_skips_a_file_that_vanishes_during_the_walk(tmp_path):
@@ -199,7 +226,7 @@ def test_unicode_scan_skips_a_file_that_vanishes_during_the_walk(tmp_path):
     assert [p.name for p in walk] == ["c.txt"] and counts["vanished"] == 1
     gone = root / "c.txt"
     gone.unlink()
-    assert module.read_text(gone, counts) is None and counts["vanished"] == 2
+    assert module.read_texts(gone, counts) is None and counts["vanished"] == 2
 
 
 def test_unicode_scan_copies_itself_for_a_container_run(tmp_path):

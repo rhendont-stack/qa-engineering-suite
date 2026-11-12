@@ -15,11 +15,18 @@ Three rules, per line of every text file under the given paths (default ``.``):
 A result says the rule, the file, the line and column, and for a character its code point. It never quotes the line: the text
 found may be addressed to whoever reads the report. Lines are numbered on ``\n``, ``\r\n`` and ``\r`` only, as an editor
 numbers them. Directories ``.git``, ``.qa``, ``.qa-input``, ``.claude``, ``node_modules``, ``__pycache__`` and ``.venv*`` are
-skipped; links are never followed. Skipped and counted in the summary's ``skipped``: files over 2 MiB (``large``), UTF-16 text
-(``utf16``: NUL bytes at every other position of the first 8 KiB, after a UTF-16 byte-order mark if there is one; its tags
-and controls are not scanned; a byte-order mark followed by single-byte text is read as UTF-8 and scanned), other files
-holding a NUL byte in their first 8 KiB (``binary``), files that vanished or could not be opened during the walk
-(``vanished``), and given paths that do not exist (``missing``).
+skipped; links are never followed.
+
+A file is read as UTF-8, an undecodable byte becoming U+FFFD, except UTF-16 text, which is decoded and scanned too: a file
+that starts with a UTF-16 byte-order mark is decoded as UTF-16, and its bytes after the mark are also scanned as UTF-8 when
+they are valid UTF-8 with no NUL (a mark before single-byte text; a hit may then come from either reading). A file with no
+mark and NUL bytes at nine in ten of the odd (or even) positions of its first 8 KiB is decoded as UTF-16 in that byte order.
+These readings are strict: one that does not decode is not made. UTF-16 text with no mark and no such NUL pattern (only
+non-Latin characters) is read as UTF-8.
+
+Skipped and counted in the summary's ``skipped``, never as scanned: files over 2 MiB (``large``), UTF-16 files that no
+reading decodes (``utf16``), other files holding a NUL byte in their first 8 KiB (``binary``), files that vanished or could
+not be opened during the walk (``vanished``), and given paths that do not exist (``missing``).
 
 ``--out`` is a path under ``.qa/work/security/`` (default ``.qa/work/security/unicode.sarif``), or, inside a container run,
 a new file directly in ``/qa-evidence/``. ``--copy-to-work`` copies this file to ``.qa/work/security/unicode_scan.py`` for a
@@ -186,18 +193,52 @@ def files_under(paths: Sequence[str], counts: Dict[str, int]) -> Iterator[Path]:
                     yield path
 
 
-def utf16(head: bytes) -> bool:
-    """NUL bytes at nine in ten of the odd (or the even) positions and at fewer than half of the others, counted after a UTF-16
-    byte-order mark when there is one. A byte-order mark alone is not enough: a file can start with one and hold single-byte
-    text, which is then read as UTF-8 and scanned."""
-    body = head[2:] if head[:2] in (b"\xff\xfe", b"\xfe\xff") else head
-    if len(body) < 4:
-        return False
-    odd, even = body[1::2], body[0::2]
-    return any(a.count(0) >= 0.9 * len(a) and b.count(0) < 0.5 * len(b) for a, b in ((odd, even), (even, odd)))
+BYTE_ORDER_MARKS = (b"\xff\xfe", b"\xfe\xff")
 
 
-def read_text(path: Path, counts: Dict[str, int]) -> Optional[str]:
+def utf16_order(head: bytes) -> Optional[str]:
+    """``utf-16-le`` (or ``utf-16-be``) when NUL bytes stand at nine in ten of the odd (or the even) positions of ``head`` and at
+    fewer than half of the others, as in mostly Latin UTF-16 text with no byte-order mark; else None."""
+    if len(head) < 4:
+        return None
+    odd, even = head[1::2], head[0::2]
+    if odd.count(0) >= 0.9 * len(odd) and even.count(0) < 0.5 * len(even):
+        return "utf-16-le"
+    if even.count(0) >= 0.9 * len(even) and odd.count(0) < 0.5 * len(odd):
+        return "utf-16-be"
+    return None
+
+
+def decodings(data: bytes) -> Optional[List[str]]:
+    """The readings of a file to scan, or None when it is UTF-16 that no reading decodes. After a UTF-16 byte-order mark: the
+    text decoded as UTF-16, and also the bytes after the mark decoded as UTF-8 when they are valid UTF-8 holding no NUL (a mark
+    can stand before single-byte text, which decodes as UTF-16 too, into other scripts). With no mark but the NUL pattern of
+    ``utf16_order``: the text decoded in that byte order. Decoding is strict, so a reading is never made of replacement
+    characters."""
+    if data[:2] in BYTE_ORDER_MARKS:
+        found = []
+        try:
+            found.append(data.decode("utf-16"))           # the mark gives the byte order and is dropped
+        except UnicodeDecodeError:
+            pass
+        try:
+            single = data[2:].decode("utf-8")
+        except UnicodeDecodeError:
+            single = None
+        if single is not None and "\x00" not in single:
+            found.append(single)
+        return found or None
+    order = utf16_order(data[:8192])
+    if order is None:
+        return [data.decode("utf-8", "replace")]
+    try:
+        return [data.decode(order)]
+    except UnicodeDecodeError:
+        return None
+
+
+def read_texts(path: Path, counts: Dict[str, int]) -> Optional[List[str]]:
+    """The readings of ``path`` to scan (``decodings``), or None when it is skipped, counted under its reason."""
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:                               # gone, or replaced by a link, since the walk saw it
@@ -208,13 +249,15 @@ def read_text(path: Path, counts: Dict[str, int]) -> Optional[str]:
     if len(data) > MAX_BYTES:
         counts["large"] += 1
         return None
-    if utf16(data[:8192]):
-        counts["utf16"] += 1
-        return None
+    if data[:2] in BYTE_ORDER_MARKS or utf16_order(data[:8192]):
+        readings = decodings(data)
+        if readings is None:
+            counts["utf16"] += 1
+        return readings
     if b"\x00" in data[:8192]:
         counts["binary"] += 1
         return None
-    return data.decode("utf-8", "replace")
+    return decodings(data)
 
 
 def uri_of(path: Path) -> str:
@@ -253,11 +296,14 @@ def scan(paths: Sequence[str]) -> Tuple[Dict[str, object], Dict[str, int], int]:
     results: List[Dict[str, object]] = []
     scanned = 0
     for path in files_under(paths, counts):
-        text = read_text(path, counts)
-        if text is None:
+        readings = read_texts(path, counts)
+        if readings is None:
             continue
         scanned += 1
-        for rule, line, column, message in scan_text(text):
+        hits = []
+        for text in readings:
+            hits += [hit for hit in scan_text(text) if hit not in hits]
+        for rule, line, column, message in hits:
             results.append({"ruleId": rule, "ruleIndex": RULE_INDEX[rule], "level": "warning", "message": {"text": message},
                             "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri_of(path)},
                                                                 "region": {"startLine": line, "startColumn": column}}}]})
