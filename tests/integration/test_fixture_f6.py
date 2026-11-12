@@ -142,7 +142,8 @@ def test_stored_sarif_and_logs_hold_no_token_value(ws, tmp_path, actor, qa_cli):
     stored = [(path.relative_to(ws.root).as_posix(), path.read_bytes()) for path in sorted((ws.root / ".qa").rglob("*")) if path.is_file()]
     body = token.split("_", 2)[2].encode()
     leaked = [name for name, data in stored if token.encode() in data or body in data]
-    assert leaked == []
+    summary = json.dumps(ran, sort_keys=True).encode()                      # the CLI's own JSON summary on stdout
+    assert leaked == [] and token.encode() not in summary and body not in summary
     masked = sorted(name.rsplit("/", 1)[-1] for name, data in stored if MASKED.search(data))
     assert {"scan.sarif", "stdout.log", "stderr.log"} <= set(masked), masked
     fingerprints = {fingerprint for _name, data in stored for fingerprint in MASKED.findall(data)}
@@ -155,8 +156,8 @@ def free_port():
         return probe.getsockname()[1]
 
 
-def ask(port, method, target, headers=None):
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+def ask(port, method, target, headers=None, address="127.0.0.1"):
+    connection = http.client.HTTPConnection(address, port, timeout=10)
     try:
         connection.request(method, target, headers=dict({"Host": "127.0.0.1:%d" % port}, **(headers or {})))
         answer = connection.getresponse()
@@ -165,16 +166,22 @@ def ask(port, method, target, headers=None):
         connection.close()
 
 
+def free_port6():
+    with socket.socket(socket.AF_INET6) as probe:
+        probe.bind(("::1", 0))
+        return probe.getsockname()[1]
+
+
 @contextmanager
-def served(tmp_path):
+def served(tmp_path, address="127.0.0.1"):
     copy = generated(tmp_path / "copy")
-    port = free_port()
-    server = subprocess.Popen([sys.executable, str(copy / "lab" / "app.py"), "--host", "127.0.0.1", "--port", str(port)], cwd=str(tmp_path),
+    port = free_port() if address == "127.0.0.1" else free_port6()
+    server = subprocess.Popen([sys.executable, str(copy / "lab" / "app.py"), "--host", address, "--port", str(port)], cwd=str(tmp_path),
                               env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(100):
             try:
-                if ask(port, "GET", "/")[0] == 200:
+                if ask(port, "GET", "/", address=address)[0] == 200:
                     break
             except OSError:
                 pass
@@ -211,6 +218,17 @@ def test_lab_answers_421_to_a_foreign_host_header(tmp_path):
         for host in ("127.0.0.1:%d" % port, "localhost:%d" % port, "[::1]:%d" % port, "127.0.0.1", "LocalHost"):
             assert ask(port, "GET", "/", {"Host": host})[0] == 200, host
         assert ask(port, "POST", "/")[0] == 405                                  # a loopback request reaches the routes
+
+
+@CONTAINER_ONLY
+def test_lab_starts_on_the_ipv6_loopback(tmp_path):
+    try:
+        free_port6()
+    except OSError as error:
+        pytest.skip("tool missing: no IPv6 loopback in this container (%s)" % type(error).__name__)
+    with served(tmp_path, address="::1") as (port, _copy):
+        assert ask(port, "GET", "/", {"Host": "[::1]:%d" % port}, address="::1")[0] == 200
+        assert ask(port, "GET", "/", {"Host": "example.test"}, address="::1")[0] == 421
 
 
 @CONTAINER_ONLY
@@ -259,7 +277,7 @@ def test_f6_answer_key_locations_exist_after_generation(tmp_path, repo_root):
     assert routes == {"GET /", "GET /hello", "GET /products", "GET /notes", "GET /session", "GET /account"}
     for issue in issues:
         if issue["file"] == "requirements.txt":
-            assert set(issue) == fields | {"advisory", "advisory_pending"}, issue["id"]
+            assert set(issue) == fields | {"advisory", "advisory_pending", "file_level"} and issue["file_level"] is True, issue["id"]
             pending = (issue["advisory"], issue["advisory_pending"]) == (None, "osv-offline-scan")
             filled = issue["advisory_pending"] is None and bool(issue["advisory"]) and all(
                 isinstance(ref, str) and ref for ref in (issue["advisory"] if isinstance(issue["advisory"], list) else [issue["advisory"]]))

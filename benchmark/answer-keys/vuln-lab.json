@@ -1,7 +1,7 @@
 {
   "fixture": "vuln-lab",
   "version": 1,
-  "note": "Locations are an operation (METHOD /path) or the file, with the file and the lines that hold the cause, in the copy that generate.py writes (lab/settings.py exists only there). Classes are named by CWE only. detectable_by names static-review, in-process-check where a test in tests/integration/test_fixture_f6.py shows the class, and a tool only after an observed run of its pinned image on F6. F6-05 names no advisory until an offline OSV-Scanner run records one: advisory stays null while advisory_pending says which run fills it. gitleaks on F6-04 comes from an observed run of the pinned Gitleaks image (v8.30.1) over a generated copy, which reported only that line (rule stripe-access-token).",
+  "note": "Locations are an operation (METHOD /path) or the file, with the file and the lines that hold the cause, in the copy that generate.py writes (lab/settings.py exists only there). Classes are named by CWE only. detectable_by names static-review, in-process-check where a test in tests/integration/test_fixture_f6.py shows the class, and a tool only after an observed run of its pinned image on F6. F6-05 names no advisory until an offline OSV-Scanner run records one: advisory stays null while advisory_pending says which run fills it. gitleaks on F6-04 comes from an observed run of the pinned Gitleaks image (v8.30.1) over a generated copy, which reported only that line (rule stripe-access-token). F6-05 is file_level: a tool that reports the manifest without a line still locates it.",
   "issues": [
     {
       "id": "F6-01",
@@ -85,7 +85,8 @@
         "static-review"
       ],
       "advisory": null,
-      "advisory_pending": "osv-offline-scan"
+      "advisory_pending": "osv-offline-scan",
+      "file_level": true
     },
     {
       "id": "F6-06",

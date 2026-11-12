@@ -22,26 +22,32 @@ def load_recall():
     return module.recall
 
 
-def found(tool, path=None, line=None, endpoint=None):
-    return {"tool": tool, "path": path, "line": line, "endpoint": endpoint}
+def found(tool, path=None, line=None, endpoint=None, cwe=None):
+    detection = {"tool": tool, "path": path, "line": line, "endpoint": endpoint}
+    if cwe is not None:
+        detection["cwe"] = cwe
+    return detection
 
 
 def test_recall_counts_only_detectable_entries():
     recall = load_recall()
     detections = [found("gitleaks", "/work/.qa-input/lab/settings.py", 4), found("zap", endpoint="GET /search")]
-    assert recall(KEY, detections, {"gitleaks", "zap"}) == {"detectable": 3, "detected": 2, "recall": 2 / 3, "missed": ["X-04"]}
+    assert recall(KEY, detections, {"gitleaks", "zap"}) == {"detectable": 3, "detected": 2, "recall": 2 / 3, "missed": ["X-04"],
+                                                                     "detected_unclassified": ["X-01", "X-02"]}
     # osv-scanner present but silent: X-03 becomes detectable and is missed; semgrep is not present, so X-04 needs zap
-    assert recall(KEY, detections[:1], {"gitleaks", "osv-scanner"}) == {"detectable": 2, "detected": 1, "recall": 0.5, "missed": ["X-03"]}
+    assert recall(KEY, detections[:1], {"gitleaks", "osv-scanner"}) == {"detectable": 2, "detected": 1, "recall": 0.5, "missed": ["X-03"],
+                                                                                "detected_unclassified": ["X-02"]}
     assert recall(KEY, [found("static-review", "lab/app.py", 12)], {"static-review"}) == {
-        "detectable": 2, "detected": 1, "recall": 0.5, "missed": ["X-02"]}
+        "detectable": 2, "detected": 1, "recall": 0.5, "missed": ["X-02"], "detected_unclassified": ["X-01"]}
 
 
 def test_recall_is_none_when_no_tool_is_present():
     recall = load_recall()
-    assert recall(KEY, [], set()) == {"detectable": 0, "detected": 0, "recall": None, "missed": []}
+    assert recall(KEY, [], set()) == {"detectable": 0, "detected": 0, "recall": None, "missed": [], "detected_unclassified": []}
     # a detection whose tool is not present counts for nothing, and a tool no entry names makes nothing detectable
-    assert recall(KEY, [found("zap", endpoint="GET /search")], {"trivy"}) == {"detectable": 0, "detected": 0, "recall": None, "missed": []}
-    assert recall({"issues": []}, [], {"zap"}) == {"detectable": 0, "detected": 0, "recall": None, "missed": []}
+    nothing = {"detectable": 0, "detected": 0, "recall": None, "missed": [], "detected_unclassified": []}
+    assert recall(KEY, [found("zap", endpoint="GET /search")], {"trivy"}) == nothing
+    assert recall({"issues": []}, [], {"zap"}) == nothing
 
 
 @pytest.mark.parametrize("detection, hit", [
@@ -58,6 +64,10 @@ def test_recall_is_none_when_no_tool_is_present():
     (found("zap", endpoint="GET /search"), True),
     (found("zap", endpoint="get /search?q=pen"), True),                       # the query string is not part of the operation
     (found("zap", endpoint="GET http://127.0.0.1:8080/search?q=pen"), True),
+    (found("zap", endpoint="GET /%73earch"), True),                           # percent-decoded before matching
+    (found("zap", endpoint="GET http://127.0.0.1:8080/%73earch"), True),
+    (found("zap", path="/work/lab%2Fapp.py", line=12), True),
+    (found("zap", path="file:///work/la%62/app.py", line=12), True),
     (found("zap", endpoint="POST /search"), False),
     (found("zap", endpoint="GET /search/more"), False),
     (found("zap", endpoint="GET"), False),
@@ -82,5 +92,59 @@ def test_every_f6_entry_is_found_by_a_review_that_cites_its_first_line():
     recall = load_recall()
     cited = [found("static-review", issue["file"], issue["lines"][0]) for issue in key["issues"]]
     everything = recall(key, cited, {"static-review"})
-    assert everything == {"detectable": len(key["issues"]), "detected": len(key["issues"]), "recall": 1.0, "missed": []}
+    assert everything == {"detectable": len(key["issues"]), "detected": len(key["issues"]), "recall": 1.0, "missed": [],
+                          "detected_unclassified": [issue["id"] for issue in key["issues"]]}
     assert recall(key, cited[1:], {"static-review"})["missed"] == [key["issues"][0]["id"]]
+
+
+KEY_WITH_CLASSES = {"issues": [
+    {"id": "C-01", "location": "GET /", "file": "lab/app.py", "lines": [41, 44], "class": "CWE-942 permissive cross-origin policy",
+     "detectable_by": ["zap"]},
+    {"id": "C-02", "location": "GET /", "file": "lab/app.py", "lines": [40, 40], "class": "CWE-693 missing security headers",
+     "detectable_by": ["zap"]},
+    {"id": "C-03", "location": "GET /products", "file": "lab/catalog.py", "lines": [21, 22], "class": "CWE-89 SQL injection",
+     "detectable_by": ["zap", "semgrep"]},
+    {"id": "C-04", "location": "requirements.txt", "file": "requirements.txt", "lines": [1, 1], "file_level": True,
+     "class": "CWE-1395 dependency with a published advisory", "detectable_by": ["osv-scanner"]},
+]}
+
+
+def test_a_detection_of_another_class_at_the_same_location_credits_nothing():
+    recall = load_recall()
+    headers = found("zap", endpoint="GET /products", cwe="CWE-693")
+    assert recall(KEY_WITH_CLASSES, [headers], {"zap"})["missed"] == ["C-01", "C-02", "C-03"]
+    assert recall(KEY_WITH_CLASSES, [found("zap", endpoint="GET /", cwe="CWE-693")], {"zap"}) == {
+        "detectable": 3, "detected": 1, "recall": 1 / 3, "missed": ["C-01", "C-03"], "detected_unclassified": []}
+    assert recall(KEY_WITH_CLASSES, [found("semgrep", "lab/catalog.py", 21, cwe="CWE-79")], {"semgrep"})["detected"] == 0
+
+
+def test_a_detection_of_the_same_class_at_the_same_location_is_detected():
+    recall = load_recall()
+    for cwe in ("CWE-89", "cwe-89", "89", 89):
+        result = recall(KEY_WITH_CLASSES, [found("semgrep", "/work/lab/catalog.py", 22, cwe=cwe)], {"semgrep"})
+        assert result == {"detectable": 1, "detected": 1, "recall": 1.0, "missed": [], "detected_unclassified": []}, cwe
+    both = [found("zap", endpoint="GET /", cwe="CWE-942"), found("zap", endpoint="GET /", cwe="CWE-693")]
+    assert recall(KEY_WITH_CLASSES, both, {"zap"})["missed"] == ["C-03"]          # each class credits its own entry only
+
+
+def test_a_detection_without_a_cwe_is_detected_and_listed_as_unclassified():
+    recall = load_recall()
+    plain = found("zap", endpoint="GET /")
+    assert recall(KEY_WITH_CLASSES, [plain], {"zap"}) == {
+        "detectable": 3, "detected": 2, "recall": 2 / 3, "missed": ["C-03"], "detected_unclassified": ["C-01", "C-02"]}
+    classified = recall(KEY_WITH_CLASSES, [plain, found("zap", endpoint="GET /", cwe="CWE-942")], {"zap"})
+    assert classified["detected_unclassified"] == ["C-02"]                         # C-01 also has a classified credit
+    entry_without_class = {"issues": [dict(KEY["issues"][0])]}
+    assert recall(entry_without_class, [found("zap", endpoint="GET /search", cwe="CWE-79")], {"zap"})["detected"] == 1
+
+
+def test_a_file_level_detection_locates_only_a_file_level_entry():
+    recall = load_recall()
+    manifest = found("osv-scanner", "/work/requirements.txt", cwe="CWE-1395")
+    assert recall(KEY_WITH_CLASSES, [manifest], {"osv-scanner"}) == {
+        "detectable": 1, "detected": 1, "recall": 1.0, "missed": [], "detected_unclassified": []}
+    assert recall(KEY_WITH_CLASSES, [found("zap", "lab/app.py", None)], {"zap"})["detected"] == 0
+    key = answer_key("vuln-lab")
+    assert [issue["id"] for issue in key["issues"] if issue.get("file_level") is True] == ["F6-05"]
+    assert recall(key, [found("static-review", "requirements.txt")], {"static-review"})["missed"] == [
+        issue["id"] for issue in key["issues"] if issue["id"] != "F6-05"]
