@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "report.rendered event data",
+  "description": "One rendered report: the state hash it was rendered from, the latest gate evaluation it names (null when there was none) and the SHA-256 of each file written. The files hold neither the report ID nor the render time, so the same state renders the same bytes.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/rpt_id"},
+    "state_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "gate": {"anyOf": [{"$ref": "defs.schema.json#/$defs/gate_id"}, {"type": "null"}]},
+    "files": {
+      "type": "object",
+      "propertyNames": {"enum": ["report.md", "report.json", "report.sarif", "executive.md"]},
+      "additionalProperties": {"$ref": "defs.schema.json#/$defs/sha256"},
+      "minProperties": 1
+    }
+  },
+  "required": ["id", "state_hash", "gate", "files"],
+  "additionalProperties": false
+}

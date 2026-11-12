@@ -1,0 +1,25 @@
+# Schemathesis baseline: the schema's own examples and its boundary values, no fuzzing and no stateful sequences.
+# The command line must still say --phases=examples,coverage: the suite's guard reads the command, never this file.
+# Copy this file to .qa/work/api/schemathesis-baseline.toml and pass it with --input and --config-file.
+
+# Request cap: at most 20 generated cases per operation, and the run stops after 20 failures.
+max-failures = 20
+
+# Rate cap: never more than 10 requests per second against the target.
+rate-limit = "10/s"
+request-timeout = 5
+
+[generation]
+max-examples = 20
+
+[phases.examples]
+enabled = true
+
+[phases.coverage]
+enabled = true
+
+[phases.fuzzing]
+enabled = false
+
+[phases.stateful]
+enabled = false

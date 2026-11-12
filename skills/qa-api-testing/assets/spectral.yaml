@@ -1,0 +1,3 @@
+# Spectral's own OpenAPI rules, bundled in the image: no ruleset is fetched over the network.
+# Copy this file to .qa/work/api/spectral.yaml and pass it with --input; references/tools.md has the command.
+extends: spectral:oas

@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -19,7 +20,7 @@ import urllib.request
 
 import pytest
 
-from helpers import FIXTURES, answer_key
+from helpers import FIXTURES, LAUNCHER, REPO, answer_key
 from test_container_live import assert_no_service_left, live, service_run  # noqa: F401 (live is a fixture)
 
 F2 = FIXTURES / "rest-api"
@@ -232,3 +233,154 @@ def test_f2_runs_as_a_service(live):  # noqa: F811
     assert (done.network_mode, done.anomalies) == ("none", ())
     assert done.service["running_at_end"] is True
     assert_no_service_left(live)
+
+
+# ----------------------------------------------------------------------------------------------- the qa-api-testing legs
+# Each leg's command is read from the ``qa-leg`` blocks of the skill's references/tools.md, the one text the skill follows,
+# and run through the real CLI in the fixture copy's own workspace. The grants are recorded there, never in the repository.
+
+TOOLS_MD = REPO / "skills" / "qa-api-testing" / "references" / "tools.md"
+INVENTORY_SCRIPT = REPO / "skills" / "qa-api-testing" / "scripts" / "endpoint_inventory.py"
+LEG_PREFIX = ["python3", ".claude/skills/qa-api-testing/scripts/qa.py", "--role", "verifier", "--skill", "qa-api-testing"]
+SERVE = "cd /work && exec python3 -m orders_api.server --host 127.0.0.1 --port 8080"
+APPROVAL = "Hacer lo necesario para ejecutar el requerimiento, no me preguntes, ejecute de forma autonoma."
+LEG_IMAGES = {"spectral": "spectral", "schemathesis-baseline": "schemathesis", "schemathesis-active": "schemathesis", "hurl": "hurl"}
+
+
+def image(image_id):
+    listing = json.loads((REPO / "shared" / "policies" / "container-images.json").read_text(encoding="utf-8"))
+    return next(entry["image"] for entry in listing["images"] if entry["id"] == image_id)
+
+
+def legs():
+    """``{name: (attributes, the command line)}`` from the ``qa-leg`` fenced blocks."""
+    text = TOOLS_MD.read_text(encoding="utf-8")
+    found = {}
+    for match in re.finditer(r"^```qa-leg (\S+)((?: [\w-]+=\S+)*)\n(.*?)\n```$", text, re.M | re.S):
+        assert match.group(1) not in found, match.group(1)
+        found[match.group(1)] = (dict(a.split("=", 1) for a in match.group(2).split()), match.group(3).strip())
+    return found
+
+
+def leg_words(name):
+    attributes, line = legs()[name]
+    words = shlex.split(line.replace("<spec>", "openapi.yaml").replace("<serve>", SERVE).replace("<token>", "user-a-token"))
+    assert words[:len(LEG_PREFIX)] == LEG_PREFIX, words[:len(LEG_PREFIX)]
+    return attributes, words[len(LEG_PREFIX):]
+
+
+def leg_cli(project, words, timeout=1500):
+    done = subprocess.run([sys.executable, str(LAUNCHER), "--workspace", str(project.root), "--role", "verifier", "--skill", "qa-api-testing",
+                           *words], cwd=str(project.root), capture_output=True, timeout=timeout)
+    return done.returncode, json.loads(done.stdout)
+
+
+def copy_assets(project):
+    done = subprocess.run([sys.executable, "-I", "-B", str(INVENTORY_SCRIPT), "assets"], cwd=str(project.root), capture_output=True, text=True,
+                          timeout=60)
+    assert done.returncode == 0 and json.loads(done.stdout)["ok"], done.stdout + done.stderr
+
+
+def grant(project, *activities):
+    code, out = project.cli("authorize", "--environment", "local", "--activity", *activities, "--target", "127.0.0.1", "--approval", APPROVAL)
+    assert code == 0 and out["ok"], out
+    return out
+
+
+def recorded(project, execution):
+    return project.cli("state", "show", "executions")[1]["state"][execution]
+
+
+def test_the_legs_are_the_four_the_skill_documents_with_pinned_images_and_loopback_only():
+    found = legs()
+    assert sorted(found) == ["hurl", "schemathesis-active", "schemathesis-baseline", "spectral"]
+    assert {name: attributes["grant"] for name, (attributes, _) in found.items()} == {
+        "spectral": "none", "hurl": "none", "schemathesis-baseline": "dast-passive", "schemathesis-active": "dast-active"}
+    for name, (attributes, line) in found.items():
+        _, words = leg_words(name)
+        assert words[words.index("--container") + 1] == image(LEG_IMAGES[name]), name
+        if "--service" in words:
+            assert words[words.index("--service") + 1] == image("python-newest")
+        assert attributes["report"] == words[words.index("--report") + 1].split(":", 1)[0]
+        assert set(re.findall(r"https?://([^/:\s'\"]+)", line)) <= {"127.0.0.1"}, name
+    baseline = leg_words("schemathesis-baseline")[1][-1]
+    assert "--phases=examples,coverage " in baseline and "--config-file /work/.qa-input/api/schemathesis-baseline.toml" in baseline
+    active = leg_words("schemathesis-active")[1][-1]
+    for cap in ("--max-examples=", "--rate-limit=", "--max-failures=", "--request-timeout="):
+        assert cap in active, cap
+
+
+def test_the_schemathesis_legs_are_refused_without_a_grant(qa_on_fixture):
+    project = qa_on_fixture("rest-api")
+    copy_assets(project)
+    for name in ("schemathesis-baseline", "schemathesis-active"):
+        code, out = leg_cli(project, leg_words(name)[1])
+        assert (code, out["status"], out["reason"]) == (3, "blocked", "not_authorized"), out
+    grant(project, "dast-passive")
+    code, out = leg_cli(project, leg_words("schemathesis-active")[1])
+    assert (code, out["status"], out["reason"]) == (3, "blocked", "not_authorized"), out
+
+
+@pytest.fixture
+def api_project(qa_on_fixture):
+    engine = os.environ.get("QA_TEST_CONTAINER_ENGINE")
+    if not engine:
+        pytest.skip("tool missing: QA_TEST_CONTAINER_ENGINE is not set")
+    project = qa_on_fixture("rest-api")
+    assert project.cli("config", "set", "container.engine", engine, "--approval", "fixture test")[0] == 0
+    copy_assets(project)
+    return project
+
+
+def evidence_of(project, execution):
+    return project.root / ".qa" / "evidence" / execution
+
+
+@pytest.mark.docker
+def test_f2_spectral_leg(api_project):
+    code, out = leg_cli(api_project, leg_words("spectral")[1])
+    print("spectral leg:", out["execution"], out["status"], out.get("reason"))
+    assert (code, out["status"]) == (1, "failed"), out
+    run = recorded(api_project, out["execution"])
+    assert run["container"]["network_mode"] == "none" and run["container"]["service"] is None
+    assert run["reports"][0]["format"] == "sarif" and run["reports"][0]["files"] == ["reports/spectral.sarif"]
+    sarif = json.loads((evidence_of(api_project, out["execution"]) / "reports" / "spectral.sarif").read_text(encoding="utf-8"))
+    rules = {result["ruleId"] for result in sarif["runs"][0]["results"]}
+    assert rules and rules <= {"info-contact", "operation-description", "operation-tags", "oas3-api-servers", "info-description"}, rules
+
+
+@pytest.mark.docker
+def test_f2_schemathesis_baseline_leg(api_project):
+    grant(api_project, "dast-passive")
+    code, out = leg_cli(api_project, leg_words("schemathesis-baseline")[1])
+    print("schemathesis baseline leg:", out["execution"], out["status"], out.get("reason"), out["tests"])
+    assert (code, out["status"]) == (1, "failed"), out
+    assert out["tests"]["total"] >= 7 and out["tests"]["failed"] >= 1
+    run = recorded(api_project, out["execution"])
+    assert "dast-passive" in [entry["activity"] for entry in run["authorizations"]]
+    assert run["container"]["service"]["image"] == image("python-newest") and run["container"]["network_mode"] == "none"
+    har = json.loads((evidence_of(api_project, out["execution"]) / "stdout.log").read_text(encoding="utf-8"))
+    urls = {entry["request"]["url"].split("/")[2] for entry in har["log"]["entries"]}
+    assert har["log"]["entries"] and urls == {"127.0.0.1:8080"}, urls
+
+
+@pytest.mark.docker
+def test_f2_schemathesis_active_leg(api_project):
+    grant(api_project, "dast-passive", "dast-active")
+    code, out = leg_cli(api_project, leg_words("schemathesis-active")[1])
+    print("schemathesis active leg:", out["execution"], out["status"], out.get("reason"), out["tests"])
+    assert (code, out["status"]) == (1, "failed"), out
+    run = recorded(api_project, out["execution"])
+    assert "dast-active" in [entry["activity"] for entry in run["authorizations"]]
+    junit = (evidence_of(api_project, out["execution"]) / "reports" / "schemathesis.xml").read_text(encoding="utf-8")
+    assert "POST /orders" in junit and re.search(r"Received: 200.*?Documented: 201", junit, re.S), "the documented-status check on POST /orders"
+
+
+@pytest.mark.docker
+def test_f2_hurl_leg(api_project):
+    code, out = leg_cli(api_project, leg_words("hurl")[1])
+    print("hurl leg:", out["execution"], out["status"], out.get("reason"), out["tests"])
+    assert (code, out["status"]) == (0, "passed"), out
+    assert out["tests"]["total"] == 1
+    run = recorded(api_project, out["execution"])
+    assert run["container"]["service"]["running_at_end"] is True and run["container"]["network_mode"] == "none"

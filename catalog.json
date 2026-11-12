@@ -1,6 +1,7 @@
 {
   "version": 1,
   "skills": [
+    "qa-api-testing",
     "qa-codebase-intelligence",
     "qa-mutation",
     "qa-orchestrator",
@@ -47,6 +48,14 @@
     {
       "key": "measure-test-effectiveness",
       "owner": "qa-mutation"
+    },
+    {
+      "key": "verify-api-conformance",
+      "owner": "qa-api-testing"
+    },
+    {
+      "key": "check-documented-api-authorization",
+      "owner": "qa-api-testing"
     }
   ]
 }
