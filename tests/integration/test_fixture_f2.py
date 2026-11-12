@@ -389,7 +389,7 @@ def test_f2_hurl_leg(api_project):
 
 
 # ----------------------------------------------------------------------------------------------- the qa-security leg on F2
-# qa-security's zap-active leg, with the contract imported (zap_plan.py --kind active --openapi openapi.yaml), against the
+# qa-security's zap-active leg, with the contract imported (run_inputs.py --kind zap-active --openapi openapi.yaml), against the
 # orders API started as the run's service on 127.0.0.1:8000 (ZAP listens on 8080 itself).
 
 SECURITY = REPO / "skills" / "qa-security"
@@ -420,7 +420,7 @@ def security_script(project, name, *args):
 
 @pytest.mark.docker
 def test_f2_zap_api_active_leg(api_project):
-    plan = security_script(api_project, "zap_plan.py", "--kind", "active", "--openapi", "openapi.yaml")
+    plan = security_script(api_project, "run_inputs.py", "--kind", "zap-active", "--openapi", "openapi.yaml")
     assert plan["openapi"] == "openapi.yaml"
     grant(api_project, "dast-passive", "dast-active")
     code, out = security_run(api_project, security_leg_words("zap-active"))

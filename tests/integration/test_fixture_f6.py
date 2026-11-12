@@ -516,9 +516,13 @@ def test_gitleaks_leg_stores_no_token_value(f6_project):
 
 @pytest.mark.docker
 def test_f6_osv_leg():
+    # The leg's download grants are the user's to record, on the machine that runs it; this suite records none. Without an
+    # engine, or without a workspace holding those grants, the tool cannot run here.
+    if not os.environ.get("QA_TEST_CONTAINER_ENGINE"):
+        pytest.skip("tool missing: QA_TEST_CONTAINER_ENGINE is not set")
     workspace = os.environ.get("QA_TEST_OSV_WORKSPACE")
     if not workspace:
-        pytest.skip("needs the user's OSV grants (QA_TEST_OSV_WORKSPACE)")
+        pytest.skip("tool missing: no workspace with the user's OSV-Scanner download grants on this machine (QA_TEST_OSV_WORKSPACE)")
     root = Path(workspace)
     assert (root / "requirements.txt").read_bytes() == (F6 / "requirements.txt").read_bytes(), "the workspace must hold a generated F6 copy"
     code, out = security_cli(root, security_words("osv-scanner")[1])
@@ -534,7 +538,7 @@ def test_f6_osv_leg():
 @pytest.mark.docker
 def test_f6_semgrep_leg(f6_project):
     root, cli = f6_project
-    security_script(root, "zap_plan.py", "--kind", "semgrep-rules")
+    security_script(root, "run_inputs.py", "--kind", "semgrep-rules")
     code, out = security_cli(root, security_words("semgrep")[1])
     print("semgrep leg:", out["execution"], out["status"], out.get("reason"))
     assert (code, out["status"]) == (1, "failed"), out
@@ -564,7 +568,7 @@ def test_f6_unicode_scan_leg(f6_project):
 
 def zap_leg(root, cli, name, *activities):
     security_grant(cli, *activities)
-    security_script(root, "zap_plan.py", "--kind", "baseline" if name == "zap-baseline" else "active")
+    security_script(root, "run_inputs.py", "--kind", name)
     code, out = security_cli(root, security_words(name)[1])
     print("%s leg:" % name, out["execution"], out["status"], out.get("reason"))
     assert out["status"] in ("passed", "failed"), out
