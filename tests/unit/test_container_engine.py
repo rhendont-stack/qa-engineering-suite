@@ -293,3 +293,31 @@ def test_a_tracked_config_alone_cannot_choose_the_engine(tmp_path, actor):
     config.record_initialized(ws, actor)
     assert integrity.authority(ws)["refused"] == []
     _refused_engine(ws)
+
+
+# --------------------------------------------------------------------------- the image catalog
+
+def _catalog():
+    from pathlib import Path
+    return loads((Path(container.__file__).resolve().parents[2] / "policies" / "container-images.json").read_bytes())["images"]
+
+
+def test_every_catalog_image_is_pinned_for_amd64():
+    images = _catalog()
+    assert len({entry["id"] for entry in images}) == len(images)
+    for entry in images:
+        assert container.is_pinned(entry["image"]), entry["id"]
+        assert "linux/amd64" in entry["platforms"], entry["id"]
+    tools = [entry for entry in images if "tool_version" in entry]
+    assert {entry["id"] for entry in tools} == {"spectral", "schemathesis", "hurl", "oasdiff", "squawk", "postgres", "semgrep",
+                                                "osv-scanner", "gitleaks", "zap", "k6"}
+    for entry in tools:
+        assert isinstance(entry["size_bytes"], int) and entry["size_bytes"] > 0, entry["id"]
+        assert entry["tool_version"] and entry["tag"], entry["id"]
+        assert not entry["tag"].endswith(":latest") and "latest" not in entry["tag"].split(":")[-1], entry["id"]
+
+
+def test_the_catalog_names_no_trivy_and_no_unpinned_digest():
+    for entry in _catalog():
+        assert "trivy" not in entry["id"] and "trivy" not in entry["image"]
+        assert entry["image"].count("@sha256:") == 1

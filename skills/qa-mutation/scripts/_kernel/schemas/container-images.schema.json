@@ -17,9 +17,11 @@
           "image": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$"},
           "platforms": {
             "type": "array",
-            "minItems": 2,
-            "items": {"type": "string", "pattern": "^linux/[a-z0-9]+$"}
-          }
+            "minItems": 1,
+            "items": {"type": "string", "pattern": "^linux/[a-z0-9]+(/v[0-9]+)?$"}
+          },
+          "tool_version": {"type": "string", "minLength": 1},
+          "size_bytes": {"type": "integer", "minimum": 1}
         },
         "required": ["id", "tag", "image", "platforms"],
         "additionalProperties": false

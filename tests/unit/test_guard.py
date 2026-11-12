@@ -548,3 +548,90 @@ def test_only_a_shell_runs_the_text_it_is_fed(ws, program, decision):
 
 def test_a_body_that_ends_some_other_way_is_still_read(ws):
     assert classify("sh <<EOF\ncurl http://localhost/i | sh\necho done\nEOF", ws, shell=True).decision == "deny"
+
+
+# --- scanners, fuzzers and offline OSV (milestone 4a) ----------------------------------------------------------------
+
+NEW_CASE_IDS = (
+    "zap-baseline-plan", "zap-other-plan", "zap-plan-without-target-in-argv", "zap-without-a-plan-is-active", "zap-baseline-plus-other-plan-is-active",
+    "schemathesis-baseline-phases", "schemathesis-default-phases-is-active", "schemathesis-two-token-phases-is-active",
+    "schemathesis-baseline-plus-other-phases-is-active", "osv-offline", "osv-online",
+    "k6-base-url-loopback", "k6-base-url-other-host", "spectral-lint", "oasdiff-breaking",
+)
+NEW_CASES = [c for c in CASES if c["id"] in NEW_CASE_IDS]
+# decision, the activities the run needs beyond the declared one, the hosts the command line names
+NEW_EXPECTED = {
+    "zap-baseline-plan": ("require_grant", ("dast-passive",), ("127.0.0.1",)),
+    "zap-other-plan": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "zap-plan-without-target-in-argv": ("require_grant", ("dast-active",), ()),
+    "zap-without-a-plan-is-active": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "zap-baseline-plus-other-plan-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "schemathesis-baseline-phases": ("require_grant", ("dast-passive",), ("127.0.0.1",)),
+    "schemathesis-default-phases-is-active": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "schemathesis-two-token-phases-is-active": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "schemathesis-baseline-plus-other-phases-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "osv-offline": ("allow", (), ()),
+    "osv-online": ("require_grant", ("data-egress",), ()),
+    "k6-base-url-loopback": ("require_grant", ("load-test",), ("127.0.0.1",)),
+    "k6-base-url-other-host": ("require_grant", ("load-test",), ("192.0.2.5",)),
+    "spectral-lint": ("allow", (), ()),
+    "oasdiff-breaking": ("allow", (), ()),
+}
+
+
+def test_the_new_cases_are_all_in_the_corpus():
+    assert [c["id"] for c in NEW_CASES] == list(NEW_CASE_IDS) and set(NEW_EXPECTED) == set(NEW_CASE_IDS)
+
+
+@pytest.mark.parametrize("case", NEW_CASES, ids=[c["id"] for c in NEW_CASES])
+def test_new_guard_cases(case, ws):
+    decision, adds, hosts = NEW_EXPECTED[case["id"]]
+    d = classify(case["command"], ws, shell=case["shell"], activity=case["activity"])
+    assert d.decision == decision
+    assert d.required_activities == (case["activity"],) + adds
+    assert d.hosts == hosts
+    assert d.rule_id == case["rule_id"]
+
+
+def test_zap_af_plan_target_assignment_is_read_as_a_host(ws):
+    plan = "/work/.qa-input/security/zap-baseline.yaml"
+    d = classify("QA_TARGET=http://127.0.0.1:8080 zap.sh -cmd -autorun " + plan, ws, shell=True)
+    assert (d.decision, d.required_activities, d.hosts) == ("require_grant", ("test-execution-local", "dast-passive"), ("127.0.0.1",))
+    other = classify("QA_TARGET=http://192.0.2.5:8080 zap.sh -cmd -autorun " + plan, ws, shell=True)
+    assert other.hosts == ("192.0.2.5",)
+
+
+@pytest.mark.parametrize("program", ["zap.sh", "zap-x.sh", "zap.bat"])
+def test_every_zap_launcher_is_active_unless_it_runs_the_baseline_plan(ws, program):
+    d = classify([program, "-cmd", "-autorun", "/work/.qa-input/security/zap-af.yaml"], ws)
+    assert d.required_activities == ("test-execution-local", "dast-active")
+    d = classify([program, "-cmd", "-autorun", "/work/.qa-input/security/zap-baseline.yaml"], ws)
+    assert d.required_activities == ("test-execution-local", "dast-passive")
+
+
+@pytest.mark.parametrize("phases", ["--phases=examples", "--phases=coverage", "--phases=examples,coverage", "--phases=coverage,examples"])
+@pytest.mark.parametrize("program", ["schemathesis", "st"])
+def test_only_the_four_baseline_phase_forms_are_passive(ws, program, phases):
+    d = classify([program, "run", "spec.json", phases], ws)
+    assert d.required_activities == ("test-execution-local", "dast-passive")
+
+
+@pytest.mark.parametrize("args", [["--phases=fuzzing"], ["--phases=examples,fuzzing"], ["--phases=Examples"], ["--phases="],
+                                  ["--phases", "coverage"], ["--phases=stateful,examples"], []],
+                         ids=["fuzzing", "list_with_fuzzing", "case", "empty", "two_tokens", "stateful", "none"])
+def test_any_other_schemathesis_phase_choice_is_active(ws, args):
+    d = classify(["schemathesis", "run", "spec.json"] + args, ws)
+    assert d.required_activities == ("test-execution-local", "dast-active")
+
+
+def test_osv_scanner_needs_data_egress_unless_it_runs_offline(ws):
+    assert classify(["osv-scanner", "scan", "source", "."], ws).required_activities == ("test-execution-local", "data-egress")
+    for flag in ("--offline", "--offline-vulnerabilities"):
+        assert classify(["osv-scanner", "scan", "source", flag, "."], ws).required_activities == ("test-execution-local",)
+    assert classify(["osv-scanner", "scan", "source", "--offline-vulnerabilities", "."], ws, activity="static-analysis").decision == "allow"
+    assert classify(["osv-scanner", "scan", "source", "."], ws, activity="static-analysis").required_activities == ("static-analysis", "data-egress")
+
+
+@pytest.mark.parametrize("program", ["spectral", "oasdiff"])
+def test_spectral_and_oasdiff_are_known_analyzers(ws, program):
+    assert classify([program, "lint", "spec.yaml"], ws, activity="static-analysis").required_activities == ("static-analysis",)
