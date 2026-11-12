@@ -5,6 +5,7 @@ subset of YAML, so the standard library reads it. The fixture's own files never 
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import urllib.request
 import pytest
 
 from helpers import FIXTURES, answer_key
-from test_container_live import SERVICE_IMAGE, assert_no_service_left, live, service_run  # noqa: F401 (live is a fixture)
+from test_container_live import assert_no_service_left, live, service_run  # noqa: F401 (live is a fixture)
 
 F2 = FIXTURES / "rest-api"
 PYTEST_RUN = ("run", "--report", "junit:{evidence}/junit.xml", "--", sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o",
@@ -37,11 +38,20 @@ def operations(document):
     return sorted("%s %s" % (method.upper(), path) for path, item in document["paths"].items() for method in item if method in METHODS)
 
 
-def load_app(monkeypatch, directory):
+def forget_the_package():
     for name in [name for name in sys.modules if name == "orders_api" or name.startswith("orders_api.")]:
         del sys.modules[name]
+
+
+@pytest.fixture(autouse=True)
+def drop_the_package_after_each_test():
+    yield
+    forget_the_package()
+
+
+def load_app(monkeypatch, directory):
+    forget_the_package()
     monkeypatch.syspath_prepend(str(directory))
-    import importlib
     return importlib.import_module("orders_api.app")
 
 
@@ -112,7 +122,7 @@ def test_f2_answer_key_locations_exist(repo_root):
         assert issue["match"] in "\n".join(lines[first - 1:last]), issue["id"]
         assert issue["severity_anchor"] in anchors and issue["category"] in categories, issue["id"]
         assert issue["class"] and issue["detectable_by"] and all(isinstance(tool, str) and tool for tool in issue["detectable_by"]), issue["id"]
-        assert "static-review" in issue["detectable_by"] or "in-process-check" in issue["detectable_by"] or issue["detectable_by"], issue["id"]
+        assert {"static-review", "in-process-check"} <= set(issue["detectable_by"]), issue["id"]
     app_text = (F2 / "orders_api" / "app.py").read_text(encoding="utf-8")
     for issue in issues:
         method, path = issue["location"].split(" ", 1)
@@ -137,7 +147,8 @@ def test_dispatch_matches_the_server(tmp_path, monkeypatch):
                 if over_http(port, "GET", "/health", {}, b"")[0] == 200:
                     break
             except OSError:
-                time.sleep(0.1)
+                pass
+            time.sleep(0.1)
         else:
             raise AssertionError("the server did not come up")
         served = [over_http(port, method, path, headers, body) for method, path, headers, body in SCRIPT[1:]]
@@ -149,24 +160,41 @@ def test_dispatch_matches_the_server(tmp_path, monkeypatch):
     assert len({status for status, _answer in direct}) >= 5          # the script reaches several outcomes, not one
 
 
-def test_dispatch_never_raises_and_list_work_grows_with_the_collection(tmp_path, monkeypatch):
+def test_dispatch_answers_odd_paths_and_list_work_grows_with_the_collection(monkeypatch):
     app = load_app(monkeypatch, F2)
     headers = {"Authorization": "Bearer user-a-token"}
+    app.reset()
+    for method in ("GET", "PUT", "DELETE"):
+        for path in ("/orders/" + "9" * 5000, "/orders/" + "9" * 10, "/orders/0", "/orders/-1", "/orders/1.5", "/orders/", "//", ""):
+            status, _headers, content = app.dispatch(method, path, headers, b'{"quantity": 1}')
+            assert 400 <= status < 500 and status != 400, (method, path[:30], status)
+            assert content and json.loads(content), (method, path[:30])
     took = {}
     for count in (100, 400):
         app.reset(preload=count)
-        start = time.perf_counter()
-        status, _headers, answer = app.dispatch("GET", "/orders", headers, b"")
-        took[count] = time.perf_counter() - start
-        assert status == 200 and len(json.loads(answer)["items"]) == count // 2
+        samples = []
+        for _ in range(3):
+            start = time.perf_counter()
+            status, _headers, content = app.dispatch("GET", "/orders", headers, b"")
+            samples.append(time.perf_counter() - start)
+            assert status == 200 and len(json.loads(content)["items"]) == count // 2
+        took[count] = min(samples)
     assert took[400] > 2 * took[100]
     app.reset()
 
 
-def test_server_refuses_a_routable_host(tmp_path):
-    done = subprocess.run([sys.executable, str(F2 / "orders_api" / "server.py"), "--host", "192.0.2.1", "--port", "8080"], capture_output=True,
-                          text=True, timeout=30, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), cwd=str(tmp_path))
+@pytest.mark.parametrize("host", ["192.0.2.1", "0.0.0.0", "localhost", "::"])
+def test_server_refuses_a_routable_host(tmp_path, host):
+    done = subprocess.run([sys.executable, str(F2 / "orders_api" / "server.py"), "--host", host, "--port", "8080"], capture_output=True,
+                          text=True, timeout=30, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", ORDERS_API_PRELOAD="not a number"),
+                          cwd=str(tmp_path))
     assert done.returncode == 2 and "loopback" in done.stderr, done.stderr
+
+
+def test_server_refuses_a_preload_that_is_not_a_number(tmp_path):
+    done = subprocess.run([sys.executable, str(F2 / "orders_api" / "server.py"), "--host", "127.0.0.1", "--port", "8080"], capture_output=True,
+                          text=True, timeout=30, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", ORDERS_API_PRELOAD="many"), cwd=str(tmp_path))
+    assert done.returncode == 2 and "whole number" in done.stderr and "Traceback" not in done.stderr, done.stderr
 
 
 def test_every_documented_operation_is_in_the_key_inventory():
@@ -174,6 +202,9 @@ def test_every_documented_operation_is_in_the_key_inventory():
     document = contract()
     assert key["operations"] == operations(document) and len(key["operations"]) == len(set(key["operations"])) >= 7
     assert key["undocumented_operations"] == ["GET /admin/stats"]
+    app_text = (F2 / "orders_api" / "app.py").read_text(encoding="utf-8")
+    routes = sorted(re.findall(r'^    \("(GET|POST|PUT|DELETE)", "(/\S*)", \w+, (?:True|False)\),$', app_text, re.M))
+    assert ["%s %s" % route for route in routes] == sorted(key["operations"] + key["undocumented_operations"])
     assert not set(key["undocumented_operations"]) & set(key["operations"])
     for item in document["paths"].values():
         for method, operation in item.items():
@@ -182,7 +213,7 @@ def test_every_documented_operation_is_in_the_key_inventory():
 
 
 @pytest.mark.docker
-def test_f2_runs_as_a_service(live, tmp_path):  # noqa: F811
+def test_f2_runs_as_a_service(live):  # noqa: F811
     inputs = [(path.relative_to(F2).as_posix(), path) for path in sorted(F2.rglob("*.py")) if "__pycache__" not in path.parts]
     serve = "cd /work/.qa-input\nexec python -m orders_api.server --host 127.0.0.1 --port 8080\n"
     probe = ("import sys, time, urllib.request\n"

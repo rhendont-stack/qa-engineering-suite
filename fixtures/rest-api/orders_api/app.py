@@ -139,7 +139,7 @@ ROUTES = [
     ("DELETE", "/orders/{id}", delete_order, True),
     ("GET", "/admin/stats", stats, True),
 ]  # type: List[Tuple[str, str, object, bool]]
-COMPILED = [(method, re.compile("^" + pattern.replace("{id}", r"(\d+)") + "$"), handler, needs) for method, pattern, handler, needs in ROUTES]
+COMPILED = [(method, re.compile("^" + pattern.replace("{id}", r"(\d{1,9})") + "$"), handler, needs) for method, pattern, handler, needs in ROUTES]
 
 
 def dispatch(method: str, path: str, headers: Dict[str, str], body: bytes) -> Tuple[int, Dict[str, str], bytes]:

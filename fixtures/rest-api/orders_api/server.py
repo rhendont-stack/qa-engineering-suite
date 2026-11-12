@@ -49,12 +49,17 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="The orders API on a loopback address.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--preload", type=int, default=int(os.environ.get("ORDERS_API_PRELOAD", "0")))
+    parser.add_argument("--preload", default=None, help="orders to start with (default: ORDERS_API_PRELOAD, or 0)")
     args = parser.parse_args(argv)
     if args.host not in LOOPBACK:
         print("refused: the host must be a loopback address (127.0.0.1 or ::1)", file=sys.stderr)
         return 2
-    app.reset(preload=max(args.preload, 0))
+    try:
+        preload = int(args.preload if args.preload is not None else os.environ.get("ORDERS_API_PRELOAD", "0"))
+    except ValueError:
+        print("refused: the number of preloaded orders must be a whole number", file=sys.stderr)
+        return 2
+    app.reset(preload=max(preload, 0))
     server = (Server6 if ":" in args.host else Server)((args.host, args.port), Handler)
     try:
         server.serve_forever()
