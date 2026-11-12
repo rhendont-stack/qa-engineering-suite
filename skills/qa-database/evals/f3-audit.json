@@ -1,0 +1,17 @@
+{
+  "id": "qa-database-f3-audit",
+  "fixture": "fixtures/sql-database",
+  "skill": "skills/qa-database",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "system_path_only": true,
+  "keep_work": [
+    "database"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-database/scripts/qa.py",
+    "python3 .claude/skills/qa-database/scripts/schema_model.py",
+    "python3 .claude/skills/qa-database/scripts/squawk_to_sarif.py"
+  ],
+  "prompt": "Audit the schema and the migrations of this shop database for data-integrity problems, and check that the migrations apply and roll back cleanly. Throwaway SQLite databases on this machine are approved for that check; do not touch any other database."
+}
