@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+# The qa-security active plan for the ZAP Automation Framework: spider, passive checks and an active scan capped at ten
+# minutes. It sends attack requests, so it runs only against the project's own application, started as the --service of the
+# same container run on loopback, under a dast-active grant. The target is ${QA_TARGET} (http://127.0.0.1:<port>), set on the
+# run's command line. scripts/zap_plan.py writes it to .qa/work/security/zap-active.yaml before every run, with an openapi job
+# in the spider's place when asked.
+env:
+  contexts:
+    - name: target
+      urls:
+        - ${QA_TARGET}
+  parameters:
+    failOnError: true
+    progressToStdout: true
+jobs:
+  - type: spider
+    parameters:
+      context: target
+      maxDuration: 2
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 2
+  - type: activeScan
+    parameters:
+      context: target
+      maxScanDurationInMins: 10
+      maxRuleDurationInMins: 2
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 2
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: /qa-evidence
+      reportFile: zap

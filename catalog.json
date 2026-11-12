@@ -9,6 +9,7 @@
     "qa-regression-guard",
     "qa-reporting",
     "qa-requirements",
+    "qa-security",
     "qa-test-execution",
     "qa-test-generation",
     "qa-test-strategy"
@@ -65,6 +66,14 @@
     {
       "key": "analyse-query-plans",
       "owner": "qa-database"
+    },
+    {
+      "key": "find-security-weaknesses",
+      "owner": "qa-security"
+    },
+    {
+      "key": "adversarial-authorization-testing",
+      "owner": "qa-security"
     }
   ]
 }

@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from helpers import FIXTURES, answer_key
+from helpers import FIXTURES, LAUNCHER, REPO, answer_key
 from qa import config
 from test_container_live import assert_no_service_left, live, service_run  # noqa: F401 (live is a fixture)
 
@@ -45,7 +46,7 @@ DEMONSTRATED_IN_PROCESS = {
     "F6-09": "test_the_lab_serves_its_pages_and_shows_the_classes_marked_in_process",
     "F6-11": "test_the_lab_serves_its_pages_and_shows_the_classes_marked_in_process",
 }
-OBSERVED_TOOLS = {"gitleaks", "osv-scanner"}  # tools seen on F6 through qa run --container; see the task report for the run
+OBSERVED_TOOLS = {"gitleaks", "osv-scanner", "semgrep", "zap"}  # tools seen on F6 through qa run --container; see the task reports
 ROUTE = re.compile(r'^    \("(GET)", "(/\S*)"\): \w+,$', re.M)
 
 
@@ -340,3 +341,262 @@ def test_f6_runs_as_a_service(live, tmp_path):  # noqa: F811
     assert (done.network_mode, done.anomalies) == ("none", ())
     assert done.service["running_at_end"] is True
     assert_no_service_left(live)
+
+
+
+# ----------------------------------------------------------------------------------------------- the qa-security legs
+# Each leg's command is read from the ``qa-leg`` blocks of qa-security's references/tools.md, the one text the skill follows,
+# and run through the real CLI in a generated copy's own workspace. The lab runs only as the service of a container run. The
+# ZAP grants are recorded in that temporary workspace with the user's words; the OSV-Scanner grants are the user's own, in the
+# workspace QA_TEST_OSV_WORKSPACE names, and no test here records them.
+
+SECURITY = REPO / "skills" / "qa-security"
+SECURITY_TOOLS_MD = SECURITY / "references" / "tools.md"
+SECURITY_PREFIX = ["python3", ".claude/skills/qa-security/scripts/qa.py", "--role", "auditor", "--skill", "qa-security"]
+LAB_SERVE = "cd /work && exec python3 lab/app.py --host 127.0.0.1 --port 8000"
+APPROVAL = "Hacer lo necesario para ejecutar el requerimiento, no me preguntes, ejecute de forma autonoma."
+ZAP_BASELINE_ENTRIES = ["F6-08", "F6-11"]  # what the passive baseline located, by endpoint and CWE, in the recorded leg runs
+SECURITY_LEG_IMAGES = {"gitleaks": "gitleaks", "osv-scanner": "osv-scanner", "semgrep": "semgrep", "unicode-scan": "python-newest",
+                       "zap-baseline": "zap", "zap-active": "zap"}
+
+
+def image_of(image_id):
+    listing = json.loads((REPO / "shared" / "policies" / "container-images.json").read_text(encoding="utf-8"))
+    return next(entry["image"] for entry in listing["images"] if entry["id"] == image_id)
+
+
+def security_legs():
+    """``{name: (attributes, the command line)}`` from the ``qa-leg`` fenced blocks of qa-security's tools.md."""
+    found = {}
+    for match in re.finditer(r"^```qa-leg (\S+)((?: [\w-]+=\S+)*)\n(.*?)\n```$", SECURITY_TOOLS_MD.read_text(encoding="utf-8"), re.M | re.S):
+        assert match.group(1) not in found, match.group(1)
+        found[match.group(1)] = (dict(a.split("=", 1) for a in match.group(2).split()), match.group(3).strip())
+    return found
+
+
+def security_words(name, serve=LAB_SERVE):
+    attributes, line = security_legs()[name]
+    words = shlex.split(line.replace("<serve>", serve))
+    assert words[:len(SECURITY_PREFIX)] == SECURITY_PREFIX, words[:len(SECURITY_PREFIX)]
+    return attributes, words[len(SECURITY_PREFIX):]
+
+
+def security_cli(root, words, timeout=1700):
+    done = subprocess.run([sys.executable, str(LAUNCHER), "--workspace", str(root), "--role", "auditor", "--skill", "qa-security", *words],
+                          cwd=str(root), capture_output=True, timeout=timeout)
+    return done.returncode, json.loads(done.stdout)
+
+
+def security_script(root, name, *args):
+    done = subprocess.run([sys.executable, "-I", "-B", str(SECURITY / "scripts" / name), *args], cwd=str(root), capture_output=True,
+                          text=True, timeout=120)
+    assert done.returncode == 0 and json.loads(done.stdout)["ok"], done.stdout + done.stderr
+    return json.loads(done.stdout)
+
+
+def load_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def triaged_report(root, execution, name):
+    """The stored report's alerts through the skill's own ``sarif_triage.py``, and their answer-key detections."""
+    out = security_script(root, "sarif_triage.py", "--sarif", ".qa/evidence/%s/reports/%s" % (execution, name))
+    triaged = json.loads((root / out["out"]).read_text(encoding="utf-8"))
+    return triaged
+
+
+def located(triaged, tool):
+    """``(entries, recall, unclassified)``: the answer-key entries this tool's detections locate with a CWE that agrees, as if
+    every entry named the tool; recall over the entries the key does name it on; and the entries only a CWE-less detection
+    reaches (a location match, which is never a reason to name the tool on an entry)."""
+    triage = load_module(SECURITY / "scripts" / "sarif_triage.py", "qa_security_triage_legs")
+    recall = load_module(REPO / "benchmark" / "graders" / "recall.py", "qa_recall_legs").recall
+    key = answer_key("vuln-lab")
+    found = triage.detections(triaged, tool)
+    every = dict(key, issues=[dict(issue, detectable_by=issue["detectable_by"] + [tool]) for issue in key["issues"]])
+    probe = recall(every, found, {tool})
+    hits = [issue["id"] for issue in key["issues"] if issue["id"] not in probe["missed"] and issue["id"] not in probe["detected_unclassified"]]
+    return hits, recall(key, found, {tool}), probe["detected_unclassified"]
+
+
+def tagged(tool):
+    return [issue["id"] for issue in answer_key("vuln-lab")["issues"] if tool in issue["detectable_by"]]
+
+
+@pytest.fixture
+def f6_project(tmp_path, qa_cli):
+    """A generated F6 copy in its own trusted workspace, with the container engine set; skipped without one."""
+    engine = os.environ.get("QA_TEST_CONTAINER_ENGINE")
+    if not engine:
+        pytest.skip("tool missing: QA_TEST_CONTAINER_ENGINE is not set")
+    root = generated(tmp_path / "f6")
+
+    def cli(*args):
+        return qa_cli(*args, cwd=root, workspace=root)
+
+    assert cli("init")[0] == 0
+    assert cli("config", "set", "project.trust", "trusted", "--approval", "fixture test")[0] == 0
+    assert cli("config", "set", "container.engine", engine, "--approval", "fixture test")[0] == 0
+    return root, cli
+
+
+def security_grant(cli, *activities):
+    code, out = cli("authorize", "--environment", "local", "--activity", *activities, "--target", "127.0.0.1", "--approval", APPROVAL)
+    assert code == 0 and out["ok"], out
+    return out
+
+
+def execution_of(cli, execution):
+    return cli("state", "show", "executions")[1]["state"][execution]
+
+
+def stored_files(root):
+    return [(path.relative_to(root).as_posix(), path.read_bytes()) for path in sorted((root / ".qa").rglob("*")) if path.is_file()]
+
+
+def test_the_security_legs_are_the_documented_ones_with_pinned_images_and_loopback_only():
+    found = security_legs()
+    assert sorted(found) == ["gitleaks", "osv-scanner", "semgrep", "unicode-scan", "zap-active", "zap-baseline"]
+    assert {name: attributes["grant"] for name, (attributes, _) in found.items()} == {
+        "gitleaks": "none", "osv-scanner": "install", "semgrep": "none", "unicode-scan": "none", "zap-baseline": "dast-passive",
+        "zap-active": "dast-active"}
+    for name, (attributes, line) in found.items():
+        _, words = security_words(name)
+        assert words[0] == "run" and words[words.index("--container") + 1] == image_of(SECURITY_LEG_IMAGES[name]), name
+        assert attributes["report"] == words[words.index("--report") + 1].split(":", 1)[0] == "sarif", name
+        if "--service" in words:
+            assert words[words.index("--service") + 1] == image_of("python-newest")
+            assert words[words.index("--service-user") + 1] == "65534:65534"
+        hosts = set(re.findall(r"https?://([^/:\s'\"]+)", line))
+        assert hosts <= ({"127.0.0.1", "osv-vulnerabilities.storage.googleapis.com"} if name == "osv-scanner" else {"127.0.0.1"}), name
+    assert "--redact" in security_words("gitleaks")[1][-1] and " git " not in security_words("gitleaks")[1][-1]
+    semgrep = security_words("semgrep")[1][-1]
+    assert "--metrics=off" in semgrep and "--config /work/.qa-input/security/semgrep-rules.yaml" in semgrep and "--config" == \
+        re.findall(r"--config\b", semgrep)[0] and semgrep.count("--config") == 1
+    baseline = security_words("zap-baseline")[1][-1]
+    assert baseline.endswith("QA_TARGET=http://127.0.0.1:8000 zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-baseline.yaml")
+    active = security_words("zap-active")[1]
+    assert active[active.index("--timeout") + 1] == "1500" and active[-1].endswith("/work/.qa-input/security/zap-active.yaml")
+    scan = security_words("osv-scanner")[1][-1]
+    assert "--offline" in scan and "https://" not in scan and "--install" in security_words("osv-scanner")[1]
+
+
+@pytest.mark.docker
+def test_f6_gitleaks_leg(f6_project):
+    root, cli = f6_project
+    code, out = security_cli(root, security_words("gitleaks")[1])
+    print("gitleaks leg:", out["execution"], out["status"], out.get("reason"))
+    assert (code, out["status"]) == (1, "failed"), out
+    run = execution_of(cli, out["execution"])
+    assert run["container"]["network_mode"] == "none" and run["reports"][0]["files"] == ["reports/gitleaks.sarif"]
+    triaged = triaged_report(root, out["execution"], "gitleaks.sarif")
+    assert [(a["rule"], a["path"], a["line"]) for a in triaged["alerts"]] == [("stripe-access-token", "lab/settings.py", 4)]
+    hits, scored, unclassified = located(triaged, "gitleaks")
+    print("gitleaks locates:", hits, "recall:", scored["recall"], "unclassified:", unclassified)
+    assert hits == [] and unclassified == tagged("gitleaks") == ["F6-04"] and scored["recall"] == 1.0   # its rules carry no CWE
+
+
+@pytest.mark.docker
+def test_gitleaks_leg_stores_no_token_value(f6_project):
+    root, cli = f6_project
+    token = token_of(root)
+    body = token.split("_", 2)[2].encode()
+    code, out = security_cli(root, security_words("gitleaks")[1])
+    assert (code, out["status"]) == (1, "failed"), out
+    triaged_report(root, out["execution"], "gitleaks.sarif")
+    stored = stored_files(root)
+    leaked = [name for name, data in stored if token.encode() in data or body in data]
+    assert leaked == [] and token.encode() not in json.dumps(out).encode(), leaked
+    report = dict(stored)[".qa/evidence/%s/reports/gitleaks.sarif" % out["execution"]]
+    assert b"REDACTED" in report
+
+
+@pytest.mark.docker
+def test_f6_osv_leg():
+    workspace = os.environ.get("QA_TEST_OSV_WORKSPACE")
+    if not workspace:
+        pytest.skip("needs the user's OSV grants (QA_TEST_OSV_WORKSPACE)")
+    root = Path(workspace)
+    assert (root / "requirements.txt").read_bytes() == (F6 / "requirements.txt").read_bytes(), "the workspace must hold a generated F6 copy"
+    code, out = security_cli(root, security_words("osv-scanner")[1])
+    print("osv-scanner leg:", out["execution"], out["status"], out.get("reason"))
+    assert (code, out["status"]) == (1, "failed"), out
+    triaged = triaged_report(root, out["execution"], "osv.sarif")
+    assert any(a["rule"] == "CVE-2018-18074" and a["path"] == "requirements.txt" for a in triaged["alerts"]), triaged["by_rule"]
+    hits, scored, unclassified = located(triaged, "osv-scanner")
+    print("osv-scanner locates:", hits, "recall:", scored["recall"], "unclassified:", unclassified)
+    assert hits == [] and unclassified == tagged("osv-scanner") == ["F6-05"] and scored["recall"] == 1.0   # no CWE in its rules
+
+
+@pytest.mark.docker
+def test_f6_semgrep_leg(f6_project):
+    root, cli = f6_project
+    security_script(root, "zap_plan.py", "--kind", "semgrep-rules")
+    code, out = security_cli(root, security_words("semgrep")[1])
+    print("semgrep leg:", out["execution"], out["status"], out.get("reason"))
+    assert (code, out["status"]) == (1, "failed"), out
+    run = execution_of(cli, out["execution"])
+    assert run["container"]["network_mode"] == "none"
+    triaged = triaged_report(root, out["execution"], "semgrep.sarif")
+    print("semgrep alerts:", sorted((a["rule"], a["path"], a["line"], tuple(a["cwe"])) for a in triaged["alerts"]))
+    assert all(a["cwe"] for a in triaged["alerts"]) and all(a["path"] and a["path"].startswith("lab/") for a in triaged["alerts"])
+    hits, scored, unclassified = located(triaged, "semgrep")
+    print("semgrep locates:", hits, "recall:", scored["recall"], "unclassified:", unclassified)
+    assert hits == tagged("semgrep") == ["F6-01", "F6-02", "F6-03", "F6-06", "F6-07", "F6-08", "F6-09", "F6-10"]
+    assert scored["recall"] == 1.0 and unclassified == []
+
+
+@pytest.mark.docker
+def test_f6_unicode_scan_leg(f6_project):
+    root, cli = f6_project
+    security_script(root, "unicode_scan.py", "--copy-to-work")
+    code, out = security_cli(root, security_words("unicode-scan")[1])
+    print("unicode-scan leg:", out["execution"], out["status"], out.get("reason"))
+    assert (code, out["status"]) == (0, "passed"), out
+    report = json.loads((root / ".qa" / "evidence" / out["execution"] / "reports" / "unicode.sarif").read_text(encoding="utf-8"))
+    assert report["runs"][0]["results"] == [] and report["runs"][0]["tool"]["driver"]["name"] == "qa-security-unicode-scan"
+    run = execution_of(cli, out["execution"])
+    assert run["container"]["network_mode"] == "none"
+
+
+def zap_leg(root, cli, name, *activities):
+    security_grant(cli, *activities)
+    security_script(root, "zap_plan.py", "--kind", "baseline" if name == "zap-baseline" else "active")
+    code, out = security_cli(root, security_words(name)[1])
+    print("%s leg:" % name, out["execution"], out["status"], out.get("reason"))
+    assert out["status"] in ("passed", "failed"), out
+    run = execution_of(cli, out["execution"])
+    granted = [entry["activity"] for entry in run["authorizations"]]
+    assert ("dast-passive" if name == "zap-baseline" else "dast-active") in granted and set(granted) <= set(activities) | {"test-execution-local"}, granted
+    assert run["container"]["service"]["image"] == image_of("python-newest") and run["container"]["network_mode"] == "none"
+    triaged = triaged_report(root, out["execution"], "zap.json")
+    endpoints = {a["endpoint"].split(" ", 1)[1].split("/")[2] for a in triaged["alerts"] if a["endpoint"]}
+    assert triaged["alerts"] and endpoints == {"127.0.0.1:8000"}, endpoints
+    print("%s alerts:" % name, sorted({(a["rule"], tuple(a["cwe"])) for a in triaged["alerts"]}))
+    return out, triaged
+
+
+@pytest.mark.docker
+def test_f6_zap_baseline_leg(f6_project):
+    root, cli = f6_project
+    out, triaged = zap_leg(root, cli, "zap-baseline", "dast-passive")
+    run = execution_of(cli, out["execution"])
+    assert "dast-active" not in [entry["activity"] for entry in run["authorizations"]]
+    hits, scored, unclassified = located(triaged, "zap")
+    print("zap baseline locates:", hits, "recall over the key's zap entries:", scored["recall"])
+    print("zap baseline reaches by location only:", unclassified)
+    assert set(hits) >= set(ZAP_BASELINE_ENTRIES) and set(hits) <= set(tagged("zap"))
+
+
+@pytest.mark.docker
+def test_f6_zap_active_leg(f6_project):
+    root, cli = f6_project
+    out, triaged = zap_leg(root, cli, "zap-active", "dast-passive", "dast-active")
+    run = execution_of(cli, out["execution"])
+    assert "dast-active" in [entry["activity"] for entry in run["authorizations"]]
+    hits, scored, unclassified = located(triaged, "zap")
+    print("zap active locates:", hits, "recall over the key's zap entries:", scored["recall"], "unclassified:", unclassified)
+    assert scored["recall"] == 1.0 and hits == tagged("zap") == ["F6-01", "F6-02", "F6-03", "F6-08", "F6-11"]

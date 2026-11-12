@@ -1,7 +1,7 @@
 {
   "fixture": "vuln-lab",
   "version": 1,
-  "note": "Locations are an operation (METHOD /path) or the file, with the file and the lines that hold the cause, in the copy that generate.py writes (lab/settings.py exists only there). Classes are named by CWE only. detectable_by names static-review, in-process-check where a test in tests/integration/test_fixture_f6.py shows the class, and a tool only after an observed run of its pinned image on F6. F6-05's advisory (CVE-2018-18074) and osv-scanner in its detectable_by come from an observed offline run of the pinned OSV-Scanner image (2.7.1) over this requirements.txt, which reported five advisories for requests 2.19.1; the key names one of them. gitleaks on F6-04 comes from an observed run of the pinned Gitleaks image (v8.30.1) over a generated copy, which reported only that line (rule stripe-access-token). F6-05 is file_level: a tool that reports the manifest without a line still locates it.",
+  "note": "Locations are an operation (METHOD /path) or the file, with the file and the lines that hold the cause, in the copy that generate.py writes (lab/settings.py exists only there). Classes are named by CWE only. detectable_by names static-review, in-process-check where a test in tests/integration/test_fixture_f6.py shows the class, and a tool only after an observed run of its pinned image on F6. F6-05's advisory (CVE-2018-18074) and osv-scanner in its detectable_by come from an observed offline run of the pinned OSV-Scanner image (2.7.1) over this requirements.txt, which reported five advisories for requests 2.19.1; the key names one of them. gitleaks on F6-04 comes from an observed run of the pinned Gitleaks image (v8.30.1) over a generated copy, which reported only that line (rule stripe-access-token). F6-05 is file_level: a tool that reports the manifest without a line still locates it. semgrep comes from an observed run of the pinned Semgrep image (1.185.0) with the suite's own rules (skills/qa-security/assets/semgrep-rules/) over a generated copy, whose results located each entry tagged with it by file, line and CWE. zap comes from observed runs of the pinned ZAP image (2.17.0) against the lab started as the run's service on 127.0.0.1: the baseline plan located F6-08 and F6-11, and the active plan also F6-01, F6-02 and F6-03, each by endpoint and CWE; a ZAP alert without a CWE that reached an entry by its endpoint alone (F6-09) does not tag it. The execution ids are in the qa-security task report.",
   "issues": [
     {
       "id": "F6-01",
@@ -16,7 +16,9 @@
       "severity_anchor": "SEC-C1",
       "class": "CWE-89 SQL injection: the query text is built from a request parameter",
       "detectable_by": [
-        "static-review"
+        "static-review",
+        "semgrep",
+        "zap"
       ]
     },
     {
@@ -32,7 +34,9 @@
       "severity_anchor": "SEC-M1",
       "class": "CWE-79 reflected cross-site scripting: a request parameter is placed in HTML without escaping",
       "detectable_by": [
-        "static-review"
+        "static-review",
+        "semgrep",
+        "zap"
       ]
     },
     {
@@ -48,7 +52,9 @@
       "severity_anchor": "SEC-C1",
       "class": "CWE-22 path traversal: a file name from a request parameter is not confined to its directory",
       "detectable_by": [
-        "static-review"
+        "static-review",
+        "semgrep",
+        "zap"
       ]
     },
     {
@@ -102,7 +108,8 @@
       "class": "CWE-489 active debug code: an error response carries the traceback",
       "detectable_by": [
         "static-review",
-        "in-process-check"
+        "in-process-check",
+        "semgrep"
       ]
     },
     {
@@ -119,7 +126,8 @@
       "class": "CWE-942 permissive cross-origin policy: any requesting origin is allowed, with credentials",
       "detectable_by": [
         "static-review",
-        "in-process-check"
+        "in-process-check",
+        "semgrep"
       ]
     },
     {
@@ -136,7 +144,9 @@
       "class": "CWE-1004 session cookie without the HttpOnly attribute",
       "detectable_by": [
         "static-review",
-        "in-process-check"
+        "in-process-check",
+        "semgrep",
+        "zap"
       ]
     },
     {
@@ -153,7 +163,8 @@
       "class": "CWE-614 session cookie without the Secure attribute",
       "detectable_by": [
         "static-review",
-        "in-process-check"
+        "in-process-check",
+        "semgrep"
       ]
     },
     {
@@ -169,7 +180,8 @@
       "severity_anchor": "SEC-C1",
       "class": "CWE-347 improper verification of a cryptographic signature: the check depends on the algorithm the token itself names",
       "detectable_by": [
-        "static-review"
+        "static-review",
+        "semgrep"
       ]
     },
     {
@@ -186,7 +198,8 @@
       "class": "CWE-693 protection mechanism failure: no Content-Security-Policy, X-Content-Type-Options or X-Frame-Options header on any response",
       "detectable_by": [
         "static-review",
-        "in-process-check"
+        "in-process-check",
+        "zap"
       ]
     }
   ]

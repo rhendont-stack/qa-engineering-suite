@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright the qa-engineering-suite authors.
+#
+# The qa-security Semgrep rules for Python web code. Each rule names one weakness class by CWE and the OWASP Top 10 2025
+# category the suite assigns it (references/owasp-cwe-mapping.md). The rules describe code shapes; they hold no attack input.
+# They are written for this suite and are the only rules it runs: no registry rule is fetched, bundled or redistributed.
+# Hard-coded secrets are left to Gitleaks, which redacts what it finds; Semgrep's SARIF quotes the matched line.
+rules:
+  - id: qa-sql-built-by-string-formatting
+    languages: [python]
+    severity: ERROR
+    message: >-
+      SQL text built by string formatting or concatenation is executed, so a value from a request can change the
+      statement. Pass values as parameters of the execute call. (CWE-89)
+    metadata:
+      cwe: ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"]
+      owasp: ["A05:2025 - Injection"]
+      category: security
+      confidence: MEDIUM
+      license: Apache-2.0
+    pattern-either:
+      - patterns:
+          - pattern: $CONN.execute($QUERY, ...)
+          - pattern-either:
+              - pattern-inside: |
+                  $QUERY = "..." % $ARGS
+                  ...
+              - pattern-inside: |
+                  $QUERY = f"..."
+                  ...
+              - pattern-inside: |
+                  $QUERY = "..." + $PART
+                  ...
+              - pattern-inside: |
+                  $QUERY = "...".format(...)
+                  ...
+      - pattern: $CONN.execute("..." % $ARGS, ...)
+      - pattern: $CONN.execute(f"...", ...)
+      - pattern: $CONN.execute("..." + $PART, ...)
+      - pattern: $CONN.execute("...".format(...), ...)
+
+  - id: qa-request-value-in-html-template
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A value read from a request mapping is passed to an HTML template. Unless the template engine escapes it, the
+      value is placed in the page as markup. Escape it (html.escape) or use an engine that escapes by default. (CWE-79)
+    metadata:
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      owasp: ["A05:2025 - Injection"]
+      category: security
+      confidence: LOW
+      license: Apache-2.0
+    patterns:
+      - pattern: $RENDER("$TEMPLATE", ..., $NAME=$VALUES.get(...), ...)
+      - metavariable-regex:
+          metavariable: $TEMPLATE
+          regex: (?i).*\.html?$
+
+  - id: qa-path-joined-with-a-request-value
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A file path is joined with a value read from a request mapping. Without resolving the path and checking that it
+      stays inside its directory, the value can name another file. (CWE-22)
+    metadata:
+      cwe: ["CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"]
+      owasp: ["A01:2025 - Broken Access Control"]
+      category: security
+      confidence: MEDIUM
+      license: Apache-2.0
+    pattern: os.path.join($BASE, ..., $VALUES.get(...), ...)
+
+  - id: qa-debug-enabled-in-settings
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Debug mode is on in a settings module. Error responses and pages can then carry tracebacks and internals. Turn it
+      off outside development. (CWE-489)
+    metadata:
+      cwe: ["CWE-489: Active Debug Code"]
+      owasp: ["A02:2025 - Security Misconfiguration"]
+      category: security
+      confidence: HIGH
+      license: Apache-2.0
+    paths:
+      include:
+        - "*settings*.py"
+        - "*config*.py"
+    pattern: DEBUG = True
+
+  - id: qa-cors-origin-reflected
+    languages: [python]
+    severity: WARNING
+    message: >-
+      The Access-Control-Allow-Origin header is set from a value rather than a fixed origin, so any requesting origin can
+      be allowed. With credentials allowed, other sites can read responses. Allow a fixed list. (CWE-942)
+    metadata:
+      cwe: ["CWE-942: Permissive Cross-domain Policy with Untrusted Domains"]
+      owasp: ["A02:2025 - Security Misconfiguration"]
+      category: security
+      confidence: MEDIUM
+      license: Apache-2.0
+    patterns:
+      - pattern: $HEADERS["Access-Control-Allow-Origin"] = $VALUE
+      - pattern-not: $HEADERS["Access-Control-Allow-Origin"] = "..."
+
+  - id: qa-cookie-without-httponly
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A Set-Cookie value is written without the HttpOnly attribute, so scripts in the page can read the cookie. (CWE-1004)
+    metadata:
+      cwe: ["CWE-1004: Sensitive Cookie Without 'HttpOnly' Flag"]
+      owasp: ["A02:2025 - Security Misconfiguration"]
+      category: security
+      confidence: LOW
+      license: Apache-2.0
+    patterns:
+      - pattern: '"$COOKIE"'
+      - metavariable-regex:
+          metavariable: $COOKIE
+          regex: (?i)^[^=;\s]+=[^;]*;(?!.*httponly).*\b(?:path|samesite|expires|max-age|domain)=
+
+  - id: qa-cookie-without-secure
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A Set-Cookie value is written without the Secure attribute, so the browser also sends the cookie over plain
+      HTTP. (CWE-614)
+    metadata:
+      cwe: ["CWE-614: Sensitive Cookie in HTTPS Session Without 'Secure' Attribute"]
+      owasp: ["A02:2025 - Security Misconfiguration"]
+      category: security
+      confidence: LOW
+      license: Apache-2.0
+    patterns:
+      - pattern: '"$COOKIE"'
+      - metavariable-regex:
+          metavariable: $COOKIE
+          regex: (?i)^[^=;\s]+=[^;]*;(?!.*\bsecure\b).*\b(?:path|samesite|expires|max-age|domain)=
+
+  - id: qa-signature-check-depends-on-token-algorithm
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Whether a token's signature is checked depends on the algorithm the token's own header names. Fix the algorithm on
+      the server side and always verify. (CWE-347)
+    metadata:
+      cwe: ["CWE-347: Improper Verification of Cryptographic Signature"]
+      owasp: ["A04:2025 - Cryptographic Failures"]
+      category: security
+      confidence: MEDIUM
+      license: Apache-2.0
+    pattern-either:
+      - pattern: |
+          if $HEADER.get("alg") == $ALG:
+              ...
+      - pattern: |
+          if $HEADER["alg"] == $ALG:
+              ...

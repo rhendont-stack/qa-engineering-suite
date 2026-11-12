@@ -6,6 +6,7 @@ subset of YAML, so the standard library reads it. The fixture's own files never 
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -384,3 +385,65 @@ def test_f2_hurl_leg(api_project):
     assert out["tests"]["total"] == 1
     run = recorded(api_project, out["execution"])
     assert run["container"]["service"]["running_at_end"] is True and run["container"]["network_mode"] == "none"
+
+
+
+# ----------------------------------------------------------------------------------------------- the qa-security leg on F2
+# qa-security's zap-active leg, with the contract imported (zap_plan.py --kind active --openapi openapi.yaml), against the
+# orders API started as the run's service on 127.0.0.1:8000 (ZAP listens on 8080 itself).
+
+SECURITY = REPO / "skills" / "qa-security"
+SECURITY_PREFIX = ["python3", ".claude/skills/qa-security/scripts/qa.py", "--role", "auditor", "--skill", "qa-security"]
+ZAP_SERVE = "cd /work && exec python3 -m orders_api.server --host 127.0.0.1 --port 8000"
+
+
+def security_leg_words(name):
+    text = (SECURITY / "references" / "tools.md").read_text(encoding="utf-8")
+    blocks = {m.group(1): m.group(2).strip() for m in re.finditer(r"^```qa-leg (\S+)(?: [\w-]+=\S+)*\n(.*?)\n```$", text, re.M | re.S)}
+    words = shlex.split(blocks[name].replace("<serve>", ZAP_SERVE))
+    assert words[:len(SECURITY_PREFIX)] == SECURITY_PREFIX
+    return words[len(SECURITY_PREFIX):]
+
+
+def security_run(project, words, timeout=1700):
+    done = subprocess.run([sys.executable, str(LAUNCHER), "--workspace", str(project.root), "--role", "auditor", "--skill", "qa-security",
+                           *words], cwd=str(project.root), capture_output=True, timeout=timeout)
+    return done.returncode, json.loads(done.stdout)
+
+
+def security_script(project, name, *args):
+    done = subprocess.run([sys.executable, "-I", "-B", str(SECURITY / "scripts" / name), *args], cwd=str(project.root),
+                          capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0 and json.loads(done.stdout)["ok"], done.stdout + done.stderr
+    return json.loads(done.stdout)
+
+
+@pytest.mark.docker
+def test_f2_zap_api_active_leg(api_project):
+    plan = security_script(api_project, "zap_plan.py", "--kind", "active", "--openapi", "openapi.yaml")
+    assert plan["openapi"] == "openapi.yaml"
+    grant(api_project, "dast-passive", "dast-active")
+    code, out = security_run(api_project, security_leg_words("zap-active"))
+    print("zap api active leg:", out["execution"], out["status"], out.get("reason"))
+    log = evidence_of(api_project, out["execution"]) / "stdout.log"
+    assert out["status"] in ("passed", "failed"), (out, log.read_text(encoding="utf-8", errors="replace")[-3000:] if log.exists() else None)
+    run = recorded(api_project, out["execution"])
+    assert "dast-active" in [entry["activity"] for entry in run["authorizations"]]
+    assert run["container"]["service"]["image"] == image("python-newest") and run["container"]["network_mode"] == "none"
+    assert run["command"]["argv"] == ["sleep 3; QA_TARGET=http://127.0.0.1:8000 zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-active.yaml"]
+    assert "apiFile: /work/openapi.yaml" in (api_project.root / plan["written"]).read_text(encoding="utf-8")
+    triaged = security_script(api_project, "sarif_triage.py", "--sarif", ".qa/evidence/%s/reports/zap.json" % out["execution"])
+    listing = json.loads((api_project.root / triaged["out"]).read_text(encoding="utf-8"))
+    endpoints = sorted({a["endpoint"] for a in listing["alerts"] if a["endpoint"]})
+    print("zap api alerts:", sorted({(a["rule"], tuple(a["cwe"])) for a in listing["alerts"]}))
+    print("zap api endpoints:", endpoints)
+    assert listing["alerts"] and {e.split(" ", 1)[1].split("/")[2] for e in endpoints} == {"127.0.0.1:8000"}
+    assert any("/orders" in e for e in endpoints), endpoints                                # reached through the imported contract
+    spec = importlib.util.spec_from_file_location("qa_security_triage_f2", str(SECURITY / "scripts" / "sarif_triage.py"))
+    triage = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(triage)
+    recall_spec = importlib.util.spec_from_file_location("qa_recall_f2", str(REPO / "benchmark" / "graders" / "recall.py"))
+    recall = importlib.util.module_from_spec(recall_spec)
+    recall_spec.loader.exec_module(recall)
+    scored = recall.recall(answer_key("rest-api"), triage.detections(listing, "zap"), {"zap"})
+    print("zap api recall on F2:", scored)

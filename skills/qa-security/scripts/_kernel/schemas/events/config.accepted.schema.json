@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "config.accepted event data",
+  "description": "The user approved config.json as it stands. The approval quote carries no pattern because it may hold redaction markers. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority.",
+  "type": "object",
+  "properties": {
+    "hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "approval": {"type": "string", "minLength": 1},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
+  },
+  "required": ["hash", "approval"],
+  "additionalProperties": false
+}
