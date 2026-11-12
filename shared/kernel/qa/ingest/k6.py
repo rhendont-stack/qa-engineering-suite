@@ -23,8 +23,15 @@ def _name(value: str, what: str) -> str:
 
 
 def _number(value: object, what: str) -> float:
-    """A finite JSON number; a boolean, a string or a null is not one."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    """A finite JSON number; a boolean, a string or a null is not one, nor an integer literal past float range (the loader
+    keeps those as ``int``, and every limit compared with them is a float)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ReportInvalid("invalid_metric_value", what=what)
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        finite = False
+    if not finite:
         raise ReportInvalid("invalid_metric_value", what=what)
     return value
 

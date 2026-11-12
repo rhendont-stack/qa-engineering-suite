@@ -4,11 +4,18 @@ Usage: python3 generate.py WORKSPACE OUTPUT
 
 The install step (the only step with a network) fetches the PyPI offline database from
 osv-vulnerabilities.storage.googleapis.com into the working copy; the scan step reads it with ``--offline`` and
-writes SARIF, network none. WORKSPACE needs an ``install-dependencies`` grant and one ``network-download`` grant listing
-that host. The image keeps the binary at /osv-scanner, off PATH.
+writes SARIF, network none. The image keeps the binary at /osv-scanner, off PATH.
 
-Not yet run to completion: ``qa authorize`` accepts a grant's target only on a declared host, and the guard asks for
-``network-download`` only for an undeclared one, so the corpus has no OSV entry until that is settled."""
+What a run needs in WORKSPACE, as the kernel checks it: a grant names only declared hosts, so the configuration first
+declares an environment for the database host (``osv-data``, class ``production``, base URL
+``https://osv-vulnerabilities.storage.googleapis.com``), and a ``network-download`` grant there names the host, as the
+spec's activity table asks. A run whose install step fetches from that host belongs to that environment as well as to
+``local``, so it also needs ``install-dependencies`` and ``test-execution-local`` on ``osv-data``, and
+``install-dependencies`` on ``local``. (Once the host is declared, the guard itself no longer asks for
+``network-download``.)
+
+Not yet run to completion: the last of these grants (``install-dependencies`` and ``test-execution-local`` on
+``osv-data``) is pending the user's decision, so the corpus has no OSV entry yet."""
 from __future__ import annotations
 
 import sys

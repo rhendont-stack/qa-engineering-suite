@@ -391,6 +391,17 @@ def test_a_failed_step_blocks_with_a_remedy(ws_untrusted, actor, fake):
     assert only_the_engine_ran(fake)
 
 
+@pytest.mark.parametrize("step, picks", [("copy_in", is_copy_in), ("prepare", lambda args: args[0] == "run" and "--entrypoint=chmod" in args)])
+def test_a_step_that_fails_before_the_install_records_that_no_install_ran(ws_untrusted, actor, fake, step, picks):
+    grant_install(ws_untrusted, actor)
+    fake.when(picks, exit_code=1, stderr=b"failed")
+    result = run(ws_untrusted, actor, install="pip install x")
+    assert (result["status"], result["reason"]) == ("blocked", "dependency_unavailable")
+    assert any("container_step_failed (%s)" % step in text and "chmod" in text for text in result["limitations"])
+    assert record_of(ws_untrusted, result)["container"]["install_ran"] is False
+    assert not any(is_install(call) for call in fake.calls)
+
+
 def test_a_project_over_the_cap_blocks_and_stays_home(ws_untrusted, actor, fake, monkeypatch):
     monkeypatch.setattr(container, "DEFAULT_ARCHIVE_MAX_BYTES", 16)
     (ws_untrusted.root / "big.txt").write_bytes(b"x" * 4096)

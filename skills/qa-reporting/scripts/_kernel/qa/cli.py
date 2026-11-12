@@ -51,6 +51,7 @@ _INPUT_ERROR = 2
 _INTERNAL_ERROR = 70
 _REPORT_FORMATS = ("md", "json", "sarif", "executive")
 _DEFAULT_REPORT_FORMATS = ("md", "json")
+_INGEST_CATEGORIES = {"sarif": "security", "k6": "performance"}  # `qa ingest`'s default category per format; else functional
 
 
 class _HelpRequested(Exception):
@@ -213,7 +214,7 @@ def _add_execution_commands(groups: Dict[str, Any]) -> None:
     attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6", "bundle"), metavar="FORMAT")
     attach.add_argument("file", metavar="FILE")
     attach.add_argument("--from", dest="from_execution", metavar="EXE", help="the execution the report belongs to (not for a bundle)")
-    attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, else functional)")
+    attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, performance for k6, else functional)")
     _group(groups, "result", "change recorded results")
     reclassify = _command(groups, "result reclassify", "change a result's status within the limits, citing evidence")
     reclassify.add_argument("result", metavar="RES")
@@ -738,7 +739,7 @@ def cmd_ingest(args: argparse.Namespace, ctx: Context) -> int:
     if args.from_execution is None:
         raise QaError("usage", "--from is required: the execution the report belongs to")
     _refuse_irregular(args.file)
-    category = args.category if args.category is not None else "security" if args.format == "sarif" else "functional"
+    category = args.category if args.category is not None else _INGEST_CATEGORIES.get(args.format, "functional")
     ctx.reply(**execution.ingest_file(ctx.ws, ctx.actor, args.format, Path(args.file), from_execution=args.from_execution,
                                       category=category))
     return 0

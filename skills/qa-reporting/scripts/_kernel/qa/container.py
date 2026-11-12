@@ -62,10 +62,14 @@ INPUT_DIR = ".qa-input"  # where the run's inputs land in the archive; a project
 SERVICE_SCRIPT = "service.sh"
 # Every container that runs project code: the tests, and the install step, which differs only in having a network.
 _CONFINED = ("--cpus=2", "--memory=2g", "--pids-limit=512", "--init", "--cap-drop=ALL", "--security-opt=no-new-privileges")
-# The steps that only move files (copy in, open the volumes, copy out) run as root whatever user the image names, so an
-# image that runs its tool as another user still receives the project and gives its evidence back. They run tar or
-# chmod from the image on the suite's own archives, with no network.
+# The steps that only move files (copy in, open the volumes, control in, copy out) run as root whatever user the image
+# names, so an image that runs its tool as another user still receives the project and gives its evidence back. They run
+# tar or chmod from the image on the suite's own archives, with no network, every capability dropped but the one each
+# needs (measured across the catalog images): unpacking a project that holds a read-only directory needs DAC_OVERRIDE,
+# and reading back a file the tool wrote for its own user only needs DAC_READ_SEARCH.
 _HELPER_USER = "0"
+_HELPER_SECURITY = ("--cap-drop=ALL", "--security-opt=no-new-privileges")
+_HELPER_CAPS = {"copy_in": ("DAC_OVERRIDE",), "prepare": (), "control_in": (), "copy_out": ("DAC_READ_SEARCH",)}
 _OPEN_MODE = "0777"
 
 
@@ -453,13 +457,16 @@ class _Pipeline:
 
     def _container(self, head: List[str], suffix: str, network: str, entrypoint: str, mounts: Sequence[str],
                    command: Sequence[str], confined: bool = False, image: Optional[str] = None,
-                   user: Optional[str] = None) -> List[str]:
-        """The arguments for one container; records its name, so cleanup knows it from here on."""
+                   user: Optional[str] = None, helper: Optional[str] = None) -> List[str]:
+        """The arguments for one container; records its name, so cleanup knows it from here on. ``helper`` names a file
+        step, which runs as root with only that step's capabilities."""
         name = self.name + suffix
         self.containers.append(name)
         args = head + ["--pull=never", "--network=" + network, "--entrypoint=" + entrypoint, self.label, "--name=" + name]
         if confined:
             args += list(_CONFINED) + ["--workdir=" + self.spec.workdir]
+        if helper is not None:
+            args += [*_HELPER_SECURITY, *("--cap-add=" + cap for cap in _HELPER_CAPS[helper]), "--user=" + _HELPER_USER]
         if user is not None:
             args.append("--user=" + user)
         return args + ["--volume=" + mount for mount in mounts] + [image or self.spec.image] + list(command)
@@ -471,22 +478,24 @@ class _Pipeline:
 
     def _copy_in(self) -> None:
         args = self._container(["run", "--rm", "-i"], "-in", "none", "tar", [self.work + ":" + WORK_MOUNT],
-                               ["-x", "--no-same-owner", "-C", WORK_MOUNT], user=_HELPER_USER)
+                               ["-x", "--no-same-owner", "-C", WORK_MOUNT], helper="copy_in")
         self._require_ok("copy_in", self._call(args, stdin_path=self.spec.archive, timeout_s=_COPY_TIMEOUT_S))
 
     def _open_volumes(self) -> None:
         """The tests run as the image's own user, which need not be root, and a new volume belongs to root: let any user
-        write at the top of the working copy and of the evidence volume. Nothing else shares either volume."""
+        write at the top of the working copy and of the evidence volume. Only the top: not recursive. Both volumes are this
+        run's own; the only other container that mounts one is the run's service, and it mounts the working copy
+        read-only."""
         args = self._container(["run", "--rm"], "-prep", "none", "chmod",
                                [self.work + ":" + WORK_MOUNT, self.evidence + ":" + EVIDENCE_MOUNT],
-                               [_OPEN_MODE, WORK_MOUNT, EVIDENCE_MOUNT], user=_HELPER_USER)
+                               [_OPEN_MODE, WORK_MOUNT, EVIDENCE_MOUNT], helper="prepare")
         self._require_ok("prepare", self._call(args))
 
     def _copy_control(self, scratch: Path) -> None:
         archive = scratch / "control.tar"
         _control_archive(archive, self.spec.service.script)
         args = self._container(["run", "--rm", "-i"], "-ctl-in", "none", "tar", [self.control + ":" + CONTROL_MOUNT],
-                               ["-x", "--no-same-owner", "-C", CONTROL_MOUNT], user=_HELPER_USER)
+                               ["-x", "--no-same-owner", "-C", CONTROL_MOUNT], helper="control_in")
         self._require_ok("control_in", self._call(args, stdin_path=archive, timeout_s=_COPY_TIMEOUT_S))
 
     def _start_service(self) -> None:
@@ -557,7 +566,7 @@ class _Pipeline:
 
     def _copy_out(self) -> Tuple[Dict[str, bytes], Optional[str]]:
         args = self._container(["run", "--rm"], "-out", "none", "tar", [self.evidence + ":" + EVIDENCE_MOUNT + ":ro"],
-                               ["-c", "-C", EVIDENCE_MOUNT, "."], user=_HELPER_USER)
+                               ["-c", "-C", EVIDENCE_MOUNT, "."], helper="copy_out")
         done = self._call(args, timeout_s=_COPY_TIMEOUT_S, max_bytes=self.spec.max_bytes)
         if self._lost(done):
             return {}, "connection_lost"

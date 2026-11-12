@@ -162,6 +162,21 @@ def test_file_steps_run_as_root_and_the_tests_as_the_image_user(fake_engine, spe
         assert not any(arg.startswith("--user=") for arg in call), call
 
 
+# Measured on the live engine across every catalog image (task-4 fix round 1): unpacking a project that holds a read-only
+# directory needs DAC_OVERRIDE; reading back a file the tool wrote 0600 as its own user needs DAC_READ_SEARCH; chmod on a
+# volume root that root owns, and unpacking the suite's own control archive, need nothing.
+HELPER_CAPS = {"copy_in": ["--cap-add=DAC_OVERRIDE"], "prepare": [], "control_in": [], "copy_out": ["--cap-add=DAC_READ_SEARCH"]}
+
+
+def test_the_root_file_steps_drop_every_capability_but_the_one_each_needs(fake_engine):
+    run_with(fake_engine, user="1000:1000")
+    for step, picks in (("copy_in", is_copy_in), ("prepare", is_prepare), ("control_in", is_ctl_in), ("copy_out", is_copy_out)):
+        call = next(call for call in fake_engine.calls if picks(call))
+        assert "--cap-drop=ALL" in call and "--security-opt=no-new-privileges" in call, (step, call)
+        assert [arg for arg in call if arg.startswith("--cap-add")] == HELPER_CAPS[step], (step, call)
+        assert not any(arg.startswith("--privileged") for arg in call), (step, call)
+
+
 def test_volumes_open_to_the_image_user_after_copy_in_and_before_anything_runs(fake_engine, spec_install):
     container.run(fake_engine.engine, spec_install)
     call = next(call for call in fake_engine.calls if is_prepare(call))

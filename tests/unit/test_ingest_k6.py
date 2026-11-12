@@ -68,6 +68,10 @@ HOSTILE = {
     "unknown_type": (summary({"m": {"type": "histogram", "values": {"avg": 1}}}), "invalid_metric_value"),
     "metric_not_an_object": (summary({"m": 5}), "invalid_metric_value"),
     "duration_as_text": (summary(duration_ms="1500"), "invalid_metric_value"),
+    "integer_past_float_range": (b'{"metrics": {"m": {"type": "counter", "values": {"count": 1' + b"0" * 400 + b'}}}}',
+                                 "invalid_metric_value"),
+    "duration_past_float_range": (b'{"state": {"testRunDurationMs": 1' + b"0" * 400 + b'}, "metrics": {}}',
+                                  "invalid_metric_value"),
     "ok_as_text": (summary({"m": {"type": "trend", "values": {"avg": 1}, "thresholds": {"avg<2": {"ok": "true"}}}}), "invalid_threshold"),
     "ok_missing": (summary({"m": {"type": "trend", "values": {"avg": 1}, "thresholds": {"avg<2": {}}}}), "invalid_threshold"),
     "thresholds_a_list": (summary({"m": {"type": "trend", "values": {"avg": 1}, "thresholds": ["avg<2"]}}), "invalid_threshold"),
@@ -132,6 +136,32 @@ def test_k6_failed_threshold_with_exit_99_is_failed_without_mismatch(trusted, ac
     assert report["metrics"]["qa_sample_ms"] == doc["metrics"]["qa_sample_ms"]["values"]
     assert record["reports"] == [{"format": "k6", "pattern": "{evidence}/k6-summary.json", "files": ["reports/k6-summary.json"], "error": None}]
     schema.validate({key: value for key, value in record.items() if key != "ingested"}, "events/execution.recorded.schema.json")
+
+
+@pytest.mark.parametrize("hostile", ["integer_past_float_range", "duration_past_float_range"])
+def test_a_run_whose_summary_holds_an_integer_past_float_range_is_still_recorded(trusted, actor, tmp_path, hostile):
+    """The run has already executed when its report is read, so a refusal must reach the record, not escape it."""
+    source = tmp_path / "summary.json"
+    source.write_bytes(HOSTILE[hostile][0])
+    program = tmp_path / "loadtool"
+    program.write_text("#!/bin/sh\ncp '%s' \"$2\"\n" % source)
+    program.chmod(0o755)
+    request = execution.RunRequest(command=[str(program), "run", "{evidence}/k6-summary.json"],
+                                   reports=(("k6", "{evidence}/k6-summary.json"),))
+    result = execution.execute(trusted, actor, request)
+    record = state.load(trusted)["executions"][result["execution"]]
+    assert record["report"] is None
+    assert any(text.startswith("report_invalid: ") and "(invalid_metric_value)" in text for text in record["limitations"])
+
+
+def test_a_k6_summary_past_the_byte_cap_is_refused(tmp_path):
+    path = tmp_path / "k6-summary.json"
+    path.write_text(json.dumps(summary()))
+    cap = path.stat().st_size - 1
+    with pytest.raises(ingest.ReportInvalid) as refused:
+        ingest.parse_report("k6", path, cap)
+    assert refused.value.details["detail"] == "too_large"
+    assert ingest.parse_report("k6", path, cap + 1).total == 1
 
 
 EXCEEDED = {

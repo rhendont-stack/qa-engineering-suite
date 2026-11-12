@@ -57,11 +57,11 @@ _MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif":
                 "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json", "k6": "application/json"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
-_BEFORE_INSTALL = ("volume_create", "copy_in", "control_in", None)  # where a failed pipeline stopped when no install had started; None: no step
+_BEFORE_INSTALL = ("volume_create", "copy_in", "prepare", "control_in", None)  # where a failed pipeline stopped when no install had started; None: no step
 _CONTAINER_REMEDIES = {
     "container_engine_unavailable": "start the container engine, or check the host set in container.engine",
     "container_image_missing": "pull the image once, by digest, on the engine; a run never pulls",
-    "container_step_failed": "check the engine's disk and that the image can run tar and sh as root",
+    "container_step_failed": "check the engine's disk, and that the image has tar and chmod for the file steps (run as root) and sh",
     "container_spec_invalid": "run from a project directory whose path holds only letters, digits, '.', '_' and '-'",
     "container_stdin_unreadable": "check that the temporary directory is writable",
     "container_cleanup_failed": "remove the objects named here from the engine by hand",
