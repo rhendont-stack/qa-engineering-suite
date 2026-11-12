@@ -248,5 +248,16 @@
     "kind": "attachment",
     "normalizations": ["container working directory path"],
     "expected": {"violations": 6}
+  },
+  {
+    "file": "sarif/osv-scanner-2.7.1.sarif",
+    "format": "sarif",
+    "producer": "osv-scanner",
+    "version": "2.7.1",
+    "command": "python3 tests/corpus/producers/osv_sample/generate.py <workspace> tests/corpus/sarif/osv-scanner-2.7.1.sarif (runs: qa run --container ghcr.io/google/osv-scanner@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde --input .qa/work/osv/requirements.txt --report sarif:{evidence}/osv.sarif --install 'mkdir -p /work/osv-db/osv-scalibr/PyPI && wget -q -O /work/osv-db/osv-scalibr/PyPI/all.zip https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip' --shell -- OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/work/osv-db /osv-scanner scan source --offline --format=sarif --output-file=/qa-evidence/osv.sarif /work/.qa-input/osv; the install step is the only one with a network, and the scan step has none; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json)",
+    "date": "2026-11-12",
+    "kind": "alerts",
+    "normalizations": ["container working directory path"],
+    "expected": {"alerts": 12, "runs": 1}
   }
 ]

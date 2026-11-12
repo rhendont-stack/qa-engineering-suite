@@ -45,7 +45,7 @@ DEMONSTRATED_IN_PROCESS = {
     "F6-09": "test_the_lab_serves_its_pages_and_shows_the_classes_marked_in_process",
     "F6-11": "test_the_lab_serves_its_pages_and_shows_the_classes_marked_in_process",
 }
-OBSERVED_TOOLS = {"gitleaks"}            # tools seen on F6 through qa run --container; see the task report for the run
+OBSERVED_TOOLS = {"gitleaks", "osv-scanner"}  # tools seen on F6 through qa run --container; see the task report for the run
 ROUTE = re.compile(r'^    \("(GET)", "(/\S*)"\): \w+,$', re.M)
 
 
@@ -277,11 +277,11 @@ def test_f6_answer_key_locations_exist_after_generation(tmp_path, repo_root):
     assert routes == {"GET /", "GET /hello", "GET /products", "GET /notes", "GET /session", "GET /account"}
     for issue in issues:
         if issue["file"] == "requirements.txt":
-            assert set(issue) == fields | {"advisory", "advisory_pending", "file_level"} and issue["file_level"] is True, issue["id"]
-            pending = (issue["advisory"], issue["advisory_pending"]) == (None, "osv-offline-scan")
-            filled = issue["advisory_pending"] is None and bool(issue["advisory"]) and all(
-                isinstance(ref, str) and ref for ref in (issue["advisory"] if isinstance(issue["advisory"], list) else [issue["advisory"]]))
-            assert pending or filled, issue["id"]                              # filled only from a recorded OSV run
+            assert set(issue) == fields | {"advisory", "file_level"} and issue["file_level"] is True, issue["id"]
+            # filled from a recorded offline OSV-Scanner run over this manifest; no pending state is left
+            assert isinstance(issue["advisory"], str) and re.fullmatch(r"(CVE-\d{4}-\d{4,}|GHSA(-[0-9a-z]{4}){3}|PYSEC-\d{4}-\d+)",
+                                                                     issue["advisory"]), issue["id"]
+            assert "osv-scanner" in issue["detectable_by"], issue["id"]
         else:
             assert set(issue) == fields, issue["id"]
         assert issue["location"] == issue["file"] or issue["location"] in routes, issue["id"]

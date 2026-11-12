@@ -163,7 +163,8 @@ IMAGES = {e["id"]: e for e in json.loads((CORPUS.parents[1] / "shared" / "polici
 # The domain tools' real outputs, each produced through `qa run --container` with the image pinned for it.
 NEW_CORPUS = [("sarif", "sarif/zap-2.17.0-baseline.sarif"), ("sarif", "sarif/spectral-6.17.1.sarif"),
               ("junit", "junit/schemathesis-4.33.2-mixed.xml"), ("junit", "junit/hurl-8.1.0-mixed.xml"),
-              ("junit", "junit/oasdiff-1.37.0-breaking.xml"), ("k6", "k6/k6-2.3.0-thresholds.json")]
+              ("junit", "junit/oasdiff-1.37.0-breaking.xml"), ("k6", "k6/k6-2.3.0-thresholds.json"),
+              ("sarif", "sarif/osv-scanner-2.7.1.sarif")]
 
 
 @pytest.mark.parametrize("fmt,file", NEW_CORPUS, ids=[f for _fmt, f in NEW_CORPUS])
