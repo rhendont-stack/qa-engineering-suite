@@ -15,7 +15,7 @@ normalised (literals become ``?``) and attributed to the innermost project file 
 A normalised statement issued ``--repeat`` times or more within one case is reported as ``repeated``: the shape of an N+1
 query, a lead to confirm against the code, not a measurement of time.
 
-Outputs: the JSON trace under ``.qa/work/`` (``--out``), and a JUnit report (``--junit``, under ``.qa/`` or outside the project;
+Outputs: the JSON trace under ``.qa/work/`` (``--out``), and a JUnit report (``--junit``, under ``.qa/`` or a new file outside the project;
 in ``qa run`` use ``/qa-evidence/<name>.xml`` with ``--report junit:{evidence}/<name>.xml``) with one test per case that fails
 when a statement repeats or the case raises. Stdout is one JSON object with the counts. Exit 0, 1 when a case fails, 2 on a
 refusal.
@@ -68,9 +68,20 @@ def report_path(text: str, root: Path) -> Path:
         raise Refused("the report goes under .qa/ or outside the project, never into it: %s" % text)
     if root in path.parents:
         _no_link_between(root, path)
-    elif path.is_symlink():
-        raise Refused("the report path is a symlink: %s" % text)
+    elif path.is_symlink() or path.exists():
+        # Outside the project only a new file is written (the container's /qa-evidence/<name>): an existing file is never replaced.
+        raise Refused("the report path outside the project already exists: %s" % text)
     return path
+
+
+def write_report(path: Path, data: bytes, root: Path) -> None:
+    """Under the project's .qa/, through write_new; outside the project, as a new file only (O_EXCL, never through a link)."""
+    if root in path.parents:
+        write_new(path, data)
+        return
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
 
 
 def write_new(path: Path, data: bytes) -> None:
@@ -158,6 +169,7 @@ class Tracer:
     def connect(self, database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         if not self.allowed(database, bool(kwargs.get("uri"))):
             raise sqlite3.OperationalError("query_trace refuses a database outside .qa/work/: %r" % (database,))
+        # sqlite3 cannot open a file without following links; ``allowed`` checked the path for links just before this open.
         connection = self.original(database, *args, **kwargs)
         connection.set_authorizer(lambda action, *_a: sqlite3.SQLITE_DENY if action in DENIED else sqlite3.SQLITE_OK)
         connection.set_trace_callback(self.callback)
@@ -165,6 +177,8 @@ class Tracer:
 
 
 def load(driver: Path, root: Path) -> Any:
+    # importlib opens the driver by path and follows links; work_path checked it for links just before, so the only gap is
+    # the moment between that check and this import.
     sys.path.insert(0, str(root))
     spec = importlib.util.spec_from_file_location("qa_trace_driver_%s" % secrets.token_hex(4), str(driver))
     if spec is None or spec.loader is None:
@@ -251,7 +265,7 @@ def main(argv: List[str]) -> int:
         sqlite3.connect = tracer.original  # type: ignore[assignment]
     write_new(out, (json.dumps({"driver": driver.relative_to(root).as_posix(), "repeat": args.repeat, "cases": results},
                                indent=2, sort_keys=True) + "\n").encode("utf-8"))
-    write_new(report, junit(results))
+    write_report(report, junit(results), root)
     failed = [r["case"] for r in results if r["failure"]]
     print(json.dumps({"ok": not failed and bool(results), "out": out.relative_to(root).as_posix(), "junit": str(report),
                       "cases": [{"case": r["case"], "statements": r["statements"], "repeated": [{k: e[k] for k in ("count", "sql", "sites")}

@@ -9,8 +9,8 @@ Run it from the project root, through the kernel (``qa run --activity db-ephemer
   name are listed as ``unreadable`` and never run.
 * ``PATH`` is the database the run creates. It must be under ``.qa/work/`` of the current directory, with no symlink on the
   way; an existing file there is replaced. Every other path is refused (exit 2) before anything is opened.
-* ``OUT`` is where the JUnit report goes: under ``.qa/`` or outside the current directory (the kernel's ``{evidence}``),
-  never into the project.
+* ``OUT`` is where the JUnit report goes: under ``.qa/`` (the kernel's ``{evidence}`` on the host), or a new file outside the
+  current directory (``/qa-evidence/`` in a container); never into the project, and never over an existing file outside it.
 
 What runs, all on one connection with ``PRAGMA foreign_keys = ON``; ``ATTACH``, ``DETACH`` and ``VACUUM INTO`` are refused by an
 authorizer, so a migration cannot reach another file:
@@ -74,9 +74,20 @@ def report_path(text: str, root: Path) -> Path:
         raise Refused("the report goes under .qa/ or outside the project, never into it: %s" % text)
     if root in path.parents:
         _no_link_between(root, path)
-    elif path.is_symlink():
-        raise Refused("the report path is a symlink: %s" % text)
+    elif path.is_symlink() or path.exists():
+        # Outside the project only a new file is written (the container's /qa-evidence/<name>): an existing file is never replaced.
+        raise Refused("the report path outside the project already exists: %s" % text)
     return path
+
+
+def write_report(path: Path, data: bytes, root: Path) -> None:
+    """Under the project's .qa/, through write_new; outside the project, as a new file only (O_EXCL, never through a link)."""
+    if root in path.parents:
+        write_new(path, data)
+        return
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
 
 
 def write_new(path: Path, data: bytes) -> None:
@@ -130,6 +141,8 @@ def authorizer(action: int, *_args: Any) -> int:
 
 
 def connect(path: Path) -> sqlite3.Connection:
+    # sqlite3 cannot open a file without following links. The path was checked for links just before (work_path, and
+    # fresh_database removed any old file or link), so the only gap is the moment between that check and this open.
     connection = sqlite3.connect(str(path), isolation_level=None)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.set_authorizer(authorizer)
@@ -396,7 +409,7 @@ def main(argv: List[str]) -> int:
     finally:
         connection.close()
     notes = ["unreadable: %s" % name for name in unreadable] + notes
-    write_new(report, junit(cases, notes))
+    write_report(report, junit(cases, notes), root)
     failures = [{"phase": c["phase"], "step": c["step"], "failure": c["failure"]} for c in cases if c["failure"]]
     print(json.dumps({"ok": not failures, "db": database.relative_to(root).as_posix(), "junit": str(report), "steps": len(steps),
                       "tests": len(cases), "failed": len(failures), "failures": failures, "unreadable": unreadable}, sort_keys=True))

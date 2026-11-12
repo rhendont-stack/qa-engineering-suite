@@ -450,6 +450,9 @@ def test_the_database_legs_are_the_documented_ones_with_pinned_images_and_no_sha
 
 
 def test_the_postgres_leg_is_refused_with_only_the_db_ephemeral_grant(qa_on_fixture):
+    """A tripwire, not a requirement. With only A5's db-ephemeral grant on fixture-pg, the kernel refuses the PostgreSQL leg,
+    because it checks the --service-run as test-execution-local on fixture-pg too. Once the user decides that grant, or the
+    kernel reads a fixture service under db-ephemeral, this test fails on purpose: then run the docker leg and update it."""
     project = qa_on_fixture("sql-database")
     declare_fixture_pg_and_grant(project)
     project.root.joinpath(".qa", "work", "database").mkdir(parents=True)
@@ -488,12 +491,11 @@ def test_f3_squawk_leg(db_project):
     code, ingested = db_leg_cli(db_project, db_leg_words("squawk-ingest", out["execution"])[1])
     print("squawk ingest:", json.dumps(ingested, sort_keys=True)[:400])
     assert code == 0 and ingested["ok"], ingested
+    assert (ingested["execution"], ingested["kind"], ingested["total"]) == (out["execution"], "alerts", len(violations)), ingested
     sarif = json.loads((db_project.root / ".qa" / "work" / "database" / "squawk.sarif").read_text(encoding="utf-8"))
     located = {(r["ruleId"], r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], r["locations"][0]["physicalLocation"]["region"]["startLine"])
                for r in sarif["runs"][0]["results"]}
     assert ("ban-drop-column", "postgres/migrations/0004_split_customer_name.up.sql", 3) in located
-    attached = db_recorded(db_project, out["execution"])
-    print("squawk reports:", json.dumps(attached.get("reports"), sort_keys=True)[:400])
 
 
 @pytest.mark.docker

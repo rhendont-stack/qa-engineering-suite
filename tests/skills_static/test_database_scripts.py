@@ -211,6 +211,25 @@ def test_roundtrip_refuses_a_database_outside_qa_work_and_a_report_inside_the_pr
     assert not (tmp_path / "shop.sqlite").exists() and not (f3 / "shop.sqlite").exists() and not (f3 / "report.xml").exists()
 
 
+def test_a_report_outside_the_project_is_only_ever_a_new_file(f3, tmp_path):
+    existing = tmp_path / "existing.xml"
+    existing.write_text("keep")
+    code, out, _ = run("migration_roundtrip.py", "--migrations", "migrations", "--db", ".qa/work/database/rt.sqlite", "--junit", str(existing), cwd=f3)
+    assert code == 2 and "already exists" in out["error"] and existing.read_text() == "keep"
+    write(f3, {".qa/work/database/trace_driver.py": "def case_nothing(db):\n    pass\n"})
+    code, out, _ = run("query_trace.py", "--driver", ".qa/work/database/trace_driver.py", "--junit", str(existing), cwd=f3)
+    assert code == 2 and "already exists" in out["error"] and existing.read_text() == "keep"
+    os.symlink(str(tmp_path / "nowhere.xml"), str(tmp_path / "link.xml"))
+    code, out, _ = run("migration_roundtrip.py", "--migrations", "migrations", "--db", ".qa/work/database/rt.sqlite", "--junit",
+                       str(tmp_path / "link.xml"), cwd=f3)
+    assert code == 2 and not (tmp_path / "nowhere.xml").exists()
+    fresh = tmp_path / "fresh.xml"
+    code, out, _ = run("migration_roundtrip.py", "--migrations", "migrations", "--db", ".qa/work/database/rt.sqlite", "--junit", str(fresh), cwd=f3)
+    assert code == 1 and ET.parse(str(fresh)).getroot().get("tests") == "17"
+    code, out, _ = run("query_trace.py", "--driver", ".qa/work/database/trace_driver.py", "--junit", str(tmp_path / "trace.xml"), cwd=f3)
+    assert code == 0 and (tmp_path / "trace.xml").is_file()
+
+
 def test_roundtrip_never_follows_a_link_under_qa_work(f3, tmp_path):
     outside = tmp_path / "outside.sqlite"
     outside.write_bytes(b"keep")
