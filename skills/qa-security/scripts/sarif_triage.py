@@ -13,10 +13,15 @@ inside the project's ``.qa/``, reached through no link, at most 32 MiB. For each
 * ``path`` and ``line`` (``file://``, ``/work/.qa-input/`` and ``/work/`` stripped), or ``endpoint`` (``METHOD URL``) for a
   result about a web request (ZAP's ``webRequest`` or an ``http(s)`` location);
 * ``message``: the result's message with every secret-shaped value masked as ``[masked:<8 hex>]``, the start of its sha256,
-  so the same value has the same mask everywhere. Masked: what the kernel's redaction patterns match, and any run of 20 or more
-  letters, digits and ``_-+/=`` that mixes letters and digits, unless it is a path: it holds a ``/`` between two parts, no
-  ``+`` or ``=``, and no part of 16 or more characters that mixes letters and digits, or mixes upper and lower case with no
-  ``_`` or ``-``. Snippets, fixes, code flows and request bodies are never read into the output.
+  so the same value has the same mask everywhere; the endpoint's URL is masked the same way. Masked: what the kernel's
+  redaction patterns match, and any run of 20 or more letters, digits and ``_-+/=`` that mixes letters and digits. A part of
+  such a run (the text between two ``/``) is token-like when it has 16 or more characters and mixes letters and digits, or
+  mixes upper and lower case with no ``_`` or ``-``; an execution id (``EXE-`` and 26 characters) never is. The run is kept
+  when it is an execution id, or a path: a ``/`` between two parts, no ``+`` or ``=``, and no token-like part. Only its
+  token-like parts are masked when it continues a URL or a path (it starts with ``/``, or follows ``:``, ``/`` or ``.``), it
+  holds no ``+`` or ``=``, and every other part is a path word (letters, digits, ``_`` and ``-``, upper case only first) or an
+  execution id; so ``:8000/products/<id>`` keeps its port and path. Otherwise the whole run is masked. Snippets, fixes, code
+  flows and request bodies are never read into the output.
 
 The full list goes to ``--out`` (default ``.qa/work/security/triage-<report name>.json``), written under
 ``.qa/work/security/`` through no link. Stdout gets one JSON summary: the tool and its version, the count, and counts per
@@ -45,6 +50,8 @@ CWE_TEXT = re.compile(r"(?i)\bcwe[-/ _]?([0-9]{1,5})(?![0-9])")
 DESCRIBED_CWE = re.compile(r"\(CWE-([0-9]{1,5})\)")
 CWE_ID = re.compile(r"[0-9]{1,5}")
 LONG_TOKEN = re.compile(r"[A-Za-z0-9_\-+/=]{20,}")
+EXECUTION_ID = re.compile(r"EXE-[0-9A-Z]{26}")
+PATH_WORD = re.compile(r"[A-Za-z0-9]?[a-z0-9_-]*")
 WEB = re.compile(r"(?i)^https?://")
 
 
@@ -85,11 +92,16 @@ def token_like(part: str) -> bool:
     return bool(re.search(r"[a-z]", part) and re.search(r"[A-Z]", part) and not re.search(r"[_-]", part))
 
 
+def secret_part(part: str) -> bool:
+    """Token-like, and not an execution id."""
+    return token_like(part) and not EXECUTION_ID.fullmatch(part)
+
+
 def is_path(value: str) -> bool:
     """A ``/`` between two parts, no ``+`` or ``=``, and no part that is token-like."""
     if "/" not in value.strip("/") or re.search(r"[+=]", value):
         return False
-    return not any(token_like(part) for part in value.split("/"))
+    return not any(secret_part(part) for part in value.split("/"))
 
 
 def mask(text: str) -> str:
@@ -98,10 +110,15 @@ def mask(text: str) -> str:
 
     def long_token(match: "re.Match[str]") -> str:
         value = match.group(0)
-        if value.startswith("[masked:") or not (re.search(r"[A-Za-z]", value) and re.search(r"[0-9]", value)):
+        if not (re.search(r"[A-Za-z]", value) and re.search(r"[0-9]", value)):
             return value
-        if is_path(value):
-            return value                                  # a path, not a secret
+        if EXECUTION_ID.fullmatch(value) or is_path(value):
+            return value                                  # an execution id or a path, not a secret
+        parts = value.split("/")
+        continues = value.startswith("/") or (match.start() > 0 and match.string[match.start() - 1] in ":/.")
+        if continues and len(parts) > 1 and not re.search(r"[+=]", value) and \
+                all(secret_part(p) or PATH_WORD.fullmatch(p) or EXECUTION_ID.fullmatch(p) for p in parts):
+            return "/".join(mask_value(p) if secret_part(p) else p for p in parts)   # a URL or path keeps its other parts
         return mask_value(value)
 
     return LONG_TOKEN.sub(long_token, text)

@@ -173,6 +173,17 @@ def test_unicode_scan_numbers_lines_as_an_editor_does_and_counts_what_it_skips(t
     (root / "blob.bin").write_bytes(b"\x00\x01\x02" + EN_PHRASE.encode())
     code, out, err = run(UNICODE, cwd=root)
     assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"]) == (0, 2, 1, 0), (out, err)
+    for mark in (b"\xff\xfe", b"\xfe\xff"):                     # a byte-order mark alone, then single-byte text: scanned
+        assert module.utf16(mark + ("x " + EN_PHRASE).encode()) is False
+        assert module.utf16(mark + ("x " + EN_PHRASE).encode("utf-16-le" if mark == b"\xff\xfe" else "utf-16-be")) is True
+    (root / "marked.txt").write_bytes(b"\xff\xfe" + ("x\n" + EN_PHRASE + "\n").encode())
+    (root / "marked-be.txt").write_bytes(b"\xfe\xff" + ("x\n" + EN_PHRASE + "\n").encode())
+    code, out, err = run(UNICODE, cwd=root)
+    assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"]) == (0, 2, 1, 2), (out, err)
+    report = json.loads((root / ".qa" / "work" / "security" / "unicode.sarif").read_text(encoding="utf-8"))
+    hits = sorted((r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], r["locations"][0]["physicalLocation"]["region"]["startLine"])
+                  for r in report["runs"][0]["results"] if r["ruleId"] == "qa-injection-marker")
+    assert hits == [("marked-be.txt", 2), ("marked.txt", 2)], report
 
 
 def test_unicode_scan_skips_a_file_that_vanishes_during_the_walk(tmp_path):
@@ -362,12 +373,18 @@ def test_sarif_triage_masks_secrets_and_gitleaks_has_no_cwe(tmp_path):
     module = load(TRIAGE, "qa_security_sarif_triage_m")
     assert module.mask("x %s y" % value) == module.mask("x %s y" % value) and value not in module.mask(value)
     assert module.mask("see http://127.0.0.1:8000/products/list now").count("[masked:") == 0
-    for path in ("tests/integration/test_fixture_f6", "/work/lab/catalog", ".qa/evidence/EXE-01ABC/reports/semgrep"):
+    execution_id = "EXE-01M78FYXXG643T8CVM5YF97R0V"                                       # a real one: EXE- and 26 characters
+    for path in ("tests/integration/test_fixture_f6", "/work/lab/catalog", ".qa/evidence/%s/reports/semgrep" % execution_id,
+                 "evidence %s" % execution_id):
         assert module.mask("at %s here" % path) == "at %s here" % path, path
     slashed = "".join(["wJalrXUtnFEMI", "/K7MDENG/", "bPxRfiCY", "EXAMPLEKEY"])               # a key shape with slashes
-    assert slashed not in module.mask("key " + slashed) and "[masked:" in module.mask("key " + slashed)
-    id_in_url = "8000/products/" + "".join(["a1b2", "c3d4", "e5f6", "g7h8", "i9j0"])
-    assert module.mask("see http://127.0.0.1:" + id_in_url).count("[masked:") == 1
+    for text in ("key " + slashed, "see http://127.0.0.1:8000/" + slashed):
+        masked = module.mask(text)
+        assert "[masked:" in masked and not any(part in masked for part in slashed.split("/")), masked
+    token = "".join(["a1b2", "c3d4", "e5f6", "g7h8", "i9j0"])
+    for url in ("http://127.0.0.1:8000/products/%s", "http://127.0.0.1:8000/products/%s/reviews", "http://localhost/api/v2/items/%s"):
+        assert module.mask("see " + url % token) == "see " + url % module.mask_value(token), url        # the port and path stay
+    assert module.mask("key " + token + "/products") == "key " + module.mask_value(token + "/products")  # not after a URL or path
     for name in ("gitleaks-8.30.1.sarif", "osv-scanner-2.7.1.sarif"):
         triaged = module.triage(sarif_at(CORPUS / name))
         assert triaged["results"] and all(a["cwe"] == [] for a in triaged["alerts"]), name

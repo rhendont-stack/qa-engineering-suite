@@ -16,9 +16,10 @@ A result says the rule, the file, the line and column, and for a character its c
 found may be addressed to whoever reads the report. Lines are numbered on ``\n``, ``\r\n`` and ``\r`` only, as an editor
 numbers them. Directories ``.git``, ``.qa``, ``.qa-input``, ``.claude``, ``node_modules``, ``__pycache__`` and ``.venv*`` are
 skipped; links are never followed. Skipped and counted in the summary's ``skipped``: files over 2 MiB (``large``), UTF-16 text
-(``utf16``: a UTF-16 byte-order mark, or NUL bytes at every other position of the first 8 KiB; its tags and controls are
-not scanned), other files holding a NUL byte in their first 8 KiB (``binary``), files that vanished or could not be opened
-during the walk (``vanished``), and given paths that do not exist (``missing``).
+(``utf16``: NUL bytes at every other position of the first 8 KiB, after a UTF-16 byte-order mark if there is one; its tags
+and controls are not scanned; a byte-order mark followed by single-byte text is read as UTF-8 and scanned), other files
+holding a NUL byte in their first 8 KiB (``binary``), files that vanished or could not be opened during the walk
+(``vanished``), and given paths that do not exist (``missing``).
 
 ``--out`` is a path under ``.qa/work/security/`` (default ``.qa/work/security/unicode.sarif``), or, inside a container run,
 a new file directly in ``/qa-evidence/``. ``--copy-to-work`` copies this file to ``.qa/work/security/unicode_scan.py`` for a
@@ -186,13 +187,13 @@ def files_under(paths: Sequence[str], counts: Dict[str, int]) -> Iterator[Path]:
 
 
 def utf16(head: bytes) -> bool:
-    """A UTF-16 byte-order mark, or NUL bytes at nine in ten of the odd (or the even) positions and at fewer than half of the
-    others."""
-    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return True
-    if len(head) < 4:
+    """NUL bytes at nine in ten of the odd (or the even) positions and at fewer than half of the others, counted after a UTF-16
+    byte-order mark when there is one. A byte-order mark alone is not enough: a file can start with one and hold single-byte
+    text, which is then read as UTF-8 and scanned."""
+    body = head[2:] if head[:2] in (b"\xff\xfe", b"\xfe\xff") else head
+    if len(body) < 4:
         return False
-    odd, even = head[1::2], head[0::2]
+    odd, even = body[1::2], body[0::2]
     return any(a.count(0) >= 0.9 * len(a) and b.count(0) < 0.5 * len(b) for a, b in ((odd, even), (even, odd)))
 
 
