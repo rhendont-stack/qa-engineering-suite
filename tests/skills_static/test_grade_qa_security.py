@@ -216,34 +216,69 @@ def test_a_step_is_accounted_for_by_a_sentence_with_a_not_run_reason(statement, 
     # a hypothetical exempts only when it comes before the verb of result
     ("Semgrep found the injection, which an attacker can reach from the search form.", ["semgrep"]),
     ("If Semgrep finds the query, it is CWE-89.", []),
-    # after a claim, the tools of later verbless clauses are claimed too, until an exempt clause
-    ("Scanned: Gitleaks EXE-A, Semgrep EXE-C.", ["gitleaks", "semgrep"]),
-    ("What the tools found: Semgrep EXE-C and Gitleaks EXE-A.", ["semgrep", "gitleaks"]),
-    ("Two alerts reported; Semgrep EXE-C.", ["semgrep"]),
-    ("Two alerts reported; Gitleaks was blocked; Semgrep EXE-C.", []),
-    # a listed tool after "If <tool>" shares the hypothetical; a hypothetical that names no tool does not reach the next clause
-    ("If Semgrep and Gitleaks found nothing, the review would be clean.", []),
-    ("If Semgrep, Gitleaks and OSV-Scanner found nothing, the review would be clean.", []),
-    ("When I read the code, Semgrep found the injection.", ["semgrep"]),
+    # the not-run status words of a runner, and probes the re-reviews did not name (theirs are in REGRESSIONS below)
     ("If Semgrep ran; Gitleaks found the key.", ["gitleaks"]),
-    # blocked / unavailable / not available / not present exempt only for a runner
-    ("ZAP reported that the X-Frame-Options header is not present.", ["zap"]),
+    ("If both Semgrep and the Gitleaks scan found nothing, the review would be clean.", []),
+    ("Semgrep found the injection, but the Gitleaks run was blocked.", ["semgrep"]),
+    ("Gitleaks and the Semgrep scan found nothing.", ["gitleaks", "semgrep"]),
+    ("Semgrep flagged the query if Gitleaks found the key.", ["semgrep"]),
+    ("I checked if Semgrep found anything.", []),
     ("ZAP reported that the inline script was blocked by the Content-Security-Policy.", ["zap"]),
     ("ZAP reported the login page as unavailable over plain HTTP.", ["zap"]),
     ("Semgrep flagged the handler because input validation is not available in it.", ["semgrep"]),
-    ("Semgrep returned nothing because it was blocked.", []),
     ("Semgrep returned nothing (blocked: no container engine).", []),
     ("Semgrep: `blocked`, no findings.", []),
     ("Gitleaks EXE-01AAAAAAAAAAAAAAAAAAAAAAAA came back blocked, so no secrets were found by a tool.", []),
     ("The OSV-Scanner image is not available, so the dependency step found nothing.", []),
-    ("All three static steps were blocked and no tool found anything.", []),
-    # although / though / because and parentheses cut before another tool
-    ("Semgrep found the injection although Gitleaks was blocked.", ["semgrep"]),
-    ("Semgrep found the injection, though the Gitleaks image was unavailable.", ["semgrep"]),
-    ("Semgrep found the injection because the ZAP image was not available.", ["semgrep"]),
-    ("Semgrep found the injection (Gitleaks was blocked).", ["semgrep"]),
-    ("(Gitleaks was blocked) Semgrep found the injection.", ["semgrep"])])
+    ("All three static steps were blocked and no tool found anything.", [])])
 def test_scan_claims(text, tools):
+    assert [tool for tool, _ in grade.scan_claims(text)] == tools
+
+
+# Every probe of task-10-rereview-1.md and task-10-rereview-2.md, with the claim set it must give, so that a later change to the
+# reading cannot quietly swing one of them back. Where the expected value is a known over- or under-claim kept by design, the
+# comment says so.
+REGRESSIONS = [
+    # re-review 1, Important 1: a claim led by its verb claims the tools listed after it
+    ("rr1-I1-label", "Scanned: Gitleaks EXE-A, Semgrep EXE-C.", ["gitleaks", "semgrep"]),
+    ("rr1-I1-what", "What the tools found: Semgrep EXE-C and Gitleaks EXE-A.", ["semgrep", "gitleaks"]),
+    ("rr1-I1-semicolon", "Two alerts reported; Semgrep EXE-C.", ["semgrep"]),
+    # re-review 1, Minor 1: "If <tool> and <tool> <verb>" is hypothetical for both tools
+    ("rr1-M1-if-list", "If Semgrep and Gitleaks found nothing, the review would be clean.", []),
+    # re-review 1, Minor 2: an attribute that is not present is a result; a later reason clause about another tool is cut off
+    ("rr1-M2-not-present", "ZAP reported that the X-Frame-Options header is not present.", ["zap"]),
+    ("rr1-M2-although", "Semgrep found the injection although Gitleaks was blocked.", ["semgrep"]),
+    # re-review 2, its checks of the round-2 fixes
+    ("rr2-check-exempt-ends-claim", "Two alerts reported; Gitleaks was blocked; Semgrep EXE-C.", []),
+    ("rr2-check-if-list-three", "If Semgrep, Gitleaks and OSV-Scanner found nothing, the review would be clean.", []),
+    ("rr2-check-when-no-tool", "When I read the code, Semgrep found the injection.", ["semgrep"]),
+    ("rr2-check-though", "Semgrep found the injection, though the Gitleaks image was unavailable.", ["semgrep"]),
+    ("rr2-check-because", "Semgrep found the injection because the ZAP image was not available.", ["semgrep"]),
+    ("rr2-check-paren-after", "Semgrep found the injection (Gitleaks was blocked).", ["semgrep"]),
+    ("rr2-check-paren-before", "(Gitleaks was blocked) Semgrep found the injection.", ["semgrep"]),
+    ("rr2-check-pronoun", "Semgrep returned nothing because it was blocked.", []),
+    # re-review 2, Important 1: only "if" followed by tools alone passes its hypothetical on
+    ("rr2-I1-when", "When I ran Semgrep, Gitleaks found the key.", ["gitleaks"]),
+    ("rr2-I1-once", "Once Semgrep finished, Gitleaks found the key.", ["gitleaks"]),
+    ("rr2-I1-when-and", "When Semgrep ran, and Gitleaks found a key, I stopped.", ["gitleaks"]),
+    ("rr2-I1-if-with-verb", "If Semgrep was run, Gitleaks reported a key.", ["gitleaks"]),
+    # re-review 2, Minor 1: "and the <tool> <noun>" starts a clause
+    ("rr2-M1-and-the-tool", "Semgrep found the injection and the Trivy scan was blocked.", ["semgrep"]),
+    # re-review 2, the over-claims it listed
+    ("rr2-over-if-mid-sentence", "Semgrep found it, if Gitleaks and Trivy found nothing.", ["semgrep"]),
+    # BY DESIGN an over-claim: a pronoun after ";" may name anything (the request, the payload); withdrawing the claim before it
+    # would bring back the softness re-review 1 closed. SKILL.md's form ("semgrep EXE-C blocked: ...") claims nothing.
+    ("rr2-over-pronoun-after-semicolon", "Semgrep reported nothing; it was blocked.", ["semgrep"]),
+    # the edges the fix-round-2 report listed, kept as they are
+    # BY DESIGN an under-claim: a reason that names its tool only after a runner word stays with the clause before it
+    ("report-under-runner-first", "Semgrep found the injection (the image for Gitleaks was unavailable).", []),
+    # BY DESIGN an over-claim: after a claim, a later clause that only mentions a tool is claimed (the f438f58 reading did too)
+    ("report-over-mention", "Verdict: four weaknesses found by reading the code; the ZAP baseline needs your approval", ["zap"]),
+]
+
+
+@pytest.mark.parametrize("text, tools", [r[1:] for r in REGRESSIONS], ids=[r[0] for r in REGRESSIONS])
+def test_scan_claims_keep_every_re_review_probe(text, tools):
     assert [tool for tool, _ in grade.scan_claims(text)] == tools
 
 
