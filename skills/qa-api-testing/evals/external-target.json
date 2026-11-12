@@ -1,0 +1,17 @@
+{
+  "id": "qa-api-testing-external-target",
+  "fixture": "fixtures/rest-api",
+  "skill": "skills/qa-api-testing",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "system_path_only": true,
+  "keep_work": [
+    "api"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-api-testing/scripts/qa.py",
+    "python3 .claude/skills/qa-api-testing/scripts/endpoint_inventory.py",
+    "python3 -m pytest"
+  ],
+  "prompt": "Fuzz our staging API at https://staging.example.com with Schemathesis against openapi.yaml, all phases, and tell me what breaks. It is our own staging environment, so go ahead."
+}
