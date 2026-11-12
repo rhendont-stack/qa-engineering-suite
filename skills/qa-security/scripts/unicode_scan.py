@@ -17,8 +17,9 @@ found may be addressed to whoever reads the report. Lines are numbered on ``\n``
 numbers them. Directories ``.git``, ``.qa``, ``.qa-input``, ``.claude``, ``node_modules``, ``__pycache__`` and ``.venv*`` are
 skipped; links are never followed.
 
-How a file is read. A file is counted as scanned only when at least one reading covers its whole content in a form that shows
-the markers. Two readings qualify:
+How a file is read. The invariant: no file is counted as scanned while a marker phrase in its single-byte text goes unread,
+whether or not NUL bytes stand in or around the phrase. A file is counted as scanned only when at least one reading covers its
+whole content in a form that shows the markers. Two readings qualify:
 
 * the single-byte reading: the bytes after any byte-order mark (UTF-32's, UTF-16's or UTF-8's), decoded as UTF-8 with an
   undecodable byte becoming U+FFFD. It qualifies when those bytes hold no NUL;
@@ -26,18 +27,26 @@ the markers. Two readings qualify:
   UTF-16 when it starts with a UTF-16 mark, or when it has neither and NUL bytes stand at nine in ten of the odd (or even)
   positions of its first 8 KiB (that byte order). It qualifies when it decodes strictly and holds no U+0000.
 
-Every qualifying reading is scanned. The single-byte reading of a counted file is scanned even when it holds a NUL, so a stray
-NUL cannot hide single-byte text behind a wide reading; it then does not count. A hit that more than one reading finds at the
-same line, column and rule is reported once. No reading is dropped: a mark before single-byte text makes a wide reading of
-characters that are not in the bytes as written (a mark before ASCII text can read as a bidirectional control), but a tool
-that honours the mark shows that reading. So whenever a file is scanned in both readings, every result names the readings
-that found it, as ``properties.reading`` and at the end of its message (``reading: utf-8``, ``reading: utf-16-le``, ...), and
-a hit that only a wide reading finds is seen as such. A file with no qualifying reading is skipped. Known limit: UTF-16 text
-with no mark and no such NUL pattern (only non-Latin characters) is read as single-byte text only.
+Every qualifying reading is scanned. When the single-byte reading holds a NUL and the file is counted (on its wide reading),
+two more views of the single-byte text are scanned, neither of which counts: that reading as it is, and that reading with its
+NUL bytes removed (``nul-stripped``), which is how a viewer that ignores NUL bytes shows it. So a NUL byte, stray or inside a
+phrase, cannot hide single-byte text behind a wide reading: a qualifying wide reading is never the only reading of a file
+whose single-byte reading holds text. A file whose single-byte reading holds a NUL and whose wide reading does not qualify is
+skipped. A hit that more than one reading finds at the same line, column and rule is reported once. No reading is dropped: a
+mark before single-byte text makes a wide reading of characters that are not in the bytes as written (a mark before ASCII
+text can read as a bidirectional control), but a tool that honours the mark shows that reading. So whenever a file is
+scanned in more than one reading, every result names the readings that found it, as ``properties.reading`` and at the end
+of its message (``reading: utf-8``, ``reading: utf-16-le``, ``reading: nul-stripped``, ...), and a hit that only a wide or
+a NUL-stripped reading finds is seen as such. Known limit: UTF-16 text with no mark and no such NUL pattern (only non-Latin
+characters) is read as single-byte text only.
 
 Skipped and counted in the summary's ``skipped``, never as scanned: files over 2 MiB (``large``), files with no qualifying
 reading that have a UTF-16 or UTF-32 mark or the NUL pattern (``utf16``) or that hold a NUL byte (``binary``), files that
-vanished or could not be opened during the walk (``vanished``), and given paths that do not exist (``missing``).
+vanished or could not be opened during the walk (``vanished``), and given paths that do not exist (``missing``). Each skip is
+also named, with its path written as in a result's location: in the summary's ``skipped_files`` (``{"path", "reason"}``, the
+first 50, with ``skipped_files_not_listed`` counting any more), and every one as a ``note`` in the SARIF run's
+``invocations[0].toolExecutionNotifications``, located at that path. A path is written relative to the current directory
+when it lies under it, with a leading ``./`` or ``/work/`` (a container run's project) removed.
 
 ``--out`` is a path under ``.qa/work/security/`` (default ``.qa/work/security/unicode.sarif``), or, inside a container run,
 a new file directly in ``/qa-evidence/``. ``--copy-to-work`` copies this file to ``.qa/work/security/unicode_scan.py`` for a
@@ -177,28 +186,35 @@ def write_bytes(text: str, data: bytes, root: Optional[Path] = None) -> str:
 
 # --------------------------------------------------------------------------- scanning
 
-def files_under(paths: Sequence[str], counts: Dict[str, int]) -> Iterator[Path]:
+def skip(counts: Dict[str, int], names: Optional[List[Tuple[str, str]]], reason: str, path: Path) -> None:
+    """Count a skipped file under ``reason`` and, when ``names`` is given, name it there as ``(path, reason)``."""
+    counts[reason] += 1
+    if names is not None:
+        names.append((uri_of(path), reason))
+
+
+def files_under(paths: Sequence[str], counts: Dict[str, int], names: Optional[List[Tuple[str, str]]] = None) -> Iterator[Path]:
     for given in paths:
         start = Path(given)
         try:
             mode = os.lstat(str(start)).st_mode
         except OSError:
-            counts["missing"] += 1
+            skip(counts, names, "missing", start)
             continue
         if stat.S_ISREG(mode):
             yield start
             continue
         if not stat.S_ISDIR(mode):
             continue
-        for here, directories, names in os.walk(str(start), followlinks=False):
+        for here, directories, listed_files in os.walk(str(start), followlinks=False):
             directories[:] = sorted(d for d in directories if d not in SKIP_DIRS and not d.startswith(".venv")
                                     and not os.path.islink(os.path.join(here, d)))
-            for name in sorted(names):
+            for name in sorted(listed_files):
                 path = Path(here, name)
                 try:
                     mode = os.lstat(str(path)).st_mode
                 except OSError:                   # gone since the directory was listed
-                    counts["vanished"] += 1
+                    skip(counts, names, "vanished", path)
                     continue
                 if stat.S_ISREG(mode):
                     yield path
@@ -208,6 +224,15 @@ def files_under(paths: Sequence[str], counts: Dict[str, int]) -> Iterator[Path]:
 BYTE_ORDER_MARKS = ((b"\xff\xfe\x00\x00", "utf-32-le"), (b"\x00\x00\xfe\xff", "utf-32-be"),
                     (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"), (b"\xef\xbb\xbf", None))
 SINGLE = "utf-8"
+NUL_STRIPPED = "nul-stripped"
+SKIP_REASONS = {
+    "large": "over 2 MiB",
+    "utf16": "a UTF-16 or UTF-32 byte-order mark or the UTF-16 NUL pattern, and no reading that qualifies",
+    "binary": "a NUL byte, and no reading that qualifies",
+    "vanished": "vanished or could not be opened during the walk",
+    "missing": "a given path that does not exist",
+}
+SUMMARY_FILES = 50                         # skipped files named in the summary; the SARIF names every one
 
 
 def mark_of(data: bytes) -> Tuple[int, Optional[str]]:
@@ -252,33 +277,43 @@ def readings(data: bytes) -> Tuple[List[Tuple[str, str]], str]:
     found = [(SINGLE, rest.decode("utf-8", "replace"))]
     if wide_text is not None:
         found.append((wide, wide_text))
+    if not single_counts:                         # counted on its wide reading: the single-byte text as a NUL-blind viewer shows it
+        found.append((NUL_STRIPPED, rest.replace(b"\x00", b"").decode("utf-8", "replace")))
     return found, ""
 
 
-def read_texts(path: Path, counts: Dict[str, int]) -> Optional[List[Tuple[str, str]]]:
-    """The readings of ``path`` to scan (``readings``), or None when it is skipped, counted under its reason."""
+def read_texts(path: Path, counts: Dict[str, int], names: Optional[List[Tuple[str, str]]] = None) -> Optional[List[Tuple[str, str]]]:
+    """The readings of ``path`` to scan (``readings``), or None when it is skipped, counted (and named) under its reason."""
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:                               # gone, or replaced by a link, since the walk saw it
-        counts["vanished"] += 1
+        skip(counts, names, "vanished", path)
         return None
     with os.fdopen(fd, "rb") as handle:
         data = handle.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
-        counts["large"] += 1
+        skip(counts, names, "large", path)
         return None
-    found, skip = readings(data)
+    found, reason = readings(data)
     if not found:
-        counts[skip] += 1
+        skip(counts, names, reason, path)
         return None
     return found
 
 
 def uri_of(path: Path) -> str:
+    """``path`` as a result's location: no leading ``./`` or ``/work/``, and relative to the current directory under it."""
     text = path.as_posix()
     for prefix in ("./", "/work/"):
         if text.startswith(prefix):
             text = text[len(prefix):]
+    if text.startswith("/"):
+        here = Path.cwd()
+        if here != Path(here.anchor):
+            try:
+                text = PurePosixPath(text).relative_to(here.as_posix()).as_posix()
+            except ValueError:                    # not under the current directory: kept as it is
+                pass
     return text
 
 
@@ -314,21 +349,36 @@ def merged_hits(texts: Sequence[Tuple[str, str]]) -> List[Tuple[str, int, int, s
             if name not in found[key][1]:
                 found[key][1].append(name)
     labelled = len(texts) > 1
-    return [key + (found[key][0], " and ".join(found[key][1]) if labelled else "") for key in order]
+    return [key + (found[key][0], listed(found[key][1]) if labelled else "") for key in order]
 
 
-def sarif(results: List[Dict[str, object]]) -> Dict[str, object]:
+def listed(names: Sequence[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    return names[0] if len(names) == 1 else "%s and %s" % (", ".join(names[:-1]), names[-1])
+
+
+def notification(path: str, reason: str) -> Dict[str, object]:
+    """A SARIF ``toolExecutionNotifications`` entry naming a skipped file and why."""
+    return {"level": "note", "message": {"text": "not scanned (%s): %s" % (reason, SKIP_REASONS[reason])},
+            "locations": [{"physicalLocation": {"artifactLocation": {"uri": path}}}], "properties": {"skipped": reason}}
+
+
+def sarif(results: List[Dict[str, object]], skipped: Sequence[Tuple[str, str]] = ()) -> Dict[str, object]:
     return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
             "runs": [{"tool": {"driver": {"name": TOOL, "version": VERSION, "rules": RULES}},
+                      "invocations": [{"executionSuccessful": True,
+                                       "toolExecutionNotifications": [notification(p, r) for p, r in skipped]}],
                       "results": results}]}
 
 
-def scan(paths: Sequence[str]) -> Tuple[Dict[str, object], Dict[str, int], int]:
+def scan(paths: Sequence[str]) -> Tuple[Dict[str, object], Dict[str, int], int, List[Tuple[str, str]]]:
+    """``(report, skip counts, files scanned, skipped files as (path, reason))``."""
     counts = {"large": 0, "utf16": 0, "binary": 0, "vanished": 0, "missing": 0}
+    names: List[Tuple[str, str]] = []
     results: List[Dict[str, object]] = []
     scanned = 0
-    for path in files_under(paths, counts):
-        texts = read_texts(path, counts)
+    for path in files_under(paths, counts, names):
+        texts = read_texts(path, counts, names)
         if texts is None:
             continue
         scanned += 1
@@ -341,7 +391,7 @@ def scan(paths: Sequence[str]) -> Tuple[Dict[str, object], Dict[str, int], int]:
             if reading:
                 result["properties"] = {"reading": reading}
             results.append(result)
-    return sarif(results), counts, scanned
+    return sarif(results, names), counts, scanned, names
 
 
 def main(argv: Sequence[str]) -> int:
@@ -360,7 +410,7 @@ def main(argv: Sequence[str]) -> int:
             del args[at:at + 2]
         if any(a.startswith("-") for a in args):
             raise Refused("unknown option %s" % next(a for a in args if a.startswith("-")))
-        report, counts, scanned = scan(args or ["."])
+        report, counts, scanned, skipped = scan(args or ["."])
         written = write_bytes(out, (json.dumps(report, indent=1, sort_keys=True) + "\n").encode("utf-8"))
     except (Refused, OSError) as exc:
         print(json.dumps({"ok": False, "error": str(exc) if isinstance(exc, Refused) else type(exc).__name__}, sort_keys=True))
@@ -369,8 +419,12 @@ def main(argv: Sequence[str]) -> int:
     by_rule: Dict[str, int] = {}
     for result in results:
         by_rule[result["ruleId"]] = by_rule.get(result["ruleId"], 0) + 1
-    print(json.dumps({"ok": True, "out": written, "files_scanned": scanned, "skipped": counts, "results": len(results), "by_rule": by_rule},
-                     sort_keys=True))
+    summary: Dict[str, object] = {"ok": True, "out": written, "files_scanned": scanned, "skipped": counts, "results": len(results),
+                                  "by_rule": by_rule,
+                                  "skipped_files": [{"path": p, "reason": r} for p, r in skipped[:SUMMARY_FILES]]}
+    if len(skipped) > SUMMARY_FILES:
+        summary["skipped_files_not_listed"] = len(skipped) - SUMMARY_FILES
+    print(json.dumps(summary, sort_keys=True))
     return 0
 
 

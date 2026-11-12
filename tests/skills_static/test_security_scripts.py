@@ -248,9 +248,12 @@ def test_unicode_scan_counts_a_file_as_scanned_only_on_a_reading_that_shows_its_
     bidi = "U+202A, a bidirectional control character"
     assert sarif_results(root) == sorted([
         ("latin1.txt", "qa-injection-marker", 2, 1, "utf-8", marker % "English" + "; reading: utf-8"),
-        ("nul.txt", "qa-injection-marker", 2, 1, "utf-8", marker % "English" + "; reading: utf-8"),
-        ("wide32-le.txt", "qa-injection-marker", 2, 1, "utf-32-le", marker % "English" + "; reading: utf-32-le"),
-        ("wide32-be.txt", "qa-injection-marker", 2, 1, "utf-32-be", marker % "Spanish" + "; reading: utf-32-be"),
+        # a single-byte reading that holds a NUL is also read with its NUL bytes removed
+        ("nul.txt", "qa-injection-marker", 2, 1, "utf-8 and nul-stripped", marker % "English" + "; reading: utf-8 and nul-stripped"),
+        ("wide32-le.txt", "qa-injection-marker", 2, 1, "utf-32-le and nul-stripped",
+         marker % "English" + "; reading: utf-32-le and nul-stripped"),
+        ("wide32-be.txt", "qa-injection-marker", 2, 1, "utf-32-be and nul-stripped",
+         marker % "Spanish" + "; reading: utf-32-be and nul-stripped"),
         # the controls are in the UTF-16 reading only, and each result says so
         ("stars.txt", "qa-bidi-control", 1, 1, "utf-16-le", bidi + "; reading: utf-16-le"),
         ("stars.txt", "qa-bidi-control", 1, 4, "utf-16-le", bidi + "; reading: utf-16-le"),
@@ -274,6 +277,75 @@ def test_unicode_scan_never_counts_a_file_with_no_qualifying_reading_as_scanned(
     (root / "late-nul.txt").write_bytes(b"x" * 9000 + b"\x00\n" + EN_PHRASE.encode())       # a NUL byte past the first 8 KiB
     code, out, err = run(UNICODE, cwd=root)
     assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"], out["results"]) == (0, 3, 1, 0, 0), (out, err)
+
+
+def test_unicode_scan_reads_a_phrase_broken_by_a_nul_byte_behind_a_wide_reading(tmp_path):
+    """task-10-rereview-4.md, Important 1: a UTF-16 mark, then single-byte text whose marker phrase holds a NUL byte between two
+    words. At even length the UTF-16 reading decodes and counts, so the phrase must be read with the NUL removed; at odd length
+    no reading qualifies and the file is skipped. Never counted as scanned with the phrase unread."""
+    module = load(UNICODE, "qa_security_unicode_scan_z")
+    root = tmp_path / "p"
+    root.mkdir()
+    broken = (EN_PHRASE.replace(" ", "\x00 ", 1) + "\n").encode()                       # a NUL byte after the first word
+    (root / "even.txt").write_bytes(b"\xff\xfe" + b"xy\n" + broken)
+    (root / "odd.txt").write_bytes(b"\xff\xfe" + b"x\n" + broken)
+    assert (len((root / "even.txt").read_bytes()) % 2, len((root / "odd.txt").read_bytes()) % 2) == (0, 1)
+    code, out, err = run(UNICODE, cwd=root)
+    assert (code, out["files_scanned"], out["skipped"]["utf16"], out["skipped"]["binary"]) == (0, 1, 1, 0), (out, err)
+    assert out["skipped_files"] == [{"path": "odd.txt", "reason": "utf16"}], out
+    marker = "a phrase that tries to override an agent's instructions (English); the line is not quoted"
+    assert sarif_results(root) == [("even.txt", "qa-injection-marker", 2, 1, "nul-stripped", marker + "; reading: nul-stripped")], (out, err)
+    found, _ = module.readings((root / "even.txt").read_bytes())
+    assert [name for name, _ in found] == ["utf-8", "utf-16-le", "nul-stripped"]
+    text = "a%sb\n" % BIDI_CHARS[0]
+    assert [hit[4] for hit in module.merged_hits([("utf-8", text), ("utf-16-le", text), ("nul-stripped", text)])] == [
+        "utf-8, utf-16-le and nul-stripped"]
+
+
+def test_unicode_scan_names_every_skipped_file(tmp_path):
+    module = load(UNICODE, "qa_security_unicode_scan_s")
+    root = tmp_path / "p"
+    for folder in ("abs", "rel"):
+        (root / folder).mkdir(parents=True)
+    (root / "abs" / "blob.bin").write_bytes(b"\x00\x01" + EN_PHRASE.encode())
+    (root / "rel" / "big.txt").write_bytes(b"a" * ((2 << 20) + 1))
+    (root / "rel" / "odd16.txt").write_bytes(b"\xff\xfe" + b"A\x00B")
+    (root / "rel" / "ok.txt").write_text("fine\n", encoding="utf-8")
+    code, out, err = run(UNICODE, str((root / "abs").resolve()), "rel", "nope.txt", cwd=root)    # an absolute path under the root
+    named = [{"path": "abs/blob.bin", "reason": "binary"}, {"path": "rel/big.txt", "reason": "large"},
+             {"path": "rel/odd16.txt", "reason": "utf16"}, {"path": "nope.txt", "reason": "missing"}]
+    assert (code, out["files_scanned"], out["skipped_files"], "skipped_files_not_listed" in out) == (0, 1, named, False), (out, err)
+    report = json.loads((root / ".qa" / "work" / "security" / "unicode.sarif").read_text(encoding="utf-8"))
+    invocation = report["runs"][0]["invocations"][0]
+    assert invocation["executionSuccessful"] is True
+    assert [{"path": n["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "reason": n["properties"]["skipped"]}
+            for n in invocation["toolExecutionNotifications"]] == named
+    assert {n["level"] for n in invocation["toolExecutionNotifications"]} == {"note"}
+    assert all(n["message"]["text"].startswith("not scanned (%s): " % n["properties"]["skipped"]) for n in invocation["toolExecutionNotifications"])
+    # the summary names the first 50; the SARIF names every one
+    many = tmp_path / "many"
+    many.mkdir()
+    for number in range(53):
+        (many / ("b%02d.bin" % number)).write_bytes(b"\x00")
+    code, out, err = run(UNICODE, cwd=many)
+    assert (code, len(out["skipped_files"]), out["skipped_files_not_listed"], out["skipped"]["binary"]) == (0, 50, 3, 53), (out, err)
+    assert out["skipped_files"][0] == {"path": "b00.bin", "reason": "binary"}
+    report = json.loads((many / ".qa" / "work" / "security" / "unicode.sarif").read_text(encoding="utf-8"))
+    assert len(report["runs"][0]["invocations"][0]["toolExecutionNotifications"]) == 53
+    # a file that vanishes during the walk or before it is opened is named too, and so is a missing path after a walk
+    walked = tmp_path / "walked"
+    walked.mkdir()
+    for name in ("a.txt", "b.txt"):
+        (walked / name).write_text("ok\n", encoding="utf-8")
+    counts, names = {"large": 0, "utf16": 0, "binary": 0, "vanished": 0, "missing": 0}, []
+    walk = module.files_under([str(walked), str(tmp_path / "absent")], counts, names)
+    assert next(walk).name == "a.txt"
+    (walked / "b.txt").unlink()
+    assert list(walk) == [] and module.read_texts(walked / "a.txt", counts, names) is not None
+    (walked / "a.txt").unlink()
+    assert module.read_texts(walked / "a.txt", counts, names) is None
+    assert [reason for _, reason in names] == ["vanished", "missing", "vanished"] and (counts["vanished"], counts["missing"]) == (2, 1)
+    assert [path.rsplit("/", 1)[-1] for path, _ in names] == ["b.txt", "absent", "a.txt"]
 
 
 def test_unicode_scan_skips_a_file_that_vanishes_during_the_walk(tmp_path):
