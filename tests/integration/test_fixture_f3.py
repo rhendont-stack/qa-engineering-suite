@@ -32,6 +32,15 @@ USER_APPROVAL = ("Hacer lo necesario para ejecutar el requerimiento, no me pregu
 POSTGRES_IMAGE = "postgres@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0"  # postgres 17.11-alpine, uid 70
 
 
+# The seeds a test in this file shows in process, by that test; F3-07 shows only in a PostgreSQL plan (the docker test).
+DEMONSTRATED_IN_PROCESS = {
+    "F3-01": "test_the_schema_allows_the_rows_the_key_describes", "F3-02": "test_the_schema_allows_the_rows_the_key_describes",
+    "F3-03": "test_the_migration_that_drops_a_column_moves_nothing", "F3-04": "test_migrations_apply_from_scratch_on_sqlite",
+    "F3-05": "test_the_list_of_orders_asks_the_database_once_per_order",
+    "F3-06": "test_two_connections_that_read_before_either_writes_lose_an_update",
+}
+
+
 def forget_the_package():
     for name in [name for name in sys.modules if name == "shop_db" or name.startswith("shop_db.")]:
         del sys.modules[name]
@@ -105,10 +114,14 @@ def test_f3_answer_key_locations_exist(repo_root):
         assert issue["match"] in "\n".join(lines[first - 1:last]), issue["id"]
         assert issue["severity_anchor"] in anchors and issue["category"] in categories, issue["id"]
         assert issue["class"] and issue["detectable_by"] and all(isinstance(tool, str) and tool for tool in issue["detectable_by"]), issue["id"]
-        assert {"static-review", "in-process-check"} <= set(issue["detectable_by"]), issue["id"]
+        assert "static-review" in issue["detectable_by"], issue["id"]
+        assert ("in-process-check" in issue["detectable_by"]) is (issue["id"] in DEMONSTRATED_IN_PROCESS), issue["id"]
     assert len({issue["class"] for issue in issues}) == len(issues)
     assert [issue["id"] for issue in issues if "squawk" in issue["detectable_by"]] == ["F3-03"]       # all that squawk 2.72.0 flagged
     assert [issue["id"] for issue in issues if "postgres" in issue["detectable_by"]] == ["F3-07"]
+    assert all(callable(globals().get(name)) for name in DEMONSTRATED_IN_PROCESS.values())
+    extras = key["known_extras"]                    # real weaknesses outside the seven, by class, so a finding of one is not a false positive
+    assert len(extras) == 1 and set(extras[0]) == {"file", "class", "note"} and (F3 / extras[0]["file"]).is_file()
     assert [issue["file"] for issue in issues if issue["file"].startswith("postgres/")] == ["postgres/migrations/0003_create_orders.up.sql"]
 
 
@@ -220,6 +233,16 @@ def test_two_connections_that_read_before_either_writes_lose_an_update(tmp_path,
     assert rival.stock_of(product) == 3            # two decrements of 2 from 5 leave 1; the first one wrote over the second
     for connection in (first, rival, store):
         connection.close()
+
+
+def test_an_order_with_a_repeated_product_or_a_zero_quantity_changes_nothing(tmp_path, monkeypatch):
+    module, store = migrated_store(monkeypatch, tmp_path / "shop.db")
+    customer = store.add_customer("a@example.test", "Ada", "Lovelace")
+    first, second = store.add_product("sku-1", "pen", 10, 100), store.add_product("sku-2", "ink", 10, 100)
+    for lines in ([(first, 1), (first, 2)], [(first, 1), (second, 0)], [(first, 1), (second, -1)]):
+        with pytest.raises(ValueError):
+            store.place_order(customer, lines)
+        assert (store.stock_of(first), store.stock_of(second), store.orders_for_customer(customer)) == (10, 10, [])
 
 
 def test_the_smoke_path_decrements_once_and_lists_the_order(tmp_path, monkeypatch):

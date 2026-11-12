@@ -6,7 +6,7 @@ A small shop (customers, products, orders) as SQL migrations, with an access lay
 
 | Path | What it holds |
 | --- | --- |
-| `migrations/` | The SQLite schema, one `NNNN_<name>.up.sql` per step and, for most steps, a `NNNN_<name>.down.sql` that undoes it. |
+| `migrations/` | The SQLite schema, one `NNNN_<name>.up.sql` per step and an optional `NNNN_<name>.down.sql` that undoes it. |
 | `postgres/migrations/` | The same steps in PostgreSQL dialect. |
 | `shop_db/store.py` | `Store(path)`: opens the SQLite file at the path it is given, and never any other. |
 | `shop_db/migrate.py` | `apply(connection, directory, "up" or "down")` runs a directory's files in order. |

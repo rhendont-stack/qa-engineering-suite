@@ -54,6 +54,7 @@ class Store:
 
     def place_order(self, customer_id: int, lines: List[Tuple[int, int]]) -> int:
         """Takes each ``(product_id, quantity)`` of ``lines`` from stock and records the order; returns its id."""
+        self._require_distinct_positive(lines)
         for product_id, quantity in lines:
             if self.stock_of(product_id) < quantity:
                 raise OutOfStock(product_id)
@@ -61,9 +62,8 @@ class Store:
             self.decrement_stock(product_id, quantity)
         order_id = self.connection.execute("INSERT INTO orders (customer_id) VALUES (?)", (customer_id,)).lastrowid
         for line_no, (product_id, quantity) in enumerate(lines, 1):
-            self.connection.execute(
-                "INSERT INTO order_items (order_id, line_no, product_id, quantity, unit_price_cents) "
-                "SELECT ?, ?, id, ?, price_cents FROM products WHERE id = ?", (order_id, line_no, quantity, product_id))
+            self.connection.execute("INSERT INTO order_items (order_id, line_no, product_id, quantity, unit_price_cents) "
+                                    "SELECT ?, ?, id, ?, price_cents FROM products WHERE id = ?", (order_id, line_no, quantity, product_id))
         self.connection.execute("INSERT INTO audit_log (order_id, event) VALUES (?, 'placed')", (order_id,))
         self.connection.commit()
         return order_id
@@ -78,3 +78,8 @@ class Store:
                 (order["id"],)).fetchall()
             listing.append({"id": order["id"], "status": order["status"], "items": [dict(item) for item in items]})
         return listing
+
+    @staticmethod
+    def _require_distinct_positive(lines: List[Tuple[int, int]]) -> None:
+        if any(quantity <= 0 for _product_id, quantity in lines) or len({product_id for product_id, _quantity in lines}) != len(lines):
+            raise ValueError("each product at most once, with a positive quantity")

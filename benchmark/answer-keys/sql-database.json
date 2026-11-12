@@ -130,9 +130,15 @@
       "class": "missing index on a join and lookup column, visible only in a PostgreSQL plan",
       "detectable_by": [
         "postgres",
-        "static-review",
-        "in-process-check"
+        "static-review"
       ]
+    }
+  ],
+  "known_extras": [
+    {
+      "file": "postgres/migrations/0003_create_orders.up.sql",
+      "class": "missing (order_id, line_no) uniqueness on the PostgreSQL order_items table",
+      "note": "SQLite has it as the composite primary key. Adding it in PostgreSQL would index order_id and remove F3-07, so it stays; a finding of it is not a false positive."
     }
   ]
 }
