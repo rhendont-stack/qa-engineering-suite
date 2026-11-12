@@ -1,0 +1,6 @@
+CREATE TABLE audit_log (
+    id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES orders (id),
+    event TEXT NOT NULL,
+    at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

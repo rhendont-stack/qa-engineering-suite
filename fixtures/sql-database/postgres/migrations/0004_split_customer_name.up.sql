@@ -1,0 +1,3 @@
+ALTER TABLE customers ADD COLUMN given_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE customers ADD COLUMN family_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE customers DROP COLUMN name;
