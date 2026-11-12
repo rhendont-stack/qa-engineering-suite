@@ -3,6 +3,7 @@
   "skills": [
     "qa-api-testing",
     "qa-codebase-intelligence",
+    "qa-database",
     "qa-mutation",
     "qa-orchestrator",
     "qa-regression-guard",
@@ -56,6 +57,14 @@
     {
       "key": "check-documented-api-authorization",
       "owner": "qa-api-testing"
+    },
+    {
+      "key": "audit-database-integrity",
+      "owner": "qa-database"
+    },
+    {
+      "key": "analyse-query-plans",
+      "owner": "qa-database"
     }
   ]
 }
