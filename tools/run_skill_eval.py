@@ -71,7 +71,9 @@ refuses further runs, as does an unknown cost. ``DIR/costs.jsonl`` repeats the `
 After the ``end`` line, the working copy's ``.qa/`` is copied to ``DIR/runs/ID/qa-state/`` so record criteria can be graded
 once the temporary working copy is gone. ``redaction.key``, ``authority.key`` and any ``work`` directory are left out, symlinks
 are not followed, and the API key and the copy's kernel keys are redacted from every copied file. A failed copy is reported as a problem (exit 1), never
-as a crash, and never touches the ledger. ``.qa/work/patches/`` is the one part of ``work`` that is kept.
+as a crash, and never touches the ledger. ``.qa/work/patches/`` is kept from ``work``, and so is each directory a case
+names in ``keep_work`` (optional case field: a list of plain directory names directly under ``.qa/work/``, such as
+``api``, where a domain skill leaves the files its grader reads); nothing else of ``work`` is kept.
 
 The copy's final file state is saved beside it, in ``DIR/runs/ID/file-state/``: ``status.txt`` (``git status --porcelain=v1
 -uall``), ``diff.patch`` (``git diff --binary`` of tracked and untracked files against the commit the agent started from, so a
@@ -132,6 +134,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import shlex
@@ -226,6 +229,8 @@ def load_case(path: Path) -> Dict[str, Any]:
         if field in case:
             case[field] = check_installables(field, case[field], kind)
     venv = case.get("runtime_venv")
+    if "keep_work" in case:
+        case["keep_work"] = check_keep_work(case["keep_work"])
     if "system_path_only" in case and not isinstance(case["system_path_only"], bool):
         raise usage_error("system_path_only must be true or false")
     if venv is not None:
@@ -235,6 +240,20 @@ def load_case(path: Path) -> Dict[str, Any]:
         if not real.startswith(root + os.sep) or not os.path.isdir(os.path.join(real, "bin")):
             raise usage_error("runtime_venv must be a directory with a bin inside the repository: %s" % venv)
     return case
+
+
+def check_keep_work(entries: Any) -> List[str]:
+    """The ``keep_work`` names; otherwise exit 2. Each is one plain directory name under ``.qa/work/``: no separator, no
+    ``.`` or ``..``, no leading dot, so a kept directory can never be a worktree path, a parent or the whole of ``work``."""
+    if not isinstance(entries, list) or not entries or not all(isinstance(e, str) for e in entries):
+        raise usage_error("keep_work must be a non-empty list of directory names under .qa/work/")
+    found: List[str] = []
+    for entry in entries:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", entry):
+            raise usage_error("keep_work entry must be a plain directory name (letters, digits, '-' or '_'): %r" % entry)
+        if entry not in found:
+            found.append(entry)
+    return found
 
 
 def check_exclude(entries: Any) -> List[str]:
@@ -786,11 +805,13 @@ QA_STATE_SKIP_DIRS = {"work"}
 QA_STATE_KEEP_IN_WORK = "patches"
 
 
-def copy_qa_state(workdir: Path, dest: Path, key: str, key_forms_extra: Sequence[bytes] = ()) -> None:
+def copy_qa_state(workdir: Path, dest: Path, key: str, key_forms_extra: Sequence[bytes] = (),
+                  keep_work: Sequence[str] = ()) -> None:
     """Copy the working copy's ``.qa/`` to ``dest``, so a record criterion can be graded after the workdir is gone.
 
     Left out: ``redaction.key``, ``authority.key`` and any ``work`` directory, except ``.qa/work/patches/`` (the patches a
-    skill leaves when it may not write into the project), which is kept. Symlinks are never followed (a link is skipped,
+    skill leaves when it may not write into the project) and the directories directly under ``.qa/work/`` named in
+    ``keep_work`` (a case's ``keep_work``), which are kept. Symlinks are never followed (a link is skipped,
     not copied). The API key and the kernel keys (``key_forms_extra``), if they appear in any file, are replaced by their
     markers. Raises OSError on a failure."""
     source = workdir / ".qa"
@@ -800,8 +821,9 @@ def copy_qa_state(workdir: Path, dest: Path, key: str, key_forms_extra: Sequence
     for root, dirs, files in os.walk(str(source), followlinks=False):
         base = Path(root)
         top_work = base == source / "work"
-        if top_work:      # only the patches survive from the work directory: no worktree, no scratch file
-            dirs[:] = [d for d in dirs if d == QA_STATE_KEEP_IN_WORK and not (base / d).is_symlink()]
+        if top_work:      # only the patches and the case's kept directories survive: no worktree, no scratch file
+            kept = {QA_STATE_KEEP_IN_WORK} | set(keep_work)
+            dirs[:] = [d for d in dirs if d in kept and not (base / d).is_symlink()]
             files = []
         else:
             dirs[:] = [d for d in dirs if (d not in QA_STATE_SKIP_DIRS or base == source) and not (base / d).is_symlink()]
@@ -1417,7 +1439,7 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
         problems.append("evidence not fully saved: %s" % exc)
         print(problems[-1] + " (the ledger line was written)", file=sys.stderr)
     try:                                       # after the ledger line; a failed copy never undoes the run
-        copy_qa_state(workdir, run_dir / "qa-state", key, secrets)
+        copy_qa_state(workdir, run_dir / "qa-state", key, secrets, case.get("keep_work", ()))
     except Exception as exc:                   # noqa: BLE001 - whatever goes wrong here is a problem, not a crash
         problems.append("qa-state not saved: %s" % type(exc).__name__)
         print(problems[-1] + " (the ledger line was written)", file=sys.stderr)

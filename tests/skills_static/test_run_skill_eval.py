@@ -1771,3 +1771,23 @@ def test_qa_state_keeps_the_patches_under_work_and_nothing_else_of_it(world):
     saved = world.out / "runs" / records(world)[0]["run_id"] / "qa-state"
     files = sorted(str(p.relative_to(saved)) for p in saved.rglob("*") if p.is_file() or p.is_symlink())
     assert files == ["work/patches/sub/two.diff", "work/patches/tc-001.diff"]
+
+
+def test_qa_state_keeps_the_work_directories_a_case_names_and_nothing_else_of_work(world):
+    edits = {".qa/work/api/inventory.json": "{}\n", ".qa/work/api/checks/test_x.py": "key @KEY@\n", ".qa/work/other/x.txt": "o",
+             ".qa/work/wt-abc/app.py": "x\n", ".qa/work/scratch.txt": "w", ".qa/work/patches/p.diff": "p\n"}
+    _case_with(world, keep_work=["api"])
+    r = run(world, env={"FAKE_EDITS": edits, "FAKE_LINKS": {".qa/work/api/link.json": "/etc/hosts"}})
+    assert r.returncode == 0, r.stderr
+    saved = world.out / "runs" / records(world)[0]["run_id"] / "qa-state"
+    files = sorted(str(p.relative_to(saved)) for p in saved.rglob("*") if p.is_file() or p.is_symlink())
+    assert files == ["work/api/checks/test_x.py", "work/api/inventory.json", "work/patches/p.diff"]
+    kept = (saved / "work" / "api" / "checks" / "test_x.py").read_text()
+    assert SECRET not in kept and "[REDACTED:ANTHROPIC_API_KEY]" in kept
+
+
+@pytest.mark.parametrize("value", [[], "api", [""], ["."], [".."], ["a/b"], [".hidden"], ["wt abc"], [1], ["x" * 65]])
+def test_keep_work_takes_only_plain_directory_names(world, value):
+    _case_with(world, keep_work=value)
+    r = run(world)
+    assert r.returncode == 2 and "keep_work" in r.stderr and not records(world)
