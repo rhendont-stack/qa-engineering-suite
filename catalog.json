@@ -6,6 +6,7 @@
     "qa-database",
     "qa-mutation",
     "qa-orchestrator",
+    "qa-performance",
     "qa-regression-guard",
     "qa-reporting",
     "qa-requirements",
@@ -74,6 +75,10 @@
     {
       "key": "adversarial-authorization-testing",
       "owner": "qa-security"
+    },
+    {
+      "key": "measure-performance-under-load",
+      "owner": "qa-performance"
     }
   ]
 }

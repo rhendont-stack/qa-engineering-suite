@@ -447,3 +447,142 @@ def test_f2_zap_api_active_leg(api_project):
     recall_spec.loader.exec_module(recall)
     scored = recall.recall(answer_key("rest-api"), triage.detections(listing, "zap"), {"zap"})
     print("zap api recall on F2:", scored)
+
+
+# ----------------------------------------------------------------------------------------------- the qa-performance leg on F2
+# qa-performance's k6 leg, read from its references/tools.md, with the workload of its references/workload-model.md turned
+# into a script by k6_script.py, against the orders API started as the run's service on 127.0.0.1:8080 with 300 orders
+# preloaded. The load-test grant (at most 10 VUs, 100 requests a second, 60 seconds) is recorded in each test's own workspace
+# with the user's words. The k6 legs run one at a time, never beside another leg.
+
+PERFORMANCE = REPO / "skills" / "qa-performance"
+PERFORMANCE_PREFIX = ["python3", ".claude/skills/qa-performance/scripts/qa.py", "--role", "verifier", "--skill", "qa-performance"]
+K6_SERVE = SERVE + " --preload 300"
+LOAD_LIMITS = {"max_vus": 10, "max_rps": 100, "max_duration_s": 60}
+LEG_SCRIPT = "f2-orders-listing"
+
+
+def performance_legs():
+    text = (PERFORMANCE / "references" / "tools.md").read_text(encoding="utf-8")
+    found = {}
+    for match in re.finditer(r"^```qa-leg (\S+)((?: [\w-]+=\S+)*)\n(.*?)\n```$", text, re.M | re.S):
+        found[match.group(1)] = (dict(a.split("=", 1) for a in match.group(2).split()), match.group(3).strip())
+    return found
+
+
+def k6_leg_words():
+    _attributes, line = performance_legs()["k6"]
+    words = shlex.split(line.replace("<serve>", K6_SERVE).replace("<script>", LEG_SCRIPT))
+    assert words[:len(PERFORMANCE_PREFIX)] == PERFORMANCE_PREFIX
+    return words[len(PERFORMANCE_PREFIX):]
+
+
+def performance_run(project, words, timeout=600):
+    done = subprocess.run([sys.executable, str(LAUNCHER), "--workspace", str(project.root), "--role", "verifier", "--skill", "qa-performance",
+                           *words], cwd=str(project.root), capture_output=True, timeout=timeout)
+    return done.returncode, json.loads(done.stdout)
+
+
+def performance_script(project, name, *args):
+    done = subprocess.run([sys.executable, "-I", "-B", str(PERFORMANCE / "scripts" / name), *args], cwd=str(project.root),
+                          capture_output=True, text=True, timeout=180)
+    assert done.returncode == 0 and json.loads(done.stdout)["ok"], done.stdout + done.stderr
+    return json.loads(done.stdout)
+
+
+def leg_script(project):
+    """The leg's workload from workload-model.md, written as the skill writes it, and its script from k6_script.py."""
+    text = (PERFORMANCE / "references" / "workload-model.md").read_text(encoding="utf-8")
+    block = re.search(r"^```qa-workload %s\n(.*?)\n```$" % LEG_SCRIPT, text, re.M | re.S).group(1)
+    folder = project.root / ".qa" / "work" / "performance"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / (LEG_SCRIPT + ".json")).write_text(block, encoding="utf-8")
+    return performance_script(project, "k6_script.py", "--workload", ".qa/work/performance/%s.json" % LEG_SCRIPT, "--max-vus", "5",
+                              "--max-duration-s", "60", "--max-rps", "100", "--out", ".qa/work/performance/%s.js" % LEG_SCRIPT)
+
+
+def load_grant(project):
+    limits = [word for name, value in sorted(LOAD_LIMITS.items()) for word in ("--limit", "load-test.%s=%d" % (name, value))]
+    code, out = project.cli("authorize", "--environment", "local", "--activity", "load-test", "--target", "127.0.0.1", *limits,
+                            "--approval", APPROVAL)
+    assert code == 0 and out["ok"], out
+    return out
+
+
+def test_the_k6_leg_is_documented_with_pinned_images_and_loopback_only():
+    found = performance_legs()
+    assert sorted(found) == ["k6"] and found["k6"][0] == {"grant": "load-test", "report": "k6"}
+    words = k6_leg_words()
+    assert words[words.index("--container") + 1] == image("k6") and words[words.index("--service") + 1] == image("python-newest")
+    assert words[words.index("--activity") + 1] == "load-test" and words[words.index("--input") + 1] == ".qa/work/performance/%s.js" % LEG_SCRIPT
+    assert set(re.findall(r"https?://([^/:\s'\"]+)", found["k6"][1])) == {"127.0.0.1"}
+    assert words[-1].startswith("sleep 3; k6 run --no-usage-report -e BASE_URL=http://127.0.0.1:8080 -e SUMMARY_PATH=/qa-evidence/k6-summary.json ")
+
+
+def test_the_k6_leg_is_refused_without_a_load_test_grant_and_a_grant_needs_its_limits(qa_on_fixture):
+    project = qa_on_fixture("rest-api")
+    leg_script(project)
+    code, out = performance_run(project, k6_leg_words())
+    assert (code, out["status"], out["reason"]) == (3, "blocked", "not_authorized"), out
+    code, out = project.cli("authorize", "--environment", "local", "--activity", "load-test", "--target", "127.0.0.1", "--approval", APPROVAL)
+    assert code != 0 and not out["ok"], out
+
+
+@pytest.fixture
+def performance_project(qa_on_fixture):
+    engine = os.environ.get("QA_TEST_CONTAINER_ENGINE")
+    if not engine:
+        pytest.skip("tool missing: QA_TEST_CONTAINER_ENGINE is not set")
+    project = qa_on_fixture("rest-api")
+    assert project.cli("config", "set", "container.engine", engine, "--approval", "fixture test")[0] == 0
+    return project
+
+
+def k6_measured(project, execution):
+    """perf_table.py's rows for one run, as ``{(metric, stat): (value, label)}``."""
+    table = performance_script(project, "perf_table.py", "--execution", execution)
+    assert table["measured"] is True, table
+    return {(row["metric"], row["stat"]): (row["value"], row["label"]) for row in table["rows"]}, table
+
+
+def k6_stored_summary(project, execution):
+    return json.loads((evidence_of(project, execution) / "reports" / "k6-summary.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.docker
+def test_f2_k6_leg(performance_project):
+    leg_script(performance_project)
+    load_grant(performance_project)
+    for repeat in (1, 2):                                      # two runs, one after the other, for the noise between them
+        code, out = performance_run(performance_project, k6_leg_words())
+        log = evidence_of(performance_project, out["execution"]) / "stdout.log"
+        assert out["status"] in ("passed", "failed"), (out, log.read_text(encoding="utf-8", errors="replace")[-3000:] if log.exists() else None)
+        run = recorded(performance_project, out["execution"])
+        assert "load-test" in [entry["activity"] for entry in run["authorizations"]]
+        assert run["container"]["image"] == image("k6") and run["container"]["service"]["image"] == image("python-newest")
+        assert run["container"]["network_mode"] == "none" and run["report"]["format"] == "k6" and run["report"]["label"] == "measured"
+        assert [r["files"] for r in run["reports"]] == [["reports/k6-summary.json"]]
+        rows, table = k6_measured(performance_project, out["execution"])
+        print("k6 leg run %d:" % repeat, out["execution"], out["status"], out.get("reason"), "class", table["environment_class"],
+              "thresholds", table["thresholds"])
+        print("k6 leg run %d numbers:" % repeat, json.dumps({"%s %s" % key: value for key, value in sorted(rows.items())}, sort_keys=True))
+        assert rows[("vus_max", "max")] == (5, "simulated") and rows[("http_reqs", "count")][0] > 0
+        assert {label for _value, label in rows.values()} <= {"simulated", "derived"}
+        assert rows[("http_req_failed", "rate")][0] == 0, "every listing answered 200"
+
+
+@pytest.mark.docker
+def test_f2_k6_leg_stays_within_the_grant(performance_project):
+    leg_script(performance_project)
+    load_grant(performance_project)
+    code, out = performance_run(performance_project, k6_leg_words())
+    assert out["status"] in ("passed", "failed"), out
+    run = recorded(performance_project, out["execution"])
+    assert "load_limit_exceeded" not in run["anomalies"], run["anomalies"]
+    assert not [note for note in run["limitations"] if note.startswith("load_limit_exceeded")], run["limitations"]
+    stored = k6_stored_summary(performance_project, out["execution"])
+    measured = {"vus_max.max": run["report"]["metrics"]["vus_max"]["max"], "http_reqs.rate": run["report"]["metrics"]["http_reqs"]["rate"],
+                "duration_s": stored["state"]["testRunDurationMs"] / 1000}
+    print("k6 leg within the grant:", out["execution"], out["status"], measured, "limits", LOAD_LIMITS)
+    assert measured["vus_max.max"] <= LOAD_LIMITS["max_vus"] and measured["http_reqs.rate"] <= LOAD_LIMITS["max_rps"]
+    assert 30 <= measured["duration_s"] <= LOAD_LIMITS["max_duration_s"]

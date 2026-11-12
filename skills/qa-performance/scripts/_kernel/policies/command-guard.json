@@ -1,0 +1,578 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "shell-without-flag",
+      "effect": "deny",
+      "reason": "A shell string runs only with --shell, which checks it as a whole (§12.3).",
+      "match": {"check": "shell_without_flag"}
+    },
+    {
+      "id": "secret-in-argv",
+      "effect": "deny",
+      "reason": "Secrets are referenced by environment-variable name and never given as arguments (§12.5).",
+      "match": {"check": "secret_in_argv"}
+    },
+    {
+      "id": "privilege-escalation",
+      "effect": "deny",
+      "reason": "The suite never escalates privileges (sudo, doas, su) (§12.3).",
+      "match": {"check": "privilege_escalation"}
+    },
+    {
+      "id": "protected-config-write",
+      "effect": "deny",
+      "reason": "Agent and IDE configuration is never written (§12.4).",
+      "match": {"check": "protected_config_write"}
+    },
+    {
+      "id": "delete-outside-qa",
+      "effect": "deny",
+      "reason": "Deleting or overwriting files outside .qa/work/ and the run's evidence directory is denied (§12.3, §12.4).",
+      "match": {"check": "delete_outside_qa"}
+    },
+    {
+      "id": "git-read-only",
+      "effect": "allow",
+      "reason": "Read-only git subcommand (§12.4).",
+      "match": {
+        "program": ["git"],
+        "subcommand": ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe",
+                       "for-each-ref", "cat-file", "grep", "shortlog", "branch", "tag"]
+      }
+    },
+    {
+      "id": "git-write",
+      "effect": "deny",
+      "reason": "Git history, index, working-tree and remote writes are denied; only read-only subcommands run (§12.3, §12.4).",
+      "match": {
+        "program": ["git"],
+        "unless_subcommand": ["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe",
+                              "for-each-ref", "cat-file", "grep", "shortlog", "branch", "tag"]
+      }
+    },
+    {
+      "id": "git-branch-write",
+      "effect": "deny",
+      "reason": "git branch may only list branches; an option that deletes, moves, copies or configures them is denied (§12.4).",
+      "match": {
+        "program": ["git"],
+        "subcommand": ["branch"],
+        "args_regex": "^(?!(-[arvil]+|--(all|remotes|list|verbose|show-current|ignore-case|no-color|no-column|no-abbrev|omit-empty|color|column|abbrev|contains|no-contains|merged|no-merged|points-at)|--(color|column|abbrev|sort|format|contains|no-contains|merged|no-merged|points-at)=.+)$)-"
+      }
+    },
+    {
+      "id": "git-branch-create",
+      "effect": "deny",
+      "reason": "git branch with a name and no list option creates a branch (§12.4).",
+      "match": {
+        "program": ["git"],
+        "subcommand": ["branch"],
+        "args_regex": "^[^-]",
+        "unless_args": ["--list", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"]
+      }
+    },
+    {
+      "id": "git-tag-write",
+      "effect": "deny",
+      "reason": "git tag may only list tags; an option that creates, deletes or signs them is denied (§12.4).",
+      "match": {
+        "program": ["git"],
+        "subcommand": ["tag"],
+        "args_regex": "^(?!(-[li]+|-n[0-9]*|--(list|ignore-case|no-color|no-column|color|column|contains|no-contains|merged|no-merged|points-at)|--(color|column|sort|format|contains|no-contains|merged|no-merged|points-at)=.+)$)-"
+      }
+    },
+    {
+      "id": "git-tag-create",
+      "effect": "deny",
+      "reason": "git tag with a name and no list option creates a tag (§12.4).",
+      "match": {
+        "program": ["git"],
+        "subcommand": ["tag"],
+        "args_regex": "^[^-]",
+        "unless_args": ["-l", "--list", "-n", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at"]
+      }
+    },
+    {
+      "id": "destructive-sql",
+      "effect": "deny",
+      "reason": "Destructive SQL (DROP, TRUNCATE, DELETE or UPDATE without WHERE) through a CLI client is denied unless every DSN it names is registered ephemeral (§12.3).",
+      "match": {
+        "program": ["psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "clickhouse-client", "duckdb", "usql",
+                    "pgcli", "mycli", "litecli", "sqlplus", "cockroach", "snowsql", "trino", "cqlsh"],
+        "check": "destructive_sql"
+      }
+    },
+    {
+      "id": "terraform-mutate",
+      "effect": "deny",
+      "reason": "Infrastructure mutation: terraform apply or destroy (§12.3).",
+      "match": {"program": ["terraform", "tofu", "terragrunt"], "args_any": ["apply", "destroy", "apply-all", "destroy-all"]}
+    },
+    {
+      "id": "kubectl-mutate",
+      "effect": "deny",
+      "reason": "Infrastructure mutation: kubectl apply, delete, scale and other writes (§12.3).",
+      "match": {
+        "program": ["kubectl", "oc"],
+        "args_any": ["apply", "create", "delete", "replace", "patch", "edit", "scale", "autoscale", "drain", "cordon",
+                     "uncordon", "taint", "label", "annotate", "rollout", "set", "expose", "run"]
+      }
+    },
+    {
+      "id": "helm-mutate",
+      "effect": "deny",
+      "reason": "Infrastructure mutation: helm install, upgrade, uninstall or rollback (§12.3).",
+      "match": {"program": ["helm"], "args_any": ["install", "upgrade", "uninstall", "delete", "rollback"]}
+    },
+    {
+      "id": "cloud-delete",
+      "effect": "deny",
+      "reason": "Infrastructure mutation: a cloud CLI delete, terminate or remove (§12.3).",
+      "match": {"program": ["aws", "gcloud", "az", "doctl"], "args_regex": "^(delete|terminate|destroy|remove|purge|rm|rb)(-.*)?$"}
+    },
+    {
+      "id": "deploy",
+      "effect": "deny",
+      "reason": "Deployment is never performed by the suite (§12.2).",
+      "match": {
+        "program": ["vercel", "netlify", "fly", "flyctl", "firebase", "serverless", "sls", "wrangler", "cdk", "pulumi",
+                    "sam", "railway", "eb", "kamal", "cap", "capistrano", "sst", "amplify", "copilot", "zappa", "chalice",
+                    "dokku", "argocd"],
+        "args_any": ["deploy", "up", "publish", "--prod", "destroy", "remove", "delete", "terminate", "push", "sync", "release"]
+      }
+    },
+    {
+      "id": "deploy-bare",
+      "effect": "deny",
+      "reason": "These tools deploy when run with no subcommand; deployment is never performed by the suite (§12.2).",
+      "match": {"program": ["vercel", "now", "surge"], "unless_args": ["list", "ls", "logs", "inspect", "whoami", "dev", "build", "pull", "help", "--help", "-h", "--version", "-v"]}
+    },
+    {
+      "id": "deploy-run",
+      "effect": "deny",
+      "reason": "Deployment is never performed by the suite (§12.2).",
+      "match": {"program": ["skaffold", "nomad"], "args_any": ["run", "deploy", "apply"]}
+    },
+    {
+      "id": "heroku-write",
+      "effect": "deny",
+      "reason": "Deploying to or changing a Heroku application is never performed by the suite (§12.2).",
+      "match": {"program": ["heroku"], "args_regex": "^(deploy|container:(push|release)|releases:rollback|apps:(create|destroy|rename)|config:(set|unset)|pg:(reset|push|promote|backups:restore)|maintenance:on|ps:(scale|restart|exec)|run(:detached)?)$"}
+    },
+    {
+      "id": "ansible-deploy",
+      "effect": "deny",
+      "reason": "A playbook changes the hosts it targets; only its dry-run and listing options run (§12.2).",
+      "match": {"program": ["ansible-playbook"], "unless_args": ["--check", "-C", "--syntax-check", "--list-hosts", "--list-tasks", "--list-tags"]}
+    },
+    {
+      "id": "docker-stack-deploy",
+      "effect": "deny",
+      "reason": "Deployment is never performed by the suite (§12.2).",
+      "match": {"program": ["docker"], "args_all": ["stack", "deploy"]}
+    },
+    {
+      "id": "cloud-deploy",
+      "effect": "deny",
+      "reason": "Deployment through a cloud CLI is never performed by the suite (§12.2).",
+      "match": {"program": ["aws", "gcloud", "az", "doctl"], "args_regex": "^(deploy|deployment|deployments|create-deployment|up|update-function-code|update-function-configuration|create-stack|update-stack|create-change-set|execute-change-set|update-service)$", "unless_args": ["list", "show", "describe", "get", "validate", "what-if"]}
+    },
+    {
+      "id": "doctl-apps-write",
+      "effect": "deny",
+      "reason": "Creating or updating a DigitalOcean app deploys it (§12.2).",
+      "match": {"program": ["doctl"], "args_all": ["apps"], "args_any": ["create", "update"]}
+    },
+    {
+      "id": "package-publish",
+      "effect": "deny",
+      "reason": "Publishing a package (npm publish, cargo publish and the like) (§12.3).",
+      "match": {
+        "program": ["npm", "pnpm", "yarn", "bun", "cargo", "poetry", "uv", "hatch", "flit", "pdm", "vsce", "ovsx"],
+        "args_any": ["publish"]
+      }
+    },
+    {
+      "id": "twine-upload",
+      "effect": "deny",
+      "reason": "Publishing to a package index with twine (§12.3).",
+      "match": {"program": ["twine"], "args_any": ["upload", "register"]}
+    },
+    {
+      "id": "gh-write",
+      "effect": "deny",
+      "reason": "GitHub writes: merging, creating releases, posting or editing (§12.3).",
+      "match": {
+        "program": ["gh"],
+        "args_any": ["merge", "create", "upload", "edit", "delete", "close", "reopen", "comment", "review", "ready",
+                     "checkout", "archive", "rename", "transfer", "fork", "set", "remove", "rerun", "cancel", "enable",
+                     "disable", "lock", "unlock"]
+      }
+    },
+    {
+      "id": "artifact-push",
+      "effect": "deny",
+      "reason": "Publishing an image or package (docker push, gem push) (§12.3).",
+      "match": {"program": ["docker", "podman", "buildah", "nerdctl", "gem", "nuget", "dotnet"], "args_any": ["push", "--push"]}
+    },
+    {
+      "id": "build-publish",
+      "effect": "deny",
+      "reason": "Publishing from a build tool (mvn deploy, gradle publish) (§12.3).",
+      "match": {"program": ["mvn", "mvnw", "gradle", "gradlew"], "args_regex": "^(deploy(:\\S*)?|release:(prepare|perform)|publish\\w*)$"}
+    },
+    {
+      "id": "pipe-to-shell",
+      "effect": "deny",
+      "reason": "Piping or substituting output into a shell or interpreter runs code nobody reviewed (§12.3).",
+      "match": {
+        "shell_regex": "(?<!\\|)\\|&?\\s*(?:(?:sudo|doas|env|command|exec|nohup|nice|time)\\s+(?:-\\S+\\s+)*)*(?:(?:\\S*/)?(?:ba|da|z|k|mk|c|tc|a|fi)?sh|(?:\\S*/)?(?:python[0-9.]*|node|perl|ruby|php)(?:\\s+-)?(?=\\s*(?:$|[;&|)])))(?=$|[\\s;&|)])|(?:^|[\\s;&|(])(?:(?:\\S*/)?(?:ba|da|z|k|mk|c|tc|a|fi)?sh|source|\\.)\\s+<\\(|(?:^|[\\s;&|(])(?:(?:\\S*/)?(?:ba|da|z|k|mk|c|tc|a|fi)?sh\\s+(?:-\\S+\\s+)*-[A-Za-z]*c[A-Za-z]*|eval)\\s+[\"']?(?:\\$\\(|`)"
+      }
+    },
+    {
+      "id": "fork-bomb",
+      "effect": "deny",
+      "reason": "A fork bomb exhausts the machine's processes (§12.3).",
+      "match": {
+        "shell_regex": "(?P<f>[A-Za-z_:.][A-Za-z0-9_:.-]*)\\s*\\(\\s*\\)\\s*\\{[^}]*?(?P=f)\\s*\\|\\s*(?P=f)\\s*&|\\bfunction\\s+(?P<g>[A-Za-z_:.][A-Za-z0-9_:.-]*)\\s*(?:\\(\\s*\\))?\\s*\\{[^}]*?(?P=g)\\s*\\|\\s*(?P=g)\\s*&"
+      }
+    },
+    {
+      "id": "chmod-777",
+      "effect": "deny",
+      "reason": "World-writable permissions: chmod 777 (§12.3).",
+      "match": {"program": ["chmod"], "args_regex": "^(0*777|(a|ugo)[+=]rwx)$"}
+    },
+    {
+      "id": "mkfs",
+      "effect": "deny",
+      "reason": "Formatting a filesystem or device (§12.3).",
+      "match": {"program": ["mkfs", "mkfs.*", "mke2fs", "mkswap", "wipefs", "newfs", "newfs_*"]}
+    },
+    {
+      "id": "diskutil-erase",
+      "effect": "deny",
+      "reason": "Erasing or repartitioning a disk with diskutil (§12.3).",
+      "match": {"program": ["diskutil"], "args_regex": "(?i)^(erase|zero|secureerase|reformat|partition|split|merge|delete)\\w*$"}
+    },
+    {
+      "id": "dd-write",
+      "effect": "deny",
+      "reason": "Raw writes with dd of= (§12.3).",
+      "match": {"program": ["dd"], "args_regex": "^of="}
+    },
+    {
+      "id": "shutdown",
+      "effect": "deny",
+      "reason": "Shutting down or rebooting the machine (§12.3).",
+      "match": {"program": ["shutdown", "reboot", "halt", "poweroff"]}
+    },
+    {
+      "id": "systemctl-power",
+      "effect": "deny",
+      "reason": "Shutting down, rebooting or suspending through systemd (§12.3).",
+      "match": {
+        "program": ["systemctl", "loginctl"],
+        "args_any": ["poweroff", "reboot", "halt", "suspend", "hibernate", "hybrid-sleep", "kexec", "rescue", "emergency"]
+      }
+    },
+    {
+      "id": "container-remove",
+      "effect": "deny",
+      "reason": "Removing containers, images, volumes or networks, or pruning them, destroys state the suite did not create (§12.3).",
+      "match": {"program": ["docker", "podman", "nerdctl", "docker-compose", "podman-compose"], "args_any": ["rm", "rmi", "prune"]}
+    },
+    {
+      "id": "compose-volumes-down",
+      "effect": "deny",
+      "reason": "Bringing a Compose project down with its volumes or images destroys their data (§12.3).",
+      "match": {"program": ["docker", "podman", "nerdctl", "docker-compose", "podman-compose"], "args_any": ["down"], "args_regex": "^(-[a-zA-Z]*v[a-zA-Z]*|--volumes|--rmi(=.*)?)$"}
+    },
+    {
+      "id": "remote-shell",
+      "effect": "deny",
+      "reason": "A remote shell runs commands on a system the guard cannot see; the suite works on this machine (§12.3).",
+      "match": {"program": ["ssh", "autossh", "scp", "sftp", "mosh", "telnet", "rsh", "rlogin", "rcp", "pdsh", "pscp", "tsh", "ftp", "lftp"]}
+    },
+    {
+      "id": "remote-sync",
+      "effect": "deny",
+      "reason": "rsync to or from another host changes or copies files on a system the guard cannot see (§12.3).",
+      "match": {"program": ["rsync"], "args_regex": "^((?:[^/:\\s]+@)?[^/:\\s]+:|rsync://)"}
+    },
+    {
+      "id": "cluster-shell",
+      "effect": "deny",
+      "reason": "A shell or file copy into a cluster runs on a system the guard cannot see (§12.3).",
+      "match": {"program": ["kubectl", "oc"], "args_any": ["exec", "attach", "cp", "debug", "rsh", "rsync"]}
+    },
+    {
+      "id": "cloud-shell",
+      "effect": "deny",
+      "reason": "A shell through a cloud CLI runs on a system the guard cannot see (§12.3).",
+      "match": {"program": ["gcloud", "az", "doctl", "fly", "flyctl", "aws"], "args_any": ["ssh", "scp", "start-session", "console"]}
+    },
+    {
+      "id": "sql-write",
+      "effect": "require_grant:db-write",
+      "reason": "SQL that writes or changes a schema through a CLI client needs db-write, or db-ephemeral when every DSN it names is registered ephemeral (§12.2, §12.3).",
+      "match": {"program": ["psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "clickhouse-client", "duckdb", "usql", "pgcli", "mycli", "litecli", "sqlplus", "cockroach", "snowsql", "trino", "cqlsh"], "check": "sql_write"}
+    },
+    {
+      "id": "redis-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to a key-value store need db-write (§12.2, §12.3).",
+      "match": {"program": ["redis-cli", "valkey-cli", "keydb-cli"], "args_regex_on_stdin": true, "args_regex": "(?i)^(set|setex|psetex|setnx|setrange|setbit|mset|msetnx|getset|getdel|getex|append|incr|incrby|incrbyfloat|decr|decrby|del|unlink|expire|expireat|pexpire|pexpireat|persist|rename|renamenx|flushall|flushdb|hset|hsetnx|hmset|hincrby|hincrbyfloat|hdel|lpush|lpushx|rpush|rpushx|lpop|rpop|rpoplpush|lmove|lset|lrem|ltrim|linsert|sadd|srem|spop|smove|sinterstore|sunionstore|sdiffstore|zadd|zrem|zincrby|zpopmin|zpopmax|zremrangebyscore|zremrangebyrank|zremrangebylex|xadd|xdel|xtrim|pfadd|pfmerge|restore|move|copy|migrate|config|eval|evalsha|evalsha_ro|fcall|function|script|slaveof|replicaof|swapdb|bgsave|save|bitop|bitfield|geoadd|georadius|--pipe)$"}
+    },
+    {
+      "id": "document-store-write",
+      "effect": "require_grant:db-write",
+      "reason": "Shell commands that write to a document store need db-write (§12.2, §12.3).",
+      "match": {"program": ["mongosh", "mongo"], "args_regex_on_stdin": true, "args_regex": "(?i)\\b(insert(one|many)?|update(one|many)?|replaceone|delete(one|many)?|remove|drop(database|indexes)?|createcollection|createindex|findoneand(update|replace|delete)|bulkwrite|renamecollection)\\s*\\("}
+    },
+    {
+      "id": "document-store-load",
+      "effect": "require_grant:db-write",
+      "reason": "Loading data into a document store needs db-write (§12.2, §12.3).",
+      "match": {"program": ["mongoimport", "mongorestore"]}
+    },
+    {
+      "id": "kv-store-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to a key-value store need db-write (§12.2, §12.3).",
+      "match": {"program": ["etcdctl"], "args_any": ["put", "del", "txn", "compact", "defrag"]}
+    },
+    {
+      "id": "consul-kv-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to a key-value store need db-write (§12.2, §12.3).",
+      "match": {"program": ["consul"], "args_all": ["kv"], "args_any": ["put", "delete", "import"]}
+    },
+    {
+      "id": "dynamodb-write",
+      "effect": "require_grant:db-write",
+      "reason": "Commands that write to DynamoDB need db-write (§12.2, §12.3).",
+      "match": {"program": ["aws"], "args_all": ["dynamodb"], "args_regex": "^(put-item|update-item|batch-write-item|transact-write-items|create-table|update-table)$"}
+    },
+    {
+      "id": "gh-api-write",
+      "effect": "deny",
+      "reason": "GitHub writes through the API: any write method, or fields, which imply one (§12.3).",
+      "match": {"program": ["gh"], "args_any": ["api"], "args_regex": "(?i)^(post|put|patch|delete|-X(post|put|patch|delete)|--method=(post|put|patch|delete)|-[fF].*|--field(=.*)?|--raw-field(=.*)?|--input(=.*)?)$"}
+    },
+    {
+      "id": "gh-workflow-run",
+      "effect": "deny",
+      "reason": "Dispatching a GitHub workflow runs it on GitHub (§12.3).",
+      "match": {"program": ["gh"], "args_all": ["workflow"], "args_any": ["run"]}
+    },
+    {
+      "id": "unlisted-analyzer",
+      "effect": "require_grant:test-execution-local",
+      "reason": "Static analysis covers the known analyzers and read-only tools; any other program may run the project's code and also needs test-execution-local (§12.2, §12.7).",
+      "match": {"declared_activity": ["static-analysis"], "unless_program": ["semgrep", "opengrep", "bandit", "gosec", "gitleaks", "betterleaks", "osv-scanner", "grype", "syft", "trivy", "hadolint", "conftest", "actionlint", "zizmor", "ruff", "shellcheck", "squawk", "spectral", "oasdiff", "git", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "file", "stat", "sha256sum", "shasum", "jq", "echo", "true", "pwd"]}
+    },
+    {
+      "id": "load-test",
+      "effect": "require_grant:load-test",
+      "reason": "Load-test tools need a load-test grant with VU, RPS and duration limits (§12.2, §12.3).",
+      "match": {
+        "program": ["k6", "locust", "jmeter", "artillery", "vegeta", "wrk", "wrk2", "ab", "hey", "oha", "bombardier",
+                    "siege", "autocannon", "gatling", "gatling.sh", "tsung", "drill"]
+      }
+    },
+    {
+      "id": "dast-active",
+      "effect": "require_grant:dast-active",
+      "reason": "Active scanners and fuzzers need a dast-active grant per target (§12.2, §12.3).",
+      "match": {
+        "program": ["nuclei", "zap-full-scan.py", "zap-api-scan.py", "sqlmap", "nikto", "wapiti", "dalfox", "commix",
+                    "ffuf", "gobuster", "feroxbuster", "dirb", "wfuzz", "nmap", "masscan", "arachni"]
+      }
+    },
+    {
+      "id": "dast-passive",
+      "effect": "require_grant:dast-passive",
+      "reason": "Passive scans need a dast-passive grant per target (§12.2).",
+      "match": {"program": ["zap-baseline.py"]}
+    },
+    {
+      "id": "zap-af-other-argument",
+      "effect": "require_grant:dast-active",
+      "reason": "Only the exact arguments of the suite's baseline ZAP invocation run passively; any other argument (another plan, a quick-scan target, a configuration, script or add-on option) may attack or load other behaviour, so it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "args_regex": "^(?!(-cmd|-notel|-autorun|/work/\\.qa-input/security/zap-baseline\\.yaml)\\Z)"}
+    },
+    {
+      "id": "zap-af-baseline",
+      "effect": "require_grant:dast-passive",
+      "reason": "The suite's baseline Automation Framework plan runs the spider and passive checks only; it needs a dast-passive grant per target (§12.2).",
+      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "args_any": ["/work/.qa-input/security/zap-baseline.yaml"]}
+    },
+    {
+      "id": "zap-af",
+      "effect": "require_grant:dast-active",
+      "reason": "Any ZAP command line that does not run the baseline plan may attack; it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "unless_args": ["/work/.qa-input/security/zap-baseline.yaml"]}
+    },
+    {
+      "id": "schemathesis-extra-phases",
+      "effect": "require_grant:dast-active",
+      "reason": "A Schemathesis command line with a phase choice beyond the examples and coverage phases may fuzz; it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["schemathesis", "st"], "args_regex": "^--phases(=(?!(examples|coverage|examples,coverage|coverage,examples)\\Z)[\\s\\S]*)?\\Z"}
+    },
+    {
+      "id": "schemathesis-baseline",
+      "effect": "require_grant:dast-passive",
+      "reason": "Schemathesis restricted to its examples and coverage phases sends the schema's own examples and no attack payloads; it needs a dast-passive grant per target (§12.2).",
+      "match": {"program": ["schemathesis", "st"], "args_any": ["--phases=examples", "--phases=coverage", "--phases=examples,coverage", "--phases=coverage,examples"]}
+    },
+    {
+      "id": "schemathesis-active",
+      "effect": "require_grant:dast-active",
+      "reason": "Schemathesis without an explicit baseline phase choice runs every phase, fuzzing included; it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["schemathesis", "st"], "unless_args": ["--phases=examples", "--phases=coverage", "--phases=examples,coverage", "--phases=coverage,examples"]}
+    },
+    {
+      "id": "migration",
+      "effect": "require_grant:db-write",
+      "reason": "Migration commands need db-write, or db-ephemeral when every DSN they name is registered ephemeral (§12.2, §12.3).",
+      "match": {"check": "migration"}
+    },
+    {
+      "id": "npm-install",
+      "effect": "require_grant:install-dependencies",
+      "reason": "Installing project dependencies needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {
+        "program": ["npm", "pnpm", "yarn", "bun"],
+        "args_any": ["install", "i", "ci", "add", "update", "upgrade", "up", "it", "cit", "install-test", "install-ci-test"],
+        "unless_args": ["-g", "--global", "--location=global", "global"]
+      }
+    },
+    {
+      "id": "yarn-bare",
+      "effect": "require_grant:install-dependencies",
+      "reason": "A bare yarn installs the project's dependencies, which needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {
+        "program": ["yarn"],
+        "no_args": true
+      }
+    },
+    {
+      "id": "npm-global",
+      "effect": "require_grant:install-tools",
+      "reason": "A global package install adds tools and needs an install-tools grant (§12.2, §12.3).",
+      "match": {
+        "program": ["npm", "pnpm", "yarn", "bun"],
+        "args_any": ["install", "i", "add", "update", "upgrade", "up"],
+        "args_regex": "^(-g|--global|--location=global|global)$"
+      }
+    },
+    {
+      "id": "pip-install",
+      "effect": "require_grant:install-dependencies",
+      "reason": "Installing project dependencies needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {"program": ["pip", "pip[0-9]*"], "args_any": ["install"]}
+    },
+    {
+      "id": "python-m-pip-install",
+      "effect": "require_grant:install-dependencies",
+      "reason": "Installing project dependencies needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {"program": ["python", "python[0-9]*"], "args_all": ["-m", "pip"], "args_any": ["install"]}
+    },
+    {
+      "id": "python-env-install",
+      "effect": "require_grant:install-dependencies",
+      "reason": "Installing project dependencies needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {
+        "program": ["uv", "poetry", "pipenv", "pdm", "conda", "mamba", "micromamba"],
+        "args_any": ["install", "add", "sync", "update", "create"],
+        "unless_args": ["tool"]
+      }
+    },
+    {
+      "id": "dependency-install",
+      "effect": "require_grant:install-dependencies",
+      "reason": "Installing project dependencies needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {"program": ["bundle", "bundler", "composer"], "args_any": ["install", "update", "add", "require"]}
+    },
+    {
+      "id": "dependency-fetch",
+      "effect": "require_grant:install-dependencies",
+      "reason": "Fetching project dependencies needs an install-dependencies grant (§12.2, §12.3).",
+      "match": {
+        "program": ["go", "cargo", "dotnet", "mix", "dart", "flutter"],
+        "args_any": ["get", "add", "fetch", "download", "restore", "deps.get"]
+      }
+    },
+    {
+      "id": "tool-install",
+      "effect": "require_grant:install-tools",
+      "reason": "Installing tools needs an install-tools grant (§12.2, §12.3).",
+      "match": {
+        "program": ["gem", "cargo", "go", "dotnet", "brew", "port", "apt", "apt-get", "yum", "dnf", "apk", "snap"],
+        "args_any": ["install", "reinstall"]
+      }
+    },
+    {
+      "id": "ephemeral-runner",
+      "effect": "require_grant:install-tools",
+      "reason": "Ephemeral runners (npx, uvx) download and run tools; they need an install-tools grant (§12.2).",
+      "match": {"program": ["npx", "bunx", "pnpx", "uvx"], "unless_args": ["--no", "--no-install"]}
+    },
+    {
+      "id": "npx-no-install",
+      "effect": "allow",
+      "reason": "npx --no runs only what is already installed (§12.2).",
+      "match": {"program": ["npx"], "args_any": ["--no", "--no-install"]}
+    },
+    {
+      "id": "dlx",
+      "effect": "require_grant:install-tools",
+      "reason": "pnpm dlx and yarn dlx download and run tools; they need an install-tools grant (§12.2).",
+      "match": {"program": ["pnpm", "yarn"], "args_any": ["dlx"]}
+    },
+    {
+      "id": "pipx",
+      "effect": "require_grant:install-tools",
+      "reason": "pipx installs tools, or downloads and runs them; it needs an install-tools grant (§12.2).",
+      "match": {"program": ["pipx"], "args_any": ["run", "install", "inject", "upgrade", "reinstall"]}
+    },
+    {
+      "id": "uv-tool",
+      "effect": "require_grant:install-tools",
+      "reason": "uv tool installs tools, or downloads and runs them; it needs an install-tools grant (§12.2).",
+      "match": {"program": ["uv"], "args_all": ["tool"], "args_any": ["run", "install", "upgrade"]}
+    },
+    {
+      "id": "npm-audit",
+      "effect": "require_grant:data-egress",
+      "reason": "Package-manager audits send the dependency list to the registry; they need a data-egress grant (§12.2).",
+      "match": {"program": ["npm", "pnpm", "yarn", "bun"], "args_any": ["audit"]}
+    },
+    {
+      "id": "egress-tools",
+      "effect": "require_grant:data-egress",
+      "reason": "These tools send project data to a third-party service; they need a data-egress grant (§12.2).",
+      "match": {"program": ["pip-audit", "snyk", "scorecard"]}
+    },
+    {
+      "id": "osv-scanner-offline",
+      "effect": "require_grant:data-egress",
+      "reason": "OSV-Scanner sends the dependency list to a third-party service unless --offline disables every feature that needs the network; --offline-vulnerabilities alone still resolves transitive dependencies online, so it needs a data-egress grant (§12.2).",
+      "match": {"program": ["osv-scanner"], "unless_args": ["--offline"]}
+    },
+    {
+      "id": "osv-scanner-other-argument",
+      "effect": "require_grant:data-egress",
+      "reason": "Only the exact arguments of the suite's offline scan step run without data-egress; any other argument (a value given as a separate word, an end-of-options marker, a database download, a registry or data-source option, an offline flag with a value) can reach the network or hide the offline flag, so it needs a data-egress grant (§12.2).",
+      "match": {"program": ["osv-scanner"], "args_regex": "^(?!(scan|source|--offline|--recursive|--format=(sarif|json)|--output-file=/qa-evidence/[A-Za-z0-9._-]+|/work(/[A-Za-z0-9._-]+)*)\\Z)"}
+    },
+    {
+      "id": "network-download",
+      "effect": "require_grant:network-download",
+      "reason": "A download from a host no environment declares needs a network-download grant listing the host (§12.2, §12.3).",
+      "match": {"program": ["curl", "wget", "aria2c", "http", "https", "xh"], "check": "url_host"}
+    }
+  ]
+}
