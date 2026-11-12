@@ -213,6 +213,69 @@ def test_unicode_scan_decodes_utf16_and_scans_a_mark_before_single_byte_text(tmp
         + [("tags.txt", "qa-unicode-tag-character", 1, n) for n in range(1, 7)]), (out, err)
 
 
+def sarif_results(root):
+    report = json.loads((root / ".qa" / "work" / "security" / "unicode.sarif").read_text(encoding="utf-8"))
+    return sorted((r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], r["ruleId"],
+                   r["locations"][0]["physicalLocation"]["region"]["startLine"], r["locations"][0]["physicalLocation"]["region"]["startColumn"],
+                   r.get("properties", {}).get("reading", ""), r["message"]["text"])
+                  for r in report["runs"][0]["results"])
+
+
+def test_unicode_scan_counts_a_file_as_scanned_only_on_a_reading_that_shows_its_markers(tmp_path):
+    """The classes of task-10-rereview-3.md, Important 1: a byte-order mark before single-byte text that is not valid UTF-8, or
+    that holds a NUL byte; UTF-32 with its mark; a mark before ASCII text that reads as controls in UTF-16; and a mark before
+    valid UTF-8, read in both forms. Each total length but one is even, so the UTF-16 reading decodes too where it can."""
+    module = load(UNICODE, "qa_security_unicode_scan_r")
+    root = tmp_path / "p"
+    root.mkdir()
+    line_2 = ("\n" + EN_PHRASE + "\n").encode()
+    files = {
+        "latin1.txt": b"\xff\xfe" + "cafés".encode("latin-1") + line_2,                     # a byte that is not UTF-8
+        "nul.txt": b"\xff\xfe" + b"x\x00y" + line_2,                                         # a stray NUL byte
+        "wide32-le.txt": b"\xff\xfe\x00\x00" + ("x\n" + EN_PHRASE + "\n").encode("utf-32-le"),
+        "wide32-be.txt": b"\x00\x00\xfe\xff" + ("x\n" + ES_PHRASE + "\n").encode("utf-32-be"),
+        "stars.txt": b"\xff\xfe" + b"* one\n* two\n",                                        # "* " reads as U+202A in UTF-16
+        "both-even.txt": b"\xff\xfe" + b"aaa" + line_2,                                      # valid UTF-8 and valid UTF-16
+        "both-odd.txt": b"\xff\xfe" + b"aaaa" + line_2,                                      # valid UTF-8 only
+        "utf8-mark.txt": b"\xef\xbb\xbf" + (EN_PHRASE + "\n\n").encode(),                    # the mark is not a character
+    }
+    for name, data in files.items():
+        assert len(data) % 2 == 0 or name == "both-odd.txt", name
+        (root / name).write_bytes(data)
+    code, out, err = run(UNICODE, cwd=root)
+    assert (code, out["skipped"], out["files_scanned"]) == (0, {"large": 0, "utf16": 0, "binary": 0, "vanished": 0, "missing": 0}, 8), (out, err)
+    marker = "a phrase that tries to override an agent's instructions (%s); the line is not quoted"
+    bidi = "U+202A, a bidirectional control character"
+    assert sarif_results(root) == sorted([
+        ("latin1.txt", "qa-injection-marker", 2, 1, "utf-8", marker % "English" + "; reading: utf-8"),
+        ("nul.txt", "qa-injection-marker", 2, 1, "utf-8", marker % "English" + "; reading: utf-8"),
+        ("wide32-le.txt", "qa-injection-marker", 2, 1, "utf-32-le", marker % "English" + "; reading: utf-32-le"),
+        ("wide32-be.txt", "qa-injection-marker", 2, 1, "utf-32-be", marker % "Spanish" + "; reading: utf-32-be"),
+        # the controls are in the UTF-16 reading only, and each result says so
+        ("stars.txt", "qa-bidi-control", 1, 1, "utf-16-le", bidi + "; reading: utf-16-le"),
+        ("stars.txt", "qa-bidi-control", 1, 4, "utf-16-le", bidi + "; reading: utf-16-le"),
+        ("both-even.txt", "qa-injection-marker", 2, 1, "utf-8", marker % "English" + "; reading: utf-8"),
+        ("both-odd.txt", "qa-injection-marker", 2, 1, "", marker % "English"),       # one reading: no label
+        ("utf8-mark.txt", "qa-injection-marker", 1, 1, "", marker % "English")]), (out, err)
+    # a hit that two readings find at the same line, column and rule is reported once, naming both
+    text = "a%sb\n%s\n" % (BIDI_CHARS[1], EN_PHRASE)
+    assert module.merged_hits([("utf-8", text), ("utf-16-le", text)]) == [
+        ("qa-bidi-control", 1, 2, "U+202E, a bidirectional control character", "utf-8 and utf-16-le"),
+        ("qa-injection-marker", 2, 1, marker % "English", "utf-8 and utf-16-le")]
+    assert [hit[4] for hit in module.merged_hits([("utf-8", text)])] == ["", ""]
+
+
+def test_unicode_scan_never_counts_a_file_with_no_qualifying_reading_as_scanned(tmp_path):
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "bad32.txt").write_bytes(b"\xff\xfe\x00\x00" + b"\x00\x00\x11\x00")              # a UTF-32 mark, past U+10FFFF
+    (root / "short32.txt").write_bytes(b"\x00\x00\xfe\xff" + b"\x00\x00\x00")               # a UTF-32 mark, cut short
+    (root / "zero16.txt").write_bytes(b"\xff\xfe" + "A\x00B".encode("utf-16-le"))           # UTF-16 holding U+0000
+    (root / "late-nul.txt").write_bytes(b"x" * 9000 + b"\x00\n" + EN_PHRASE.encode())       # a NUL byte past the first 8 KiB
+    code, out, err = run(UNICODE, cwd=root)
+    assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"], out["results"]) == (0, 3, 1, 0, 0), (out, err)
+
+
 def test_unicode_scan_skips_a_file_that_vanishes_during_the_walk(tmp_path):
     module = load(UNICODE, "qa_security_unicode_scan_v")
     root = tmp_path / "p"

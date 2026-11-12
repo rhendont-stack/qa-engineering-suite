@@ -17,16 +17,27 @@ found may be addressed to whoever reads the report. Lines are numbered on ``\n``
 numbers them. Directories ``.git``, ``.qa``, ``.qa-input``, ``.claude``, ``node_modules``, ``__pycache__`` and ``.venv*`` are
 skipped; links are never followed.
 
-A file is read as UTF-8, an undecodable byte becoming U+FFFD, except UTF-16 text, which is decoded and scanned too: a file
-that starts with a UTF-16 byte-order mark is decoded as UTF-16, and its bytes after the mark are also scanned as UTF-8 when
-they are valid UTF-8 with no NUL (a mark before single-byte text; a hit may then come from either reading). A file with no
-mark and NUL bytes at nine in ten of the odd (or even) positions of its first 8 KiB is decoded as UTF-16 in that byte order.
-These readings are strict: one that does not decode is not made. UTF-16 text with no mark and no such NUL pattern (only
-non-Latin characters) is read as UTF-8.
+How a file is read. A file is counted as scanned only when at least one reading covers its whole content in a form that shows
+the markers. Two readings qualify:
 
-Skipped and counted in the summary's ``skipped``, never as scanned: files over 2 MiB (``large``), UTF-16 files that no
-reading decodes (``utf16``), other files holding a NUL byte in their first 8 KiB (``binary``), files that vanished or could
-not be opened during the walk (``vanished``), and given paths that do not exist (``missing``).
+* the single-byte reading: the bytes after any byte-order mark (UTF-32's, UTF-16's or UTF-8's), decoded as UTF-8 with an
+  undecodable byte becoming U+FFFD. It qualifies when those bytes hold no NUL;
+* the wide reading: UTF-32 when the file starts with a UTF-32 mark (checked first, since it starts with UTF-16's); else
+  UTF-16 when it starts with a UTF-16 mark, or when it has neither and NUL bytes stand at nine in ten of the odd (or even)
+  positions of its first 8 KiB (that byte order). It qualifies when it decodes strictly and holds no U+0000.
+
+Every qualifying reading is scanned. The single-byte reading of a counted file is scanned even when it holds a NUL, so a stray
+NUL cannot hide single-byte text behind a wide reading; it then does not count. A hit that more than one reading finds at the
+same line, column and rule is reported once. No reading is dropped: a mark before single-byte text makes a wide reading of
+characters that are not in the bytes as written (a mark before ASCII text can read as a bidirectional control), but a tool
+that honours the mark shows that reading. So whenever a file is scanned in both readings, every result names the readings
+that found it, as ``properties.reading`` and at the end of its message (``reading: utf-8``, ``reading: utf-16-le``, ...), and
+a hit that only a wide reading finds is seen as such. A file with no qualifying reading is skipped. Known limit: UTF-16 text
+with no mark and no such NUL pattern (only non-Latin characters) is read as single-byte text only.
+
+Skipped and counted in the summary's ``skipped``, never as scanned: files over 2 MiB (``large``), files with no qualifying
+reading that have a UTF-16 or UTF-32 mark or the NUL pattern (``utf16``) or that hold a NUL byte (``binary``), files that
+vanished or could not be opened during the walk (``vanished``), and given paths that do not exist (``missing``).
 
 ``--out`` is a path under ``.qa/work/security/`` (default ``.qa/work/security/unicode.sarif``), or, inside a container run,
 a new file directly in ``/qa-evidence/``. ``--copy-to-work`` copies this file to ``.qa/work/security/unicode_scan.py`` for a
@@ -193,7 +204,18 @@ def files_under(paths: Sequence[str], counts: Dict[str, int]) -> Iterator[Path]:
                     yield path
 
 
-BYTE_ORDER_MARKS = (b"\xff\xfe", b"\xfe\xff")
+# Byte-order marks and the wide encoding each gives, UTF-32's first: they start with UTF-16's. UTF-8's gives none.
+BYTE_ORDER_MARKS = ((b"\xff\xfe\x00\x00", "utf-32-le"), (b"\x00\x00\xfe\xff", "utf-32-be"),
+                    (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"), (b"\xef\xbb\xbf", None))
+SINGLE = "utf-8"
+
+
+def mark_of(data: bytes) -> Tuple[int, Optional[str]]:
+    """``(length, wide encoding)`` of the byte-order mark ``data`` starts with; ``(0, None)`` with none."""
+    for mark, encoding in BYTE_ORDER_MARKS:
+        if data.startswith(mark):
+            return len(mark), encoding
+    return 0, None
 
 
 def utf16_order(head: bytes) -> Optional[str]:
@@ -209,36 +231,32 @@ def utf16_order(head: bytes) -> Optional[str]:
     return None
 
 
-def decodings(data: bytes) -> Optional[List[str]]:
-    """The readings of a file to scan, or None when it is UTF-16 that no reading decodes. After a UTF-16 byte-order mark: the
-    text decoded as UTF-16, and also the bytes after the mark decoded as UTF-8 when they are valid UTF-8 holding no NUL (a mark
-    can stand before single-byte text, which decodes as UTF-16 too, into other scripts). With no mark but the NUL pattern of
-    ``utf16_order``: the text decoded in that byte order. Decoding is strict, so a reading is never made of replacement
-    characters."""
-    if data[:2] in BYTE_ORDER_MARKS:
-        found = []
+def readings(data: bytes) -> Tuple[List[Tuple[str, str]], str]:
+    """``(readings, skip)``: the readings of a file to scan, as ``(name, text)`` with the single-byte reading first (the
+    module's docstring), or no reading and the ``skipped`` count the file goes to when none qualifies."""
+    length, wide = mark_of(data)
+    rest = data[length:]
+    if wide is None:
+        wide = utf16_order(rest[:8192])
+    wide_text = None
+    if wide is not None:
         try:
-            found.append(data.decode("utf-16"))           # the mark gives the byte order and is dropped
+            wide_text = rest.decode(wide)                 # strict; a mark was dropped with ``rest``
         except UnicodeDecodeError:
-            pass
-        try:
-            single = data[2:].decode("utf-8")
-        except UnicodeDecodeError:
-            single = None
-        if single is not None and "\x00" not in single:
-            found.append(single)
-        return found or None
-    order = utf16_order(data[:8192])
-    if order is None:
-        return [data.decode("utf-8", "replace")]
-    try:
-        return [data.decode(order)]
-    except UnicodeDecodeError:
-        return None
+            wide_text = None
+        if wide_text is not None and "\x00" in wide_text:
+            wide_text = None
+    single_counts = b"\x00" not in rest
+    if wide_text is None and not single_counts:
+        return [], ("utf16" if wide is not None else "binary")
+    found = [(SINGLE, rest.decode("utf-8", "replace"))]
+    if wide_text is not None:
+        found.append((wide, wide_text))
+    return found, ""
 
 
-def read_texts(path: Path, counts: Dict[str, int]) -> Optional[List[str]]:
-    """The readings of ``path`` to scan (``decodings``), or None when it is skipped, counted under its reason."""
+def read_texts(path: Path, counts: Dict[str, int]) -> Optional[List[Tuple[str, str]]]:
+    """The readings of ``path`` to scan (``readings``), or None when it is skipped, counted under its reason."""
     try:
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError:                               # gone, or replaced by a link, since the walk saw it
@@ -249,15 +267,11 @@ def read_texts(path: Path, counts: Dict[str, int]) -> Optional[List[str]]:
     if len(data) > MAX_BYTES:
         counts["large"] += 1
         return None
-    if data[:2] in BYTE_ORDER_MARKS or utf16_order(data[:8192]):
-        readings = decodings(data)
-        if readings is None:
-            counts["utf16"] += 1
-        return readings
-    if b"\x00" in data[:8192]:
-        counts["binary"] += 1
+    found, skip = readings(data)
+    if not found:
+        counts[skip] += 1
         return None
-    return decodings(data)
+    return found
 
 
 def uri_of(path: Path) -> str:
@@ -285,6 +299,24 @@ def scan_text(text: str) -> List[Tuple[str, int, int, str]]:
     return hits
 
 
+def merged_hits(texts: Sequence[Tuple[str, str]]) -> List[Tuple[str, int, int, str, str]]:
+    """``(rule, line, column, message, reading)`` for every hit of the readings ``texts`` (``(name, text)``), a hit found by more
+    than one reading at the same line, column and rule once. ``reading`` names the readings that found it (``utf-8 and
+    utf-16-le``) when there is more than one reading, and is empty otherwise."""
+    found: Dict[Tuple[str, int, int], Tuple[str, List[str]]] = {}
+    order: List[Tuple[str, int, int]] = []
+    for name, text in texts:
+        for rule, line, column, message in scan_text(text):
+            key = (rule, line, column)
+            if key not in found:
+                found[key] = (message, [])
+                order.append(key)
+            if name not in found[key][1]:
+                found[key][1].append(name)
+    labelled = len(texts) > 1
+    return [key + (found[key][0], " and ".join(found[key][1]) if labelled else "") for key in order]
+
+
 def sarif(results: List[Dict[str, object]]) -> Dict[str, object]:
     return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
             "runs": [{"tool": {"driver": {"name": TOOL, "version": VERSION, "rules": RULES}},
@@ -296,17 +328,19 @@ def scan(paths: Sequence[str]) -> Tuple[Dict[str, object], Dict[str, int], int]:
     results: List[Dict[str, object]] = []
     scanned = 0
     for path in files_under(paths, counts):
-        readings = read_texts(path, counts)
-        if readings is None:
+        texts = read_texts(path, counts)
+        if texts is None:
             continue
         scanned += 1
-        hits = []
-        for text in readings:
-            hits += [hit for hit in scan_text(text) if hit not in hits]
-        for rule, line, column, message in hits:
-            results.append({"ruleId": rule, "ruleIndex": RULE_INDEX[rule], "level": "warning", "message": {"text": message},
-                            "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri_of(path)},
-                                                                "region": {"startLine": line, "startColumn": column}}}]})
+        for rule, line, column, message, reading in merged_hits(texts):
+            result: Dict[str, object] = {
+                "ruleId": rule, "ruleIndex": RULE_INDEX[rule], "level": "warning",
+                "message": {"text": message + ("; reading: " + reading if reading else "")},
+                "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri_of(path)},
+                                                    "region": {"startLine": line, "startColumn": column}}}]}
+            if reading:
+                result["properties"] = {"reading": reading}
+            results.append(result)
     return sarif(results), counts, scanned
 
 
