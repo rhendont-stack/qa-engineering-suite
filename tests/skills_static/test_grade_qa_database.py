@@ -365,7 +365,7 @@ def test_race_a_confirmed_finding_without_the_execution_fails_and_a_suspected_on
 @pytest.mark.parametrize("kw, why", [
     (dict(work={"test_race.py": "def test_x():\n    assert True\n"}), "runs no two-connection test"),
     (dict(databases=()), "no SQLite database"),
-    (dict(reports={(E2, "reports/report.xml"): '<testsuite><testcase name="t"/></testsuite>'}), "does not name the lost update"),
+    (dict(reports={(E2, "reports/report.xml"): '<testsuite><testcase name="t"/></testsuite>'}), "no failure in its stored JUnit report"),
 ])
 def test_race_execution_violations_fail(tmp_path, kw, why):
     out = race(tmp_path, facts((RACE,), RACE_FINDING), **kw)
@@ -429,3 +429,63 @@ def test_a_real_ledger_grades_end_to_end(tmp_path):
     good, why = grade.roundtrip_runs(found, evidence, AUDIT_PROMPT)
     assert good == [ran["execution"]] and list(why) == [refused["execution"]], why
     assert grade.work_databases(evidence) == [".qa/work/database/roundtrip.sqlite"]
+
+
+# The race criterion after fix round 1: status failed, and the lost update named in a failure's message only.
+# A real report, abridged from GREEN run 10221bdb7534 (EXE-01M77X39ED01DKPFHZRCEFHHTK, reports/race.xml): the classname and the
+# traceback text both name the oversell; only the failure's message states the result.
+REAL_RACE_XML = (
+    '<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" '
+    'skipped="0" tests="1"><testcase classname=".qa.work.database.test_race_oversell" '
+    'name="test_two_callers_cannot_oversell_the_last_unit" time="0.007"><failure message="AssertionError: lost update: 2 of 2 '
+    'callers succeeded; stock left 0, order lines for the 1 unit: 2; outcomes {0: \'ok\', 1: \'ok\'}&#10;assert False">'
+    'def test_two_callers_cannot_oversell_the_last_unit():\n    assert holds, "lost update: %d of 2 callers succeeded"'
+    '</failure></testcase></testsuite></testsuites>')
+PASSING_RACE_XML = (
+    '<testsuites><testsuite name="pytest" errors="0" failures="0" tests="1"><testcase classname=".qa.work.database.test_race_oversell" '
+    'name="test_two_callers_cannot_oversell_the_last_unit"><system-out>no lost update: 1 of 2 callers succeeded</system-out>'
+    '</testcase></testsuite></testsuites>')
+UNRELATED_FAILURE_XML = (
+    '<testsuites><testsuite name="pytest" errors="0" failures="1" tests="1"><testcase classname=".qa.work.database.test_race_oversell" '
+    'name="test_two_callers_cannot_oversell_the_last_unit"><failure message="sqlite3.OperationalError: no such table: products">'
+    'def test_two_callers_cannot_oversell_the_last_unit():\n    assert holds, "lost update: oversold"</failure></testcase>'
+    '</testsuite></testsuites>')
+
+
+def race_criterion(tmp_path, xml, status):
+    run = execution(E2, RACE_ARGV, status=status)
+    out = race(tmp_path, facts((run,), RACE_FINDING), reports={(E2, "reports/report.xml"): xml})
+    return next(c for c in out if c["name"] == "race_execution_shows_the_lost_update")
+
+
+@needs_git
+def test_race_a_passing_test_whose_output_names_the_oversell_does_not_show_the_lost_update(tmp_path):
+    criterion = race_criterion(tmp_path, PASSING_RACE_XML, "passed")
+    assert criterion["pass"] is False and "status passed, not failed" in criterion["detail"], criterion["detail"]
+    assert "no failure in its stored JUnit report names the lost update" in criterion["detail"]
+
+
+@needs_git
+def test_race_a_failed_test_whose_failure_message_lacks_the_lost_update_does_not_show_it(tmp_path):
+    criterion = race_criterion(tmp_path, UNRELATED_FAILURE_XML, "failed")
+    assert criterion["pass"] is False, criterion["detail"]
+    assert "no failure in its stored JUnit report names the lost update" in criterion["detail"] and "status" not in criterion["detail"]
+
+
+@needs_git
+def test_race_the_real_failed_report_shows_the_lost_update(tmp_path):
+    criterion = race_criterion(tmp_path, REAL_RACE_XML, "failed")
+    assert criterion["pass"] is True, criterion["detail"]
+
+
+def test_failure_messages_reads_only_junit_failures_and_skips_links_and_bad_xml(tmp_path):
+    folder = tmp_path / "qa-state" / "evidence" / E2 / "reports"
+    folder.mkdir(parents=True)
+    (folder / "a.xml").write_text(REAL_RACE_XML)
+    (folder / "b.xml").write_text("<not xml")
+    (tmp_path / "outside.xml").write_text(REAL_RACE_XML)
+    (folder / "c.xml").symlink_to(tmp_path / "outside.xml")
+    ex = {"reports": [{"format": "junit", "files": ["reports/a.xml", "reports/b.xml", "reports/c.xml", "../x.xml"], "error": None},
+                      {"format": "sarif", "files": ["reports/a.xml"], "error": None}]}
+    messages = grade.failure_messages(tmp_path, E2, ex)
+    assert len(messages) == 1 and messages[0].startswith("AssertionError: lost update: 2 of 2 callers succeeded")
