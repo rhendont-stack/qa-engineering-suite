@@ -1,0 +1,199 @@
+{
+  "fixture": "rest-api",
+  "version": 1,
+  "note": "Locations are an operation (METHOD /path) with the file and the lines that hold the cause. Test ids are classname::name as the kernel records them from the JUnit report. The three smoke tests pass: none of the nine problems is reached by them.",
+  "suites": {
+    "python": {
+      "run_status": "passed",
+      "tests": {
+        "tests.test_smoke::test_health_reports_ok": "passed",
+        "tests.test_smoke::test_login_returns_the_token_and_an_anonymous_call_is_refused": "passed",
+        "tests.test_smoke::test_an_order_is_created_and_listed_for_its_owner": "passed"
+      }
+    }
+  },
+  "operations": [
+    "DELETE /orders/{id}",
+    "GET /health",
+    "GET /orders",
+    "GET /orders/{id}",
+    "POST /auth/token",
+    "POST /orders",
+    "PUT /orders/{id}"
+  ],
+  "undocumented_operations": [
+    "GET /admin/stats"
+  ],
+  "issues": [
+    {
+      "id": "F2-01",
+      "location": "GET /orders/{id}",
+      "file": "orders_api/app.py",
+      "lines": [
+        97,
+        101
+      ],
+      "match": "STORE.get(int(match.group(1)))",
+      "category": "security",
+      "severity_anchor": "SEC-H1",
+      "class": "CWE-639 broken object-level authorization",
+      "detectable_by": [
+        "authorization-matrix test",
+        "schemathesis",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-02",
+      "location": "POST /orders",
+      "file": "orders_api/app.py",
+      "lines": [
+        93,
+        94
+      ],
+      "match": "return reply(200, present(order))",
+      "category": "functional",
+      "severity_anchor": "FUNC-M1",
+      "class": "documented status not returned (contract conformance)",
+      "detectable_by": [
+        "schemathesis",
+        "hurl",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-03",
+      "location": "POST /orders",
+      "file": "orders_api/app.py",
+      "lines": [
+        91,
+        92
+      ],
+      "match": "whole_number(document.get(\"unit_price_cents\"))",
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "class": "CWE-20 improper input validation (numeric range)",
+      "detectable_by": [
+        "schemathesis",
+        "boundary-value test",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-04",
+      "location": "GET /admin/stats",
+      "file": "orders_api/app.py",
+      "lines": [
+        126,
+        128
+      ],
+      "match": "def stats(",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "undocumented administrative endpoint (improper inventory management)",
+      "detectable_by": [
+        "spectral",
+        "zap",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-05",
+      "location": "GET /orders/{id}",
+      "file": "orders_api/app.py",
+      "lines": [
+        100,
+        100
+      ],
+      "match": "reply(404, {\"error\"",
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "class": "error body does not follow the documented error schema",
+      "detectable_by": [
+        "schemathesis",
+        "spectral",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-06",
+      "location": "POST /auth/token",
+      "file": "orders_api/app.py",
+      "lines": [
+        62,
+        70
+      ],
+      "match": "STORE.token_for(",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-307 no limit on authentication attempts",
+      "detectable_by": [
+        "zap",
+        "load-test",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-07",
+      "location": "POST /orders",
+      "file": "orders_api/app.py",
+      "lines": [
+        45,
+        46
+      ],
+      "match": "traceback.format_exc()",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-209 internal error detail exposed on malformed input",
+      "detectable_by": [
+        "schemathesis",
+        "zap",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-08",
+      "location": "PUT /orders/{id}",
+      "file": "orders_api/app.py",
+      "lines": [
+        104,
+        115
+      ],
+      "match": "order[\"quantity\"] + document[\"quantity\"]",
+      "category": "data-integrity",
+      "severity_anchor": "FUNC-H2",
+      "class": "non-idempotent update documented as idempotent",
+      "detectable_by": [
+        "schemathesis",
+        "hurl",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F2-09",
+      "location": "GET /orders",
+      "file": "orders_api/app.py",
+      "lines": [
+        73,
+        80
+      ],
+      "match": "for o in STORE.all() if o[\"owner\"] == user",
+      "category": "performance",
+      "severity_anchor": "PERF-M1",
+      "class": "collection endpoint without pagination, work grows with collection size (CWE-770)",
+      "detectable_by": [
+        "k6",
+        "static-review",
+        "in-process-check"
+      ]
+    }
+  ]
+}
