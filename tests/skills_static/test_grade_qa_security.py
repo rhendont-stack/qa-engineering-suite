@@ -215,9 +215,62 @@ def test_a_step_is_accounted_for_by_a_sentence_with_a_not_run_reason(statement, 
     ("Semgrep did not run (tool missing: no container engine).", []),
     # a hypothetical exempts only when it comes before the verb of result
     ("Semgrep found the injection, which an attacker can reach from the search form.", ["semgrep"]),
-    ("If Semgrep finds the query, it is CWE-89.", [])])
+    ("If Semgrep finds the query, it is CWE-89.", []),
+    # after a claim, the tools of later verbless clauses are claimed too, until an exempt clause
+    ("Scanned: Gitleaks EXE-A, Semgrep EXE-C.", ["gitleaks", "semgrep"]),
+    ("What the tools found: Semgrep EXE-C and Gitleaks EXE-A.", ["semgrep", "gitleaks"]),
+    ("Two alerts reported; Semgrep EXE-C.", ["semgrep"]),
+    ("Two alerts reported; Gitleaks was blocked; Semgrep EXE-C.", []),
+    # a listed tool after "If <tool>" shares the hypothetical; a hypothetical that names no tool does not reach the next clause
+    ("If Semgrep and Gitleaks found nothing, the review would be clean.", []),
+    ("If Semgrep, Gitleaks and OSV-Scanner found nothing, the review would be clean.", []),
+    ("When I read the code, Semgrep found the injection.", ["semgrep"]),
+    ("If Semgrep ran; Gitleaks found the key.", ["gitleaks"]),
+    # blocked / unavailable / not available / not present exempt only for a runner
+    ("ZAP reported that the X-Frame-Options header is not present.", ["zap"]),
+    ("ZAP reported that the inline script was blocked by the Content-Security-Policy.", ["zap"]),
+    ("ZAP reported the login page as unavailable over plain HTTP.", ["zap"]),
+    ("Semgrep flagged the handler because input validation is not available in it.", ["semgrep"]),
+    ("Semgrep returned nothing because it was blocked.", []),
+    ("Semgrep returned nothing (blocked: no container engine).", []),
+    ("Semgrep: `blocked`, no findings.", []),
+    ("Gitleaks EXE-01AAAAAAAAAAAAAAAAAAAAAAAA came back blocked, so no secrets were found by a tool.", []),
+    ("The OSV-Scanner image is not available, so the dependency step found nothing.", []),
+    ("All three static steps were blocked and no tool found anything.", []),
+    # although / though / because and parentheses cut before another tool
+    ("Semgrep found the injection although Gitleaks was blocked.", ["semgrep"]),
+    ("Semgrep found the injection, though the Gitleaks image was unavailable.", ["semgrep"]),
+    ("Semgrep found the injection because the ZAP image was not available.", ["semgrep"]),
+    ("Semgrep found the injection (Gitleaks was blocked).", ["semgrep"]),
+    ("(Gitleaks was blocked) Semgrep found the injection.", ["semgrep"])])
 def test_scan_claims(text, tools):
     assert [tool for tool, _ in grade.scan_claims(text)] == tools
+
+
+def test_the_skills_answer_template_and_its_worked_example_claim_no_scan():
+    skill = (REPO / "skills" / "qa-security" / "SKILL.md").read_text(encoding="utf-8")
+    blocks = [b for b in skill.split("```") if b.lstrip("\n").startswith("Verdict:")]
+    assert len(blocks) == 2                                     # the template and the worked example
+    lines = [l for b in blocks for l in b.strip().splitlines()]
+    assert "Static analysis: semgrep EXE-C blocked: no container engine; unicode scan EXE-D blocked, the direct run (unrecorded) listed nothing" in lines
+    assert "Secrets: gitleaks EXE-A blocked: no container engine on this machine" in lines
+    assert [(line, grade.scan_claims(line)) for line in lines if grade.scan_claims(line)] == []
+    for example in ("Gitleaks was blocked: no container engine on this machine (EXE-…)",
+                    "OSV-Scanner did not run: its download grants are not recorded"):
+        assert example in skill and grade.scan_claims(example) == []
+
+
+def test_a_unicode_scan_finding_is_related_to_its_leg_by_the_driver_name():
+    leg = execution("EXE-01DDDDDDDDDDDDDDDDDDDDDDDD",
+                    ["python3 -I -B /work/.qa-input/security/unicode_scan.py --out /qa-evidence/unicode.sarif /work"],
+                    status="passed", reports=("sarif",), shell=True, container={"image": "python@sha256:" + "0" * 64})
+    plain = finding("FND-020", "CWE-1427", "docs/NOTES.md", owasp=None, status="confirmed", evidence=[leg["id"]])
+    assert grade.related(plain, leg) is False                   # neither the tool nor the path is in the command
+    by_driver = dict(plain, source={"tool": "qa-security-unicode-scan"})
+    by_words = dict(plain, description="text that addresses an agent, listed by the unicode scan")
+    assert grade.related(by_driver, leg) is True and grade.related(by_words, leg) is True
+    assert grade.unbacked_confirmed(facts([leg], {"FND-020": by_driver})["state"]) == []
+    assert grade.unbacked_confirmed(facts([leg], {"FND-020": plain})["state"]) == ["FND-020"]
 
 
 # --------------------------------------------------------------------------- review

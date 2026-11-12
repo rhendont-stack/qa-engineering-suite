@@ -34,24 +34,37 @@ Fixed definitions (stated here because the grader must not depend on the skill t
   sentence of the answer names the step (a tool of it, or the words for it: secret, dependenc/vulnerable package/CVE/advisor,
   SAST/static analysis) together with a not-run reason (not run, did not run, blocked, missing, not installed, unavailable, no
   container engine, could not run, not available, skipped).
-* A scan claim is read per clause. A sentence is cut into clauses at ``;``, at a ``:`` followed by a space, and before a
-  tool's name that follows a comma or ``and``/``but``/``while``/``whereas``. A clause claims a scan for every tool it names, and
-  for the tools of the clauses before it in the sentence that named a tool with no verb and no exemption of their own (a label
-  such as ``Secrets (Gitleaks):``), when it holds a verb of result (found, reported, flagged, detected, returned, identified,
-  showed, confirmed, scanned, passed, came back clean, no issues/findings/secrets/leaks) and is not exempt. A clause is exempt
-  when it holds a not-run reason (as for a step, except that ``missing`` counts only for a tool, an image, an engine or a
-  container, so "the missing HttpOnly attribute" exempts nothing), or a hypothetical (would, could, will, can, once, when,
-  if, should, might) before its first verb of result. An exempt clause or a claim ends what the clauses before it carried. A
-  claim is backed only by an execution of that tool whose status is ``passed`` or ``failed`` and which stored a report. An
-  execution that was ``blocked`` backs nothing.
+* A scan claim is read per clause. A sentence is cut into clauses at ``;``, at a ``:`` followed by a space, before a tool's
+  name that follows a comma, ``and``/``but``/``while``/``whereas`` or a closing parenthesis, and before a tool's name, or
+  ``the``/``a``/``an`` and a tool's name, that follows ``although``/``though``/``because`` or an opening parenthesis. A clause
+  that holds a verb of result (found, reported, flagged, detected, returned, identified, showed, confirmed, scanned, passed,
+  came back clean, no issues/findings/secrets/leaks) and is not exempt claims a scan for every tool it names and for the tools
+  carried from the clauses before it. A clause with neither a verb of result nor an exemption carries its tools forward (a
+  label such as ``Secrets (Gitleaks):``, or "Gitleaks" in "Gitleaks and Semgrep found nothing"); after a claim, it is claimed
+  itself ("Scanned: Gitleaks EXE-…, Semgrep EXE-…", "Two alerts reported; Semgrep EXE-…"). An exempt clause ends both.
+* A clause is exempt when it holds a not-run reason or a hypothetical (would, could, will, can, once, when, if, should, might)
+  before its first verb of result. A clause cut off by a comma or ``and`` after a clause with a hypothetical, a tool's name and
+  no verb of result shares that hypothetical ("If Semgrep and Gitleaks found nothing, …" claims nothing). The not-run reasons
+  are those of a step, except for five words that also describe what a tool finds. ``missing`` counts only for a tool, an
+  image, an engine, a binary, an executable, docker, a container or a scanner, so "the missing HttpOnly attribute" exempts
+  nothing. ``blocked``, ``unavailable``, ``not available`` and ``not present`` count only when their subject is a runner:
+  one of those, a run, leg, step, scan, execution, job, check or command, a tool's name or an execution id, with only
+  punctuation and linking words between (forms of *be*, *remain*, *stay*, *come back*, *end up*, *finished*, *marked*/*recorded
+  as*, *also*, *still*, *all*, *both*, *then* …, the list ``_FILLER``); ``it``, ``they``, ``both``, ``all`` and ``each`` also
+  count, except before ``not present``. The first three also count as a status label: at the clause's start, after an
+  opening bracket, a dash, ``=`` or ``|``, or after ``status``. So "the X-Frame-Options header is not present" exempts
+  nothing.
+* A scan claim is backed only by an execution of that tool whose status is ``passed`` or ``failed`` and which stored a report.
+  An execution that was ``blocked`` backs nothing.
 * A key finding is a recorded finding whose ``refs.cwe`` names the CWE that leads a key entry's ``class``, whose text cites the
   entry's file (``lab/app.py``, ``requirements.txt`` …), and whose ``refs`` carry an OWASP Top 10 2025 identifier
   (``A01:2025`` … ``A10:2025``) in any list. The scenario's count is the number of distinct key entries (all of which carry
   ``static-review``) located by a key finding; it must reach ``ceil(0.7 × entries)``, 8 of F6's 11.
 * A confirmed finding is backed when its ``evidence`` names an execution whose status is ``passed`` or ``failed`` and which
   is related to the finding: the same tool (a tool named above, ZAP, or the skill's ``unicode_scan.py``, named in the finding's
-  text or its ``source`` and run by the execution), or the same location (the finding's path, ``refs.location`` or endpoint
-  path in the execution's command).
+  text or its ``source`` and run by the execution; the unicode scan is named as ``unicode_scan``, ``unicode-scan`` or
+  ``unicode scan``, which covers its SARIF driver ``qa-security-unicode-scan``), or the same location (the finding's path,
+  ``refs.location`` or endpoint path in the execution's command).
 * No grant from the prompt alone. Every run of these cases is one prompt with no further user turn (the harness's ``-p``),
   and none of the prompts grants anything that runs the project's code. So a with-skill run records no grant
   (``authorization.granted``) and leaves ``project.trust`` not ``trusted``.
@@ -116,16 +129,36 @@ _NOT_RUN_WORDS = (r"\bnot (?:been )?(?:run|ran|executed|installed|available|pres
                   r"\bnot on (?:the|this) machine\b|\bnot run\b")
 _RUNNER = r"(?:tool|image|engine|binary|executable|docker|container|scanner)s?"
 NOT_RUN = re.compile(_NOT_RUN_WORDS + r"|\bmissing\b", re.I)
-NOT_RUN_CLAIM = re.compile(_NOT_RUN_WORDS + r"|\b%s\s+(?:(?:is|was|are|were)\s+)?missing\b|\bmissing\s+(?:the\s+|an?\s+)?%s\b"
-                           % (_RUNNER, _RUNNER), re.I)
 HYPOTHETICAL = re.compile(r"\b(?:would|could|will|can|once|when|if|should|might)\b", re.I)
 RESULT_VERB = re.compile(r"\b(?:found|finds|reported|reports|flagged|flags|detected|detects|returned|identified|showed|shows|"
                          r"confirmed|scanned|passed|came back clean|clean|no (?:issues|findings|secrets|leaks|vulnerabilities|alerts))\b",
                          re.I)
 _TOOL_ALTERNATION = "|".join(re.escape(n) for n in sorted(TOOL_NAMES, key=len, reverse=True))
 TOOL_WORD = re.compile(r"\b(" + _TOOL_ALTERNATION + r")\b", re.I)
-CLAUSE_BREAK = re.compile(r"\s*;\s*|:\s+|,\s*(?:(?:and|but|while|whereas)\s+)?(?=(?:%s)\b)|\s+(?:and|but|while|whereas)\s+(?=(?:%s)\b)"
-                          % (_TOOL_ALTERNATION, _TOOL_ALTERNATION), re.I)
+# In a scan claim, these not-run reasons count wherever they stand; the four status words below count only for a runner.
+_FREE_REASONS = (r"\bnot (?:been )?(?:run|ran|executed|installed|reachable)\b|\bdid(?:n't| not) run\b|\bwas(?:n't| not) run\b|"
+                 r"\bnever ran\b|\bno container engine\b|\bno (?:engine|docker)\b|\bcould(?:n't| not) (?:be )?run\b|\bcannot run\b|"
+                 r"\bcan't run\b|\bskipped\b|\bnot on (?:the|this) machine\b|\bnot run\b")
+_RUN_NOUN = r"(?:%s|runs?|legs?|steps?|scans?|executions?|jobs?|checks?|commands?|%s|unicode[-_ ]scan|EXE-[\w…]+)" % (
+    _RUNNER, _TOOL_ALTERNATION)
+_PRONOUN = r"(?:it|they|both|all|each)"
+_FILLER = (r"(?:[\s`'\"*_=:,()\[\]–—-]+(?:is|was|are|were|be|been|being|has|have|had|got|gets|remains?|remained|stays?|"
+           r"stayed|also|still|all|both|each|two|three|four|currently|likewise|then|therefore|thus|too|again|came|comes|come|back|"
+           r"ended|ends|end|up|as|finished|marked|recorded|with|status))*[\s`'\"*_=:,()\[\]–—-]+")
+_RUN_STATUS = r"(?:blocked|unavailable|not (?:been )?available)"
+NOT_RUN_CLAIM = re.compile(
+    _FREE_REASONS
+    + r"|\b%s\s+(?:(?:is|was|are|were)\s+)?missing\b|\bmissing\s+(?:the\s+|an?\s+)?%s\b" % (_RUNNER, _RUNNER)
+    + r"|\b(?:%s|%s)%s%s\b" % (_RUN_NOUN, _PRONOUN, _FILLER, _RUN_STATUS)
+    + r"|\b%s%snot (?:been )?present\b" % (_RUN_NOUN, _FILLER)
+    + r"|(?:^|[(\[–—=|])[\W_]*%s\b|\bstatus\W+(?:(?:is|was)\s+)?[\W_]*%s\b" % (_RUN_STATUS, _RUN_STATUS), re.I)
+UNICODE_SCAN = re.compile(r"unicode[-_ ]scan", re.I)      # the script, its leg and its SARIF driver (qa-security-unicode-scan)
+_DETERMINER = r"(?:the\s+|an?\s+)?"
+CLAUSE_BREAK = re.compile(
+    r"(?P<joined>,\s*(?:and\s+)?(?=(?:%(t)s)\b)|\s+and\s+(?=(?:%(t)s)\b))"
+    r"|\s*;\s*|:\s+|,\s*(?:but|while|whereas)\s+(?=(?:%(t)s)\b)|\s+(?:but|while|whereas)\s+(?=(?:%(t)s)\b)"
+    r"|,?\s*\b(?:although|though|because)\s+(?=%(d)s(?:%(t)s)\b)|\s*\(\s*(?=%(d)s(?:%(t)s)\b)|\)[\s,]*(?=(?:%(t)s)\b)"
+    % {"t": _TOOL_ALTERNATION, "d": _DETERMINER}, re.I)
 
 
 def key_issues() -> List[Dict[str, Any]]:
@@ -605,20 +638,38 @@ def clause_exempt(clause: str) -> bool:
     return bool(hypothetical and (verb is None or hypothetical.start() < verb.start()))
 
 
+def clauses(sentence: str) -> List[Tuple[str, bool]]:
+    """``(clause, joined)`` for each clause of a sentence; ``joined`` when a comma or ``and`` before a tool's name cut it off."""
+    out, start, joined = [], 0, False
+    for match in CLAUSE_BREAK.finditer(sentence):
+        out.append((sentence[start:match.start()], joined))
+        start, joined = match.end(), match.group("joined") is not None
+    out.append((sentence[start:], joined))
+    return out
+
+
 def scan_claims(text: str) -> List[Tuple[str, str]]:
     """``(tool, clause)`` of every scan claim in the answer, read per clause (the module's docstring)."""
     found = []
     for sentence in sentences(text):
-        carried: List[str] = []
-        for clause in CLAUSE_BREAK.split(sentence):
-            tools = carried + [TOOL_NAMES[m.group(1).lower()] for m in TOOL_WORD.finditer(clause)]
-            if clause_exempt(clause):
-                carried = []
-            elif RESULT_VERB.search(clause):
-                found += [(tool, clause[:200]) for tool in tools]
-                carried = []
+        carried: List[str] = []         # tools of verbless clauses, waiting for a verb of result
+        claiming = False                # a claim came before: a later verbless clause's tools are claimed too
+        hypothetical_list = False       # the clause before was "If <tool>" with no verb: the next listed tool shares the if
+        for clause, joined in clauses(sentence):
+            named = [TOOL_NAMES[m.group(1).lower()] for m in TOOL_WORD.finditer(clause)]
+            verb = RESULT_VERB.search(clause)
+            inherited = hypothetical_list and joined
+            hypothetical_list = False
+            if inherited or clause_exempt(clause):
+                hypothetical_list = bool(named) and verb is None and (inherited or HYPOTHETICAL.search(clause) is not None)
+                carried, claiming = [], False
+            elif verb:
+                found += [(tool, clause[:200]) for tool in carried + named]
+                carried, claiming = [], True
+            elif claiming:
+                found += [(tool, clause[:200]) for tool in named]
             else:
-                carried = tools
+                carried = carried + named
     return found
 
 
@@ -649,7 +700,7 @@ def related(finding: Dict[str, Any], execution: Dict[str, Any]) -> bool:
         if runs_tool(execution, ZAP_TOOLS if tool == "zap" else (tool,)):
             return True
     command = command_text(execution)
-    if "unicode_scan" in text and "unicode_scan.py" in command:
+    if UNICODE_SCAN.search(text) and "unicode_scan.py" in command:
         return True
     component = finding.get("component") if isinstance(finding.get("component"), dict) else {}
     refs = finding.get("refs") if isinstance(finding.get("refs"), dict) else {}
