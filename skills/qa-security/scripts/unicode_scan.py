@@ -13,14 +13,17 @@ Three rules, per line of every text file under the given paths (default ``.``):
   differently from how it runs.
 
 A result says the rule, the file, the line and column, and for a character its code point. It never quotes the line: the text
-found may be addressed to whoever reads the report. Directories ``.git``, ``.qa``, ``.qa-input``, ``.claude``,
-``node_modules``, ``__pycache__`` and ``.venv*`` are skipped; links are never followed; files over 2 MiB and files holding a
-NUL byte in their first 8 KiB are skipped and counted.
+found may be addressed to whoever reads the report. Lines are numbered on ``\n``, ``\r\n`` and ``\r`` only, as an editor
+numbers them. Directories ``.git``, ``.qa``, ``.qa-input``, ``.claude``, ``node_modules``, ``__pycache__`` and ``.venv*`` are
+skipped; links are never followed. Skipped and counted in the summary's ``skipped``: files over 2 MiB (``large``), UTF-16 text
+(``utf16``: a UTF-16 byte-order mark, or NUL bytes at every other position of the first 8 KiB; its tags and controls are
+not scanned), other files holding a NUL byte in their first 8 KiB (``binary``), files that vanished or could not be opened
+during the walk (``vanished``), and given paths that do not exist (``missing``).
 
-``--out`` is a path under ``.qa/work/`` (default ``.qa/work/security/unicode.sarif``), or an absolute path outside the
-project that does not exist yet (a container's ``/qa-evidence/``). ``--copy-to-work`` copies this file to
-``.qa/work/security/unicode_scan.py`` for a container run's ``--input``. Prints one JSON summary. Exit 0 when the scan ran,
-2 on bad arguments or a refused path. Standard library only; it runs nothing it reads.
+``--out`` is a path under ``.qa/work/security/`` (default ``.qa/work/security/unicode.sarif``), or, inside a container run,
+a new file directly in ``/qa-evidence/``. ``--copy-to-work`` copies this file to ``.qa/work/security/unicode_scan.py`` for a
+container run's ``--input``. Prints one JSON summary. Exit 0 when the scan ran, 2 on bad arguments or a refused path.
+Standard library only; it runs nothing it reads.
 """
 from __future__ import annotations
 
@@ -40,6 +43,8 @@ COPY_NAME = ".qa/work/security/unicode_scan.py"
 MAX_BYTES = 2 << 20
 SKIP_DIRS = {".git", ".qa", ".qa-input", ".claude", "node_modules", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache"}
 CWE_PROMPT = "CWE-1427"
+EVIDENCE_DIR = "/qa-evidence"          # a container run's evidence folder; the only absolute output
+LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 MARKERS_EN = (
     r"\bignore\s+(?:all\s+|any\s+)?(?:of\s+)?(?:the\s+|your\s+)?(?:previous|prior|above|earlier|preceding)\s+(?:instructions|prompts?|rules|directions)",
@@ -103,22 +108,34 @@ def _no_link_on_the_way(root: Path, parts: Sequence[str]) -> None:
 
 
 def work_path(root: Path, text: str) -> Tuple[Path, List[str]]:
-    """``(root, parts)`` of a path under ``.qa/work/``; Refused otherwise."""
+    """``(root, parts)`` of a path under ``.qa/work/security/``; Refused otherwise."""
     pure = PurePosixPath(text)
     parts = list(pure.parts)
-    if pure.is_absolute() or ".." in parts or "." in parts or parts[:2] != [".qa", "work"] or len(parts) < 3:
-        raise Refused("the output must be a path under .qa/work/")
+    if pure.is_absolute() or ".." in parts or "." in parts or parts[:3] != [".qa", "work", "security"] or len(parts) < 4:
+        raise Refused("the output must be a path under .qa/work/security/")
     return root, parts
 
 
+def evidence_file(text: str) -> Path:
+    """A new file directly in the evidence folder (``/qa-evidence/<name>``), with no link on the way; Refused otherwise."""
+    pure = PurePosixPath(text)
+    if str(pure.parent) != EVIDENCE_DIR or pure.name in ("", ".", "..") or text != str(pure):
+        raise Refused("an absolute output must be a new file directly in %s/ (a container run's evidence)" % EVIDENCE_DIR)
+    try:
+        mode = os.lstat(EVIDENCE_DIR).st_mode
+    except OSError:
+        raise Refused("%s does not exist here: an absolute output is only for a container run" % EVIDENCE_DIR) from None
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise Refused("%s is a link or not a directory" % EVIDENCE_DIR)
+    return Path(EVIDENCE_DIR) / pure.name
+
+
 def write_bytes(text: str, data: bytes, root: Optional[Path] = None) -> str:
-    """Write ``data`` to ``text``: under ``.qa/work/`` through no link (a fresh temporary file, then a rename that replaces the
-    name itself), or, for an absolute path outside the project, only as a new file."""
+    """Write ``data`` to ``text``: under ``.qa/work/security/`` through no link (a fresh temporary file, then a rename that
+    replaces the name itself), or as a new file directly in ``/qa-evidence/`` (a container run)."""
     root = (root or Path.cwd()).resolve()
     if os.path.isabs(text):
-        target = Path(os.path.normpath(text))
-        if target == root or root in target.parents:
-            raise Refused("an absolute output inside the project must be written as .qa/work/...")
+        target = evidence_file(text)
         fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
@@ -159,16 +176,39 @@ def files_under(paths: Sequence[str], counts: Dict[str, int]) -> Iterator[Path]:
                                     and not os.path.islink(os.path.join(here, d)))
             for name in sorted(names):
                 path = Path(here, name)
-                if stat.S_ISREG(os.lstat(str(path)).st_mode):
+                try:
+                    mode = os.lstat(str(path)).st_mode
+                except OSError:                   # gone since the directory was listed
+                    counts["vanished"] += 1
+                    continue
+                if stat.S_ISREG(mode):
                     yield path
 
 
+def utf16(head: bytes) -> bool:
+    """A UTF-16 byte-order mark, or NUL bytes at nine in ten of the odd (or the even) positions and at fewer than half of the
+    others."""
+    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return True
+    if len(head) < 4:
+        return False
+    odd, even = head[1::2], head[0::2]
+    return any(a.count(0) >= 0.9 * len(a) and b.count(0) < 0.5 * len(b) for a, b in ((odd, even), (even, odd)))
+
+
 def read_text(path: Path, counts: Dict[str, int]) -> Optional[str]:
-    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:                               # gone, or replaced by a link, since the walk saw it
+        counts["vanished"] += 1
+        return None
     with os.fdopen(fd, "rb") as handle:
         data = handle.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         counts["large"] += 1
+        return None
+    if utf16(data[:8192]):
+        counts["utf16"] += 1
         return None
     if b"\x00" in data[:8192]:
         counts["binary"] += 1
@@ -187,7 +227,7 @@ def uri_of(path: Path) -> str:
 def scan_text(text: str) -> List[Tuple[str, int, int, str]]:
     """``(rule, line, column, message)`` for every hit in ``text``; columns are 1-based, in characters."""
     hits = []
-    for number, line in enumerate(text.splitlines(), 1):
+    for number, line in enumerate(LINE_BREAK.split(text), 1):
         for match in TAG.finditer(line):
             hits.append(("qa-unicode-tag-character", number, match.start() + 1, "U+%04X, a Unicode tag character" % ord(match.group(0))))
         for match in BIDI.finditer(line):
@@ -208,7 +248,7 @@ def sarif(results: List[Dict[str, object]]) -> Dict[str, object]:
 
 
 def scan(paths: Sequence[str]) -> Tuple[Dict[str, object], Dict[str, int], int]:
-    counts = {"large": 0, "binary": 0, "missing": 0}
+    counts = {"large": 0, "utf16": 0, "binary": 0, "vanished": 0, "missing": 0}
     results: List[Dict[str, object]] = []
     scanned = 0
     for path in files_under(paths, counts):

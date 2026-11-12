@@ -1,4 +1,4 @@
-"""The bundled scripts of qa-security: ``unicode_scan.py``, ``zap_plan.py`` and ``sarif_triage.py``, with its assets.
+"""The bundled scripts of qa-security: ``unicode_scan.py``, ``run_inputs.py`` and ``sarif_triage.py``, with its assets.
 
 Each script runs as the skill runs it, isolated (``python3 -I -B``) from a project root made at test time. The texts that the
 unicode scan must find are assembled here from parts, so this file holds no hidden character and no live instruction, and the
@@ -19,7 +19,7 @@ from helpers import REPO
 
 SKILL = REPO / "skills" / "qa-security"
 UNICODE = SKILL / "scripts" / "unicode_scan.py"
-PLAN = SKILL / "scripts" / "zap_plan.py"
+PLAN = SKILL / "scripts" / "run_inputs.py"
 TRIAGE = SKILL / "scripts" / "sarif_triage.py"
 CORPUS = REPO / "tests" / "corpus" / "sarif"
 GRADER = SKILL / "evals" / "grade.py"
@@ -113,7 +113,8 @@ def test_unicode_scan_never_follows_a_link(tmp_path):
 
 def test_unicode_scan_output_paths(tmp_path):
     root = project_with_texts(tmp_path / "p")
-    for bad in ("report.sarif", ".qa/report.sarif", ".qa/work/../x.sarif", str(root / ".qa" / "work" / "x.sarif")):
+    for bad in ("report.sarif", ".qa/report.sarif", ".qa/work/../x.sarif", ".qa/work/x.sarif", ".qa/work/other/x.sarif",
+                str(root / ".qa" / "work" / "security" / "x.sarif"), "/qa-evidence/../x.sarif", "/qa-evidence/sub/x.sarif"):
         code, out, _ = run(UNICODE, "--out", bad, cwd=root)
         assert (code, out["ok"]) == (2, False), bad
     existing = tmp_path / "exists.sarif"
@@ -121,8 +122,12 @@ def test_unicode_scan_output_paths(tmp_path):
     code, out, _ = run(UNICODE, "--out", str(existing), cwd=root)
     assert (code, out["ok"]) == (2, False) and existing.read_text(encoding="utf-8") == "{}"
     fresh = tmp_path / "fresh.sarif"
-    code, out, _ = run(UNICODE, "--out", str(fresh), cwd=root)
-    assert (code, out["ok"]) == (0, True) and sarif_at(fresh)["runs"][0]["results"]
+    code, out, _ = run(UNICODE, "--out", str(fresh), cwd=root)                      # outside the evidence folder: refused
+    assert (code, out["ok"]) == (2, False) and not fresh.exists()
+    linked_root = tmp_path / "alias"
+    os.symlink(str(root), str(linked_root))
+    code, out, _ = run(UNICODE, "--out", str(linked_root / ".qa" / "work" / "security" / "y.sarif"), cwd=root)
+    assert (code, out["ok"]) == (2, False) and not (root / ".qa" / "work" / "security" / "y.sarif").exists()
     (root / ".qa" / "work").mkdir(parents=True, exist_ok=True)
     os.symlink(str(tmp_path / "outside-dir"), str(root / ".qa" / "work" / "security"))
     (tmp_path / "outside-dir").mkdir()
@@ -130,6 +135,60 @@ def test_unicode_scan_output_paths(tmp_path):
     assert (code, out["ok"]) == (2, False) and list((tmp_path / "outside-dir").iterdir()) == []
     code, out, _ = run(UNICODE, "--bogus", cwd=root)
     assert (code, out["ok"]) == (2, False)
+
+
+def test_unicode_scan_writes_an_absolute_output_only_as_a_new_file_in_the_evidence_folder(tmp_path):
+    module = load(UNICODE, "qa_security_unicode_scan_e")
+    evidence = tmp_path / "qa-evidence"
+    module.EVIDENCE_DIR = str(evidence)
+    with pytest.raises(module.Refused):
+        module.write_bytes(str(evidence / "u.sarif"), b"{}", tmp_path)                 # the folder does not exist
+    evidence.mkdir()
+    assert module.write_bytes(str(evidence / "u.sarif"), b"{}", tmp_path) == str(evidence / "u.sarif")
+    with pytest.raises(OSError):
+        module.write_bytes(str(evidence / "u.sarif"), b"[]", tmp_path)                 # never over an existing file
+    assert (evidence / "u.sarif").read_bytes() == b"{}"
+    os.symlink(str(evidence / "u.sarif"), str(evidence / "l.sarif"))
+    with pytest.raises(OSError):
+        module.write_bytes(str(evidence / "l.sarif"), b"[]", tmp_path)
+    other = tmp_path / "linked-evidence"
+    os.symlink(str(evidence), str(other))
+    module.EVIDENCE_DIR = str(other)
+    with pytest.raises(module.Refused):
+        module.write_bytes(str(other / "v.sarif"), b"{}", tmp_path)
+    for bad in (str(tmp_path / "x.sarif"), str(evidence / "a" / "x.sarif"), str(evidence)):
+        module.EVIDENCE_DIR = str(evidence)
+        with pytest.raises(module.Refused):
+            module.write_bytes(bad, b"{}", tmp_path)
+
+
+def test_unicode_scan_numbers_lines_as_an_editor_does_and_counts_what_it_skips(tmp_path):
+    module = load(UNICODE, "qa_security_unicode_scan_l")
+    text = "one\u2028still one\x85still one\r\ntwo\rthree\na%sb\n" % BIDI_CHARS[0]
+    assert [hit[1] for hit in module.scan_text(text)] == [4]
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "wide.txt").write_bytes(("x" + EN_PHRASE).encode("utf-16"))
+    (root / "wide-le.txt").write_bytes(("x" + EN_PHRASE).encode("utf-16-le"))
+    (root / "blob.bin").write_bytes(b"\x00\x01\x02" + EN_PHRASE.encode())
+    code, out, err = run(UNICODE, cwd=root)
+    assert (code, out["skipped"]["utf16"], out["skipped"]["binary"], out["files_scanned"]) == (0, 2, 1, 0), (out, err)
+
+
+def test_unicode_scan_skips_a_file_that_vanishes_during_the_walk(tmp_path):
+    module = load(UNICODE, "qa_security_unicode_scan_v")
+    root = tmp_path / "p"
+    root.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (root / name).write_text("ok\n", encoding="utf-8")
+    counts = {"large": 0, "utf16": 0, "binary": 0, "vanished": 0, "missing": 0}
+    walk = module.files_under([str(root)], counts)
+    assert next(walk).name == "a.txt"
+    (root / "b.txt").unlink()
+    assert [p.name for p in walk] == ["c.txt"] and counts["vanished"] == 1
+    gone = root / "c.txt"
+    gone.unlink()
+    assert module.read_text(gone, counts) is None and counts["vanished"] == 2
 
 
 def test_unicode_scan_copies_itself_for_a_container_run(tmp_path):
@@ -141,12 +200,12 @@ def test_unicode_scan_copies_itself_for_a_container_run(tmp_path):
     assert not [c for c in UNICODE.read_text(encoding="utf-8") if 0x202A <= ord(c) <= 0x202E or 0x2066 <= ord(c) <= 0x2069 or ord(c) >= 0xE0000]
 
 
-# ----------------------------------------------------------------------------------------------- zap_plan.py
+# ----------------------------------------------------------------------------------------------- run_inputs.py
 
-def test_zap_plan_baseline_is_the_asset_with_no_active_scan(tmp_path):
+def test_run_inputs_zap_baseline_is_the_asset_with_no_active_scan(tmp_path):
     root = tmp_path / "p"
     root.mkdir()
-    code, out, err = run(PLAN, "--kind", "baseline", cwd=root)
+    code, out, err = run(PLAN, "--kind", "zap-baseline", cwd=root)
     assert (code, out["ok"], out["written"], out["input"]) == (0, True, ".qa/work/security/zap-baseline.yaml",
                                                               "/work/.qa-input/security/zap-baseline.yaml"), err
     written = (root / out["written"]).read_bytes()
@@ -157,23 +216,25 @@ def test_zap_plan_baseline_is_the_asset_with_no_active_scan(tmp_path):
     assert re.search(r"(?m)^\s*-\s*type:\s*report\b", text) and "template: sarif-json" in text and "reportDir: /qa-evidence" in text
     assert "${QA_TARGET}" in text and {h.split(":")[0] for h in re.findall(r"https?://([^\s/'\"]+)", text)} <= {"127.0.0.1"}
     (root / out["written"]).write_text("edited\n", encoding="utf-8")
-    assert run(PLAN, "--kind", "baseline", cwd=root)[0] == 0
+    assert run(PLAN, "--kind", "zap-baseline", cwd=root)[0] == 0
     assert (root / out["written"]).read_bytes() == asset                                  # rewritten from the asset each time
-    code, out, _ = run(PLAN, "--kind", "baseline", "--openapi", "openapi.yaml", cwd=root)
+    code, out, _ = run(PLAN, "--kind", "zap-baseline", "--openapi", "openapi.yaml", cwd=root)
     assert (code, out["ok"]) == (2, False)
+    for old in ("baseline", "active"):                                                    # the former kind names are gone
+        assert run(PLAN, "--kind", old, cwd=root)[0] == 2
 
 
-def test_zap_plan_active_is_capped_and_imports_a_contract(tmp_path):
+def test_run_inputs_zap_active_is_capped_and_imports_a_contract(tmp_path):
     root = tmp_path / "p"
     root.mkdir()
     (root / "api").mkdir()
     (root / "api" / "openapi.yaml").write_text("openapi: 3.0.3\n", encoding="utf-8")
-    code, out, err = run(PLAN, "--kind", "active", cwd=root)
+    code, out, err = run(PLAN, "--kind", "zap-active", cwd=root)
     assert (code, out["written"]) == (0, ".qa/work/security/zap-active.yaml"), err
     plain = (root / out["written"]).read_text(encoding="utf-8")
     assert plain == (SKILL / "assets" / "zap-active.yaml").read_text(encoding="utf-8")
     assert re.search(r"(?m)^\s*-\s*type:\s*activeScan\b", plain) and "maxScanDurationInMins: 10" in plain and "type: openapi" not in plain
-    code, out, err = run(PLAN, "--kind", "active", "--openapi", "api/openapi.yaml", cwd=root)
+    code, out, err = run(PLAN, "--kind", "zap-active", "--openapi", "api/openapi.yaml", cwd=root)
     assert (code, out["openapi"]) == (0, "api/openapi.yaml"), err
     text = (root / out["written"]).read_text(encoding="utf-8")
     assert "apiFile: /work/api/openapi.yaml" in text and "targetUrl: ${QA_TARGET}" in text
@@ -182,26 +243,26 @@ def test_zap_plan_active_is_capped_and_imports_a_contract(tmp_path):
     (root / ".qa" / "c.yaml").write_text("x", encoding="utf-8")
     for bad in ("../openapi.yaml", "/etc/hosts", ".qa/c.yaml", ".git/config", "linked.yaml", "api", "absent.yaml", "api/../api/openapi.yaml",
                 "api/open api.yaml"):
-        code, out, _ = run(PLAN, "--kind", "active", "--openapi", bad, cwd=root)
+        code, out, _ = run(PLAN, "--kind", "zap-active", "--openapi", bad, cwd=root)
         assert (code, out["ok"]) == (2, False), bad
 
 
-def test_zap_plan_refuses_a_linked_work_directory(tmp_path):
+def test_run_inputs_refuses_a_linked_work_directory(tmp_path):
     root = tmp_path / "p"
     (root / ".qa").mkdir(parents=True)
     (tmp_path / "elsewhere").mkdir()
     os.symlink(str(tmp_path / "elsewhere"), str(root / ".qa" / "work"))
-    code, out, _ = run(PLAN, "--kind", "baseline", cwd=root)
+    code, out, _ = run(PLAN, "--kind", "zap-baseline", cwd=root)
     assert (code, out["ok"]) == (2, False) and list((tmp_path / "elsewhere").iterdir()) == []
 
 
-def test_zap_plan_writes_the_semgrep_rules_from_the_assets(tmp_path):
+def test_run_inputs_writes_the_semgrep_rules_from_the_assets(tmp_path):
     root = tmp_path / "p"
     root.mkdir()
     code, out, err = run(PLAN, "--kind", "semgrep-rules", cwd=root)
     assert (code, out["written"], out["input"]) == (0, ".qa/work/security/semgrep-rules.yaml", "/work/.qa-input/security/semgrep-rules.yaml"), err
     text = (root / out["written"]).read_text(encoding="utf-8")
-    assert text.count("\nrules:\n") == 1 and text.startswith("# Written by zap_plan.py")
+    assert text.count("\nrules:\n") == 1 and text.startswith("# Written by run_inputs.py --kind semgrep-rules")
     ids = re.findall(r"(?m)^  - id: (\S+)$", text)
     assert ids == re.findall(r"(?m)^  - id: (\S+)$", (SKILL / "assets" / "semgrep-rules" / "qa-security-python.yaml").read_text(encoding="utf-8"))
     assert len(ids) == 8 and len(set(ids)) == 8
@@ -300,7 +361,13 @@ def test_sarif_triage_masks_secrets_and_gitleaks_has_no_cwe(tmp_path):
     assert value not in written and value[8:] not in written and "[masked:" in written
     module = load(TRIAGE, "qa_security_sarif_triage_m")
     assert module.mask("x %s y" % value) == module.mask("x %s y" % value) and value not in module.mask(value)
-    assert module.mask("see http://127.0.0.1:8000/products/a1b2c3d4e5f6g7h8i9j0 now").count("[masked:") == 0
+    assert module.mask("see http://127.0.0.1:8000/products/list now").count("[masked:") == 0
+    for path in ("tests/integration/test_fixture_f6", "/work/lab/catalog", ".qa/evidence/EXE-01ABC/reports/semgrep"):
+        assert module.mask("at %s here" % path) == "at %s here" % path, path
+    slashed = "".join(["wJalrXUtnFEMI", "/K7MDENG/", "bPxRfiCY", "EXAMPLEKEY"])               # a key shape with slashes
+    assert slashed not in module.mask("key " + slashed) and "[masked:" in module.mask("key " + slashed)
+    id_in_url = "8000/products/" + "".join(["a1b2", "c3d4", "e5f6", "g7h8", "i9j0"])
+    assert module.mask("see http://127.0.0.1:" + id_in_url).count("[masked:") == 1
     for name in ("gitleaks-8.30.1.sarif", "osv-scanner-2.7.1.sarif"):
         triaged = module.triage(sarif_at(CORPUS / name))
         assert triaged["results"] and all(a["cwe"] == [] for a in triaged["alerts"]), name
@@ -331,6 +398,34 @@ def test_sarif_triage_refuses_reports_outside_qa_links_and_non_sarif(tmp_path):
         code, out, _ = run(TRIAGE, "--sarif", rel, "--out", bad_out, cwd=root)
         assert (code, out["ok"]) == (2, False), bad_out
     assert run(TRIAGE, "--sarif", rel, cwd=root)[0] == 0
+
+
+def malformed(root, name, text):
+    folder = root / ".qa" / "evidence" / "EXE-01TEST" / "reports"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text(text, encoding="utf-8")
+    return ".qa/evidence/EXE-01TEST/reports/" + name
+
+
+def test_sarif_triage_ends_malformed_reports_in_its_summary_never_a_traceback(tmp_path):
+    root = tmp_path / "p"
+    root.mkdir()
+    rules = [{"id": "r", "relationships": [{"target": {"id": "\u00b2", "toolComponent": {"name": "CWE"}}}]}]
+    taxa = [{"id": "\u0663\u0663", "toolComponent": {"name": "CWE"}}]
+    cases = {
+        "url.sarif": json.dumps({"runs": [{"tool": {"driver": {"name": "ZAP"}}, "results": [
+            {"ruleId": "r", "message": {"text": "m"}, "webRequest": {"method": "GET", "target": "http://[::1/x"}}]}]}),
+        "location.sarif": json.dumps({"runs": [{"tool": {"driver": {"name": "ZAP"}}, "results": [
+            {"ruleId": "r", "message": {"text": "m"}, "locations": [{"physicalLocation": {"artifactLocation": {"uri": "https://[bad/x"}}}]}]}]}),
+        "deep.sarif": '{"runs": [' + "[" * 200000 + "]" * 200000 + "]}",
+    }
+    for name, text in cases.items():
+        code, out, err = run(TRIAGE, "--sarif", malformed(root, name, text), cwd=root)
+        assert (code, out["ok"]) == (2, False) and "Traceback" not in err, (name, out, err)
+    digits = json.dumps({"runs": [{"tool": {"driver": {"name": "t", "rules": rules}}, "results": [
+        {"ruleId": "r", "taxa": taxa, "message": {"text": "m"}, "locations": [{"physicalLocation": {"artifactLocation": {"uri": "a.py"}}}]}]}]})
+    code, out, err = run(TRIAGE, "--sarif", malformed(root, "digits.sarif", digits), cwd=root)
+    assert (code, out["by_cwe"]) == (0, {"none": 1}) and "Traceback" not in err, (out, err)       # non-ASCII digits name no CWE
 
 
 def test_triage_detections_feed_the_recall_grader(tmp_path):

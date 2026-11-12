@@ -1,14 +1,16 @@
-"""Writes a run's input from the skill's committed assets, immediately before the run: a ZAP plan or the Semgrep rules.
+"""Writes a container run's input from the skill's committed assets, immediately before the run: a ZAP plan or the Semgrep rules.
 
-Usage: python3 zap_plan.py --kind baseline
-       python3 zap_plan.py --kind active [--openapi PATH]
-       python3 zap_plan.py --kind semgrep-rules
+Usage: python3 run_inputs.py --kind zap-baseline
+       python3 run_inputs.py --kind zap-active [--openapi PATH]
+       python3 run_inputs.py --kind semgrep-rules
 
-* ``baseline`` writes ``.qa/work/security/zap-baseline.yaml`` from ``assets/zap-baseline.yaml``: the spider, the passive
+Each kind is the name of the file it writes under ``.qa/work/security/``:
+
+* ``zap-baseline`` writes ``.qa/work/security/zap-baseline.yaml`` from ``assets/zap-baseline.yaml``: the spider, the passive
   checks and the ``sarif-json`` report job, with the target as ``${QA_TARGET}``. That is the one plan name the guard reads as
   passive (``dast-passive``), so the copy is rewritten from the asset on every call, and an asset holding an ``activeScan`` job
   is refused.
-* ``active`` writes ``.qa/work/security/zap-active.yaml`` from ``assets/zap-active.yaml`` (adds the active scan, capped at ten
+* ``zap-active`` writes ``.qa/work/security/zap-active.yaml`` from ``assets/zap-active.yaml`` (adds the active scan, capped at ten
   minutes; ``dast-active``). ``--openapi PATH`` puts an ``openapi`` job in the spider's place: it imports the project's
   contract at ``/work/PATH`` against ``${QA_TARGET}``, so the active scan reaches every documented operation, and no crawl
   starts from a root an API does not serve (ZAP ends such a plan with a warning exit code). ``PATH`` is a regular file of the
@@ -35,7 +37,7 @@ from typing import List, Sequence
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent / "assets"
-OUTPUT = {"baseline": ".qa/work/security/zap-baseline.yaml", "active": ".qa/work/security/zap-active.yaml",
+OUTPUT = {"zap-baseline": ".qa/work/security/zap-baseline.yaml", "zap-active": ".qa/work/security/zap-active.yaml",
           "semgrep-rules": ".qa/work/security/semgrep-rules.yaml"}
 SAFE_PATH = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
 SPIDER = "  - type: spider\n    parameters:\n      context: target\n      maxDuration: 2\n"
@@ -81,7 +83,7 @@ def rules_text(refused) -> bytes:
     sources = sorted((ASSETS / "semgrep-rules").glob("*.yaml"))
     if not sources:
         raise refused("no rules in assets/semgrep-rules/")
-    bodies: List[str] = ["# Written by zap_plan.py --kind semgrep-rules from assets/semgrep-rules/ (Apache-2.0); do not edit.\nrules:\n"]
+    bodies: List[str] = ["# Written by run_inputs.py --kind semgrep-rules from assets/semgrep-rules/ (Apache-2.0); do not edit.\nrules:\n"]
     for source in sources:
         text = source.read_text(encoding="utf-8")
         head, marker, body = text.partition("\nrules:\n")
@@ -94,12 +96,12 @@ def rules_text(refused) -> bytes:
 def build(kind: str, openapi: str, root: Path, refused) -> bytes:
     if kind == "semgrep-rules":
         if openapi:
-            raise refused("--openapi goes with --kind active only")
+            raise refused("--openapi goes with --kind zap-active only")
         return rules_text(refused)
-    text = (ASSETS / ("zap-%s.yaml" % kind)).read_text(encoding="utf-8")
-    if kind == "baseline":
+    text = (ASSETS / ("%s.yaml" % kind)).read_text(encoding="utf-8")
+    if kind == "zap-baseline":
         if openapi:
-            raise refused("--openapi goes with --kind active only: an imported contract is scanned actively")
+            raise refused("--openapi goes with --kind zap-active only: an imported contract is scanned actively")
         if re.search(r"(?m)^\s*-\s*type:\s*activeScan\b", text):
             raise refused("the baseline asset holds an activeScan job")
         return text.encode("utf-8")

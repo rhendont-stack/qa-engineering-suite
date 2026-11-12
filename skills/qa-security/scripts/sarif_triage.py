@@ -14,12 +14,15 @@ inside the project's ``.qa/``, reached through no link, at most 32 MiB. For each
   result about a web request (ZAP's ``webRequest`` or an ``http(s)`` location);
 * ``message``: the result's message with every secret-shaped value masked as ``[masked:<8 hex>]``, the start of its sha256,
   so the same value has the same mask everywhere. Masked: what the kernel's redaction patterns match, and any run of 20 or more
-  letters, digits and ``_-+/=`` that mixes letters and digits. Snippets, fixes, code flows and request bodies are never read
-  into the output.
+  letters, digits and ``_-+/=`` that mixes letters and digits, unless it is a path: it holds a ``/`` between two parts, no
+  ``+`` or ``=``, and no part of 16 or more characters that mixes letters and digits, or mixes upper and lower case with no
+  ``_`` or ``-``. Snippets, fixes, code flows and request bodies are never read into the output.
 
-The full list goes to ``--out`` (default ``.qa/work/security/triage-<report name>.json``), written under ``.qa/work/`` through
-no link. Stdout gets one JSON summary: the tool and its version, the count, and counts per rule and per CWE. Exit 0 when the
-report was read, 2 on bad arguments, a refused path or a report that is not SARIF. Standard library only.
+The full list goes to ``--out`` (default ``.qa/work/security/triage-<report name>.json``), written under
+``.qa/work/security/`` through no link. Stdout gets one JSON summary: the tool and its version, the count, and counts per
+rule and per CWE. Exit 0 when the report was read, 2 on bad arguments, a refused path, or a report that is not SARIF or is
+malformed (a URL that cannot be split, nesting too deep to read): the summary then says why, never a traceback. CWE ids are
+read from ASCII digits only. Standard library only.
 """
 from __future__ import annotations
 
@@ -38,8 +41,9 @@ from urllib.parse import urlsplit
 HERE = Path(__file__).resolve().parent
 REDACTION = HERE / "_kernel" / "policies" / "redaction.json"
 MAX_BYTES = 32 << 20
-CWE_TEXT = re.compile(r"(?i)\bcwe[-/ _]?(\d{1,5})\b")
-DESCRIBED_CWE = re.compile(r"\(CWE-(\d{1,5})\)")
+CWE_TEXT = re.compile(r"(?i)\bcwe[-/ _]?([0-9]{1,5})(?![0-9])")
+DESCRIBED_CWE = re.compile(r"\(CWE-([0-9]{1,5})\)")
+CWE_ID = re.compile(r"[0-9]{1,5}")
 LONG_TOKEN = re.compile(r"[A-Za-z0-9_\-+/=]{20,}")
 WEB = re.compile(r"(?i)^https?://")
 
@@ -72,16 +76,32 @@ def mask_value(value: str) -> str:
     return "[masked:%s]" % hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
 
 
+def token_like(part: str) -> bool:
+    """16 or more characters that mix letters and digits, or mix upper and lower case with no ``_`` or ``-``."""
+    if len(part) < 16:
+        return False
+    if re.search(r"[A-Za-z]", part) and re.search(r"[0-9]", part):
+        return True
+    return bool(re.search(r"[a-z]", part) and re.search(r"[A-Z]", part) and not re.search(r"[_-]", part))
+
+
+def is_path(value: str) -> bool:
+    """A ``/`` between two parts, no ``+`` or ``=``, and no part that is token-like."""
+    if "/" not in value.strip("/") or re.search(r"[+=]", value):
+        return False
+    return not any(token_like(part) for part in value.split("/"))
+
+
 def mask(text: str) -> str:
     for pattern in PATTERNS:
         text = pattern.sub(lambda m: mask_value(m.group(0)), text)
 
     def long_token(match: "re.Match[str]") -> str:
         value = match.group(0)
-        if value.startswith("[masked:") or not (re.search(r"[A-Za-z]", value) and re.search(r"\d", value)):
+        if value.startswith("[masked:") or not (re.search(r"[A-Za-z]", value) and re.search(r"[0-9]", value)):
             return value
-        if WEB.match(value) or "/" in value.strip("/") and not re.search(r"[+=]", value):
-            return value                                  # a path or a URL, not a secret
+        if is_path(value):
+            return value                                  # a path, not a secret
         return mask_value(value)
 
     return LONG_TOKEN.sub(long_token, text)
@@ -108,6 +128,8 @@ def read_report(root: Path, text: str, refused) -> Dict[str, Any]:
         report = json.loads(data.decode("utf-8", "replace"))
     except ValueError:
         raise refused("the report is not JSON") from None
+    except RecursionError:
+        raise refused("the report is nested too deeply to read") from None
     if not isinstance(report, dict) or not isinstance(report.get("runs"), list):
         raise refused("the report is not SARIF (no runs)")
     return report
@@ -129,12 +151,12 @@ def cwes_of(rule: Dict[str, Any], result: Dict[str, Any]) -> List[str]:
                 found.add(int(match.group(1)))
     for relation in _list(rule.get("relationships")):
         target = _dict(_dict(relation).get("target"))
-        if str(_dict(target.get("toolComponent")).get("name", "")).upper() == "CWE" and str(target.get("id", "")).isdigit():
-            found.add(int(target["id"]))
+        if str(_dict(target.get("toolComponent")).get("name", "")).upper() == "CWE" and CWE_ID.fullmatch(str(target.get("id", ""))):
+            found.add(int(str(target["id"])))
     for taxon in _list(result.get("taxa")):
         taxon = _dict(taxon)
-        if str(_dict(taxon.get("toolComponent")).get("name", "")).upper() == "CWE" and str(taxon.get("id", "")).isdigit():
-            found.add(int(taxon["id"]))
+        if str(_dict(taxon.get("toolComponent")).get("name", "")).upper() == "CWE" and CWE_ID.fullmatch(str(taxon.get("id", ""))):
+            found.add(int(str(taxon["id"])))
     if not found:
         for field in ("shortDescription", "fullDescription"):
             for match in DESCRIBED_CWE.finditer(str(_dict(rule.get(field)).get("text", ""))):
@@ -215,7 +237,11 @@ def main(argv: Sequence[str]) -> int:
     writer = _writer()
     root = Path.cwd().resolve()
     try:
-        triaged = triage(read_report(root, args.sarif, writer.Refused))
+        report = read_report(root, args.sarif, writer.Refused)
+        try:
+            triaged = triage(report)
+        except (ValueError, RecursionError) as exc:
+            raise writer.Refused("the report is malformed SARIF (%s)" % type(exc).__name__) from None
         out = args.out or ".qa/work/security/triage-%s.json" % re.sub(r"[^A-Za-z0-9_.-]", "_", PurePosixPath(args.sarif).stem)
         if os.path.isabs(out):
             raise writer.Refused("--out must be a path under .qa/work/")
