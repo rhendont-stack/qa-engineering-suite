@@ -129,7 +129,7 @@
       "severity_anchor": "PERF-M1",
       "class": "missing index on a join and lookup column, visible only in a PostgreSQL plan",
       "detectable_by": [
-        "postgres-explain",
+        "postgres",
         "static-review",
         "in-process-check"
       ]
