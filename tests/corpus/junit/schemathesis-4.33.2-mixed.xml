@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites errors="0" failures="1" skipped="0" tests="2" time="0.185175">
+  <testsuite name="schemathesis" hostname="HOST" errors="0" failures="1" skipped="0" tests="2" time="0.185175">
+    <testcase name="GET /hello" time="0.135300" />
+    <testcase name="GET /broken" time="0.049875">
+      <failure type="failure" message="ST101, ST103">1. Test Case ID: jPH9FE
+
+- ST101 Server error
+
+- ST103 Undocumented status code
+
+    Received: 500
+    Documented: 200
+
+[500] Internal Server Error:
+
+    `broken on purpose`
+
+Reproduce with:
+
+    curl -X GET http://127.0.0.1:8000/broken</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

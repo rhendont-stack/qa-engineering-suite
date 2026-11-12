@@ -717,6 +717,15 @@ def test_coverage_run_is_not_a_suite_run_for_the_gate(formats, status):
     assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", []) and "no execution qualified" in r["detail"]
 
 
+@pytest.mark.parametrize("formats", [("k6",), ("k6", "junit")])
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_k6_run_is_not_a_suite_run_for_the_gate(formats, status):
+    """A load test's thresholds are its tests, but they say how the system held up, not whether the project's suite passed."""
+    report = {"format": "k6" if formats == ("k6",) else "mixed", "kind": "tests", "tests": 1, "failures": 0, "errors": 0, "skipped": 0}
+    r = _suite(_st(_exe(status=status, report=report, reports=_declared(*formats))))
+    assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", []) and "no execution qualified" in r["detail"]
+
+
 def test_coverage_beside_tests_still_counts_as_a_suite_run():
     assert _suite(_st(_exe(reports=_declared("junit", "lcov"))))["outcome"] == "MET"
     assert _suite(_st(_exe(status="failed", reports=_declared("junit", "cobertura"))))["outcome"] == "NOT_MET"

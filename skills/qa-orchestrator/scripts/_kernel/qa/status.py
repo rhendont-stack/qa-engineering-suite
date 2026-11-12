@@ -8,7 +8,7 @@ from qa.ingest import MEASUREMENT_KINDS, ReportSummary
 
 STATUSES = ("passed", "failed", "blocked", "not_run", "inconclusive")
 ANOMALY_ORDER = ("exit_code_mismatch", "no_tests_collected", "retried_in_framework", "partial", "untested_tool_version",
-                 "network_not_isolated")
+                 "network_not_isolated", "load_limit_exceeded")
 CLEAN_ALERT_LEVELS = ("note", "none")
 
 ENV_ERROR_SIGNATURES: Tuple[str, ...] = (

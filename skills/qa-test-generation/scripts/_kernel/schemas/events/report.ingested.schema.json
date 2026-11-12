@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "execution": {"$ref": "defs.schema.json#/$defs/exe_id"},
-    "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation"]},
+    "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6"]},
     "kind": {"enum": ["tests", "alerts", "coverage", "mutants"]},
     "total": {"type": "integer", "minimum": 0, "description": "cases, alerts, (coverage) files, or mutants"},
     "totals": {"$ref": "events/execution.recorded.schema.json#/$defs/measurement_totals"},

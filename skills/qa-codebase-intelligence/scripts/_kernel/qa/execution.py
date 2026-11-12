@@ -47,13 +47,14 @@ _MAX_INPUT_BYTES = 16 * 2 ** 20
 _SCOPES = ("targeted", "full")
 _ATTEMPT_ACTIVITY = "test-execution-local"
 _DEFAULT_ACTIVITY = "static-analysis"  # allowed without authority (§12.2)
+_LOAD_TEST = "load-test"  # its grants carry max_vus, max_rps and max_duration_s (§12.2)
 _ENV_VALUE_NAMES = ("CI", "NODE_ENV")
 _STDERR_TAIL = 64 * 1024
 _MIB = 2 ** 20
 _CATEGORY = {"$ref": "defs.schema.json#/$defs/category"}
 _UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production": a real environment may hold that id
 _MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json", "lcov": "text/plain",
-                "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json"}
+                "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json", "k6": "application/json"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
 _BEFORE_INSTALL = ("volume_create", "copy_in", "control_in", None)  # where a failed pipeline stopped when no install had started; None: no step
@@ -857,8 +858,34 @@ def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
         return None
     if summary.kind == "alerts":
         return {"format": summary.format, "kind": "alerts", "alerts": len(summary.alerts), "runs": summary.runs}
-    return {"format": summary.format, "kind": "tests", "tests": summary.total, "failures": summary.failed,
-            "errors": summary.errors, "skipped": summary.skipped}
+    block = {"format": summary.format, "kind": "tests", "tests": summary.total, "failures": summary.failed,
+             "errors": summary.errors, "skipped": summary.skipped}
+    if summary.metrics:  # what a load test measured: numbers beside the verdict, never part of it
+        block.update(metrics={m.name: dict(m.values) for m in summary.metrics}, label="measured")
+    return block
+
+
+# What a load-test grant limits, and where a k6 summary says how far the run went: (limit, metric, statistic).
+_LOAD_LIMITS = (("max_vus", "vus_max", "max"), ("max_rps", "http_reqs", "rate"))
+
+
+def _load_limits_passed(run: _Run, gate: _Gate, summary: Optional[ingest.ReportSummary]) -> List[str]:
+    """Each limit of the ``load-test`` grant that covered the run and that the run's summary shows it went past.
+
+    Only a recorded grant carries limits; a run no grant covered has nothing to compare against."""
+    if summary is None or (not summary.metrics and summary.run_duration_ms is None):
+        return []
+    measured = {m.name: m.values for m in summary.metrics}
+    passed = []
+    for entry in gate.authorizations:
+        grant = run.st["authorizations"].get(entry["authorization"]) if entry["activity"] == _LOAD_TEST else None
+        limits = grant.get("limits", {}).get(_LOAD_TEST, {}) if grant is not None else {}
+        found = [(limit, "%s.%s" % (metric, stat), measured.get(metric, {}).get(stat)) for limit, metric, stat in _LOAD_LIMITS]
+        found.append(("max_duration_s", "run_duration_ms / 1000",
+                      None if summary.run_duration_ms is None else summary.run_duration_ms / 1000))
+        passed += ["%s %s > %s %s of %s" % (where, value, limit, limits[limit], entry["authorization"])
+                   for limit, where, value in found if isinstance(limits.get(limit), int) and value is not None and value > limits[limit]]
+    return passed
 
 
 # --------------------------------------------------------------------------- stages 5-9
@@ -1087,13 +1114,17 @@ def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
     stdout, stdout_redactions = run.redactor.bytes_(outcome.stdout)
     stderr, stderr_redactions = run.redactor.bytes_(outcome.stderr)
     reports = _no_reports(req) if ran.dependency_unavailable else _store_reports(run, directory, snapshot)
+    over = _load_limits_passed(run, gate, reports.summary)
+    for text in over:
+        run.note("load_limit_exceeded: " + text)
+    anomalies = ran.anomalies + (("load_limit_exceeded",) if over else ())
     verdict = status.decide(status.StatusInputs(
         spawn_error=outcome.spawn_error, shell=req.shell or req.container is not None, exit_code=outcome.exit_code,
         timed_out=outcome.timed_out, dependency_unavailable=ran.dependency_unavailable,
         report_declared=any(not ingest.is_measurement(fmt) for fmt, _pattern in req.reports),
         report_error=reports.error, summary=reports.summary,
         allow_empty=req.allow_empty, stderr_tail=stderr[-_STDERR_TAIL:].decode("utf-8", "replace"),
-        orphaned_output=outcome.orphaned_output, anomalies=ran.anomalies))
+        orphaned_output=outcome.orphaned_output, anomalies=anomalies))
     for flag, limitation in ((outcome.orphaned_output, "orphaned_output"), (outcome.stdout_dropped, "stdout_truncated"),
                              (outcome.stderr_dropped, "stderr_truncated")):
         if flag:

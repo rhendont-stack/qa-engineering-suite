@@ -123,11 +123,11 @@ def spawn_of(fake_engine, picks):
 
 def test_sequence_and_network_modes(fake_engine, spec):
     container.run(fake_engine.engine, spec)
-    assert fake_engine.networks() == ["none", "none", "none"]          # copy in, test, copy out; no install
-    assert [call[:2] for call in fake_engine.calls[:8]] == [
-        ["version", "--format"], ["volume", "create"], ["volume", "create"], ["run", "--rm"], ["create", "-i"],
+    assert fake_engine.networks() == ["none", "none", "none", "none"]  # copy in, prepare, test, copy out; no install
+    assert [call[:2] for call in fake_engine.calls[:9]] == [
+        ["version", "--format"], ["volume", "create"], ["volume", "create"], ["run", "--rm"], ["run", "--rm"], ["create", "-i"],
         ["start", "-a"], ["inspect", NAME], ["run", "--rm"]]
-    assert fake_engine.calls[5] == ["start", "-a", "-i", NAME]
+    assert fake_engine.calls[6] == ["start", "-a", "-i", NAME]
 
 
 def test_outcome_carries_what_was_observed(fake_engine, spec):
@@ -146,6 +146,42 @@ def test_copy_in_sends_the_archive_on_stdin_and_owns_nothing_from_the_host(fake_
     assert call[-5:] == [IMAGE, "-x", "--no-same-owner", "-C", "/work"] and "--entrypoint=tar" in call and "-i" in call
 
 
+def is_prepare(args):
+    return args[0] == "run" and "--entrypoint=chmod" in args
+
+
+def test_file_steps_run_as_root_and_the_tests_as_the_image_user(fake_engine, spec_install):
+    """An image may name another user for its tool (k6, ZAP, Schemathesis, squawk do): a new volume belongs to root, so
+    only a root step can unpack into it or read every file back. The tests and the install keep the image's own user."""
+    container.run(fake_engine.engine, spec_install)
+    for picks in (is_copy_in, is_prepare, is_copy_out):
+        call = next(call for call in fake_engine.calls if picks(call))
+        assert "--user=0" in call, call
+    for picks in (is_install, is_create):
+        call = next(call for call in fake_engine.calls if picks(call))
+        assert not any(arg.startswith("--user=") for arg in call), call
+
+
+def test_volumes_open_to_the_image_user_after_copy_in_and_before_anything_runs(fake_engine, spec_install):
+    container.run(fake_engine.engine, spec_install)
+    call = next(call for call in fake_engine.calls if is_prepare(call))
+    assert call[-4:] == [IMAGE, "0777", "/work", "/qa-evidence"] and "--network=none" in call and "--rm" in call
+    assert "--volume=%s:/work" % WORK in call and "--volume=%s:/qa-evidence" % EVIDENCE in call
+    assert "--name=" + NAME + "-prep" in call and spawn_of(fake_engine, is_prepare)["stdin_path"] is None
+    first = {name: next(i for i, call in enumerate(fake_engine.calls) if picks(call))
+             for name, picks in (("copy_in", is_copy_in), ("prepare", is_prepare), ("install", is_install), ("create", is_create))}
+    assert first["copy_in"] < first["prepare"] < first["install"] < first["create"]
+
+
+def test_a_failed_prepare_step_stops_the_run_and_cleans_up(fake_engine, spec):
+    fake_engine.when(is_prepare, exit_code=1)
+    with pytest.raises(QaError) as failed:
+        container.run(fake_engine.engine, spec)
+    assert failed.value.code == "container_step_failed" and failed.value.details["step"] == "prepare"
+    assert not any(is_create(call) for call in fake_engine.calls)
+    assert [call[-1] for call in fake_engine.calls if is_cleanup(call)] == [NAME + "-in", NAME + "-prep", WORK, EVIDENCE]
+
+
 def test_copy_out_reads_only_the_evidence_volume(fake_engine, spec):
     container.run(fake_engine.engine, spec)
     call = next(call for call in fake_engine.calls if is_copy_out(call))
@@ -155,7 +191,7 @@ def test_copy_out_reads_only_the_evidence_volume(fake_engine, spec):
 
 def test_install_is_the_only_step_with_a_network(fake_engine, spec_install):
     done = container.run(fake_engine.engine, spec_install)
-    assert fake_engine.networks() == ["none", "bridge", "none", "none"]
+    assert fake_engine.networks() == ["none", "none", "bridge", "none", "none"]
     assert (done.install_ran, done.install_failed) == (True, False)
     assert not any("--network=bridge" in call and "--volume=%s:/qa-evidence" % EVIDENCE in call for call in fake_engine.calls)
 
@@ -176,10 +212,10 @@ def test_timed_out_install_counts_as_failed(fake_engine, spec_install):
 def test_every_container_is_named_labelled_pinned_and_has_an_explicit_entrypoint(fake_engine, spec_install):
     container.run(fake_engine.engine, spec_install)
     calls = started(fake_engine)
-    assert len(calls) == 4
+    assert len(calls) == 5
     for call in calls:
         assert "--pull=never" in call and "--label=qa.execution=" + EXECUTION in call
-        assert [arg for arg in call if arg.startswith("--entrypoint=")] in (["--entrypoint=tar"], ["--entrypoint=sh"])
+        assert [arg for arg in call if arg.startswith("--entrypoint=")] in (["--entrypoint=tar"], ["--entrypoint=sh"], ["--entrypoint=chmod"])
         assert any(arg.startswith("--name=" + NAME) for arg in call)
     volumes = [call for call in fake_engine.calls if call[:2] == ["volume", "create"]]
     assert volumes == [["volume", "create", "--label=qa.execution=" + EXECUTION, WORK],
@@ -741,7 +777,7 @@ def run_service(fake_engine, **over):
 def test_service_and_tool_share_only_loopback(fake_engine):
     out = run_with(fake_engine)
     # copy in, the service script in, the service, the tests, copy out
-    assert fake_engine.networks() == ["none", "none", "none", "container:" + SVC, "none"]
+    assert fake_engine.networks() == ["none", "none", "none", "none", "container:" + SVC, "none"]
     service = next(call for call in fake_engine.calls if is_service(call))
     assert "--network=none" in service and "--entrypoint=sh" in service and "-i" not in service
     assert set(CONFINED) <= set(service) and service[-2:] == [SERVICE_IMAGE, "/qa-ctl/service.sh"]
@@ -770,12 +806,13 @@ def test_the_steps_come_in_order(fake_engine):
     run_with(fake_engine, install_script="pip install x")
     kinds = []
     for call in fake_engine.calls:
-        kind = ("ctl_in" if is_ctl_in(call) else "copy_in" if is_copy_in(call) else "install" if is_install(call) else
+        kind = ("ctl_in" if is_ctl_in(call) else "copy_in" if is_copy_in(call) else "prepare" if is_prepare(call) else
+                "install" if is_install(call) else
                 "service" if is_service(call) else "create" if is_create(call) else "start" if is_start(call) else
                 "service_inspect" if is_service_inspect(call) else "logs" if is_logs(call) else "copy_out" if is_copy_out(call) else None)
         if kind is not None:
             kinds.append(kind)
-    assert kinds == ["copy_in", "ctl_in", "install", "service", "create", "start", "service_inspect", "logs", "copy_out"]
+    assert kinds == ["copy_in", "prepare", "ctl_in", "install", "service", "create", "start", "service_inspect", "logs", "copy_out"]
     volumes = [call[-1] for call in fake_engine.calls if call[:2] == ["volume", "create"]]
     assert volumes == [WORK, EVIDENCE, CTL]
 
@@ -830,7 +867,8 @@ def test_the_service_user_is_passed_only_to_the_service(fake_engine):
     run_with(fake_engine, user="1000:1000")
     service = next(call for call in fake_engine.calls if is_service(call))
     assert "--user=1000:1000" in service
-    assert not any(arg.startswith("--user") for call in fake_engine.calls if not is_service(call) for arg in call)
+    others = [arg for call in fake_engine.calls if not is_service(call) for arg in call if arg.startswith("--user")]
+    assert others == ["--user=0"] * 4  # copy in, prepare, control in, copy out: the file steps run as root
 
 
 @pytest.mark.parametrize("over, field", [
@@ -893,7 +931,7 @@ def test_every_service_object_is_removed_by_exact_name(fake_engine, over):
     out = run_service(fake_engine)
     assert out.run.timed_out is bool(over) and out.cleanup_failed == ()
     targets = removed(fake_engine)
-    assert sorted(targets) == sorted([NAME + "-in", NAME + "-ctl-in", SVC, NAME, NAME + "-out", WORK, EVIDENCE, CTL])
+    assert sorted(targets) == sorted([NAME + "-in", NAME + "-prep", NAME + "-ctl-in", SVC, NAME, NAME + "-out", WORK, EVIDENCE, CTL])
     assert targets.index(SVC) < targets.index(CTL) and targets.index(SVC) < targets.index(WORK)  # a volume in use stays
     assert ["rm", "-f", SVC] in fake_engine.calls and ["volume", "rm", "-f", CTL] in fake_engine.calls
     assert not any(w in ("prune", "system", "ps", "ls", "stop") for call in fake_engine.calls for w in call)

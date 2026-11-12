@@ -46,6 +46,7 @@ class Live:
 
     def assert_nothing_left(self):
         for args in (["inspect", "--type=container", self.name], ["inspect", "--type=container", self.name + "-in"],
+                     ["inspect", "--type=container", self.name + "-prep"],
                      ["inspect", "--type=container", self.name + "-install"], ["inspect", "--type=container", self.name + "-out"],
                      ["volume", "inspect", self.name + "-work"], ["volume", "inspect", self.name + "-evidence"]):
             done = self.engine.run(args, stdin_path=None, timeout_s=60, max_bytes=1 << 20)

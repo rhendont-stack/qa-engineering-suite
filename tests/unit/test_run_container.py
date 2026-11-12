@@ -159,7 +159,7 @@ def test_untrusted_project_runs_in_a_container(ws_untrusted, actor, fake):
     assert record["isolation"] == "container"
     assert record["authorization"] == "container:local"
     assert only_the_engine_ran(fake)
-    assert fake.networks() == ["none", "none", "none"]
+    assert fake.networks() == ["none", "none", "none", "none"]
 
 
 def test_untrusted_project_still_blocked_on_the_host(ws_untrusted, actor, fake):
@@ -177,7 +177,7 @@ def test_install_needs_its_own_grant(ws_untrusted, actor, fake):
     grant_install(ws_untrusted, actor)
     allowed = run(ws_untrusted, actor, install="pip install -r requirements.txt")
     assert allowed["status"] == "passed"
-    assert fake.networks() == ["none", "bridge", "none", "none"]
+    assert fake.networks() == ["none", "none", "bridge", "none", "none"]
     record = record_of(ws_untrusted, allowed)
     assert record["container"]["install_ran"] is True
     assert [entry["activity"] for entry in record["authorizations"]] == ["test-execution-local", "install-dependencies"]
@@ -685,7 +685,7 @@ def test_service_run_records_the_pair(ws_untrusted, actor, fake):
     answer_with_a_service(fake)
     result = run_service(ws_untrusted, actor, service_user="1000:1000")
     assert (result["status"], result["reason"], result["anomalies"]) == ("passed", None, [])
-    assert fake.networks() == ["none", "none", "none", "container:qa-%s-svc" % result["execution"].lower(), "none"]
+    assert fake.networks() == ["none", "none", "none", "none", "container:qa-%s-svc" % result["execution"].lower(), "none"]
     record = record_of(ws_untrusted, result)
     assert record["container"]["network_mode"] == "none"
     assert record["container"]["service"] == {"image": SERVICE, "image_id": SERVICE_IMAGE_ID, "network_mode": "none",

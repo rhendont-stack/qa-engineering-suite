@@ -1,0 +1,2 @@
+# Spectral's own OpenAPI rules, bundled in the image: nothing is fetched.
+extends: ["spectral:oas"]

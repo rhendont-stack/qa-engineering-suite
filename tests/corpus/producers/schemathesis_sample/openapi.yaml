@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Hello
+  version: 1.0.0
+paths:
+  /hello:
+    get:
+      operationId: getHello
+      responses:
+        "200":
+          description: A greeting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Greeting"
+  /broken:
+    get:
+      operationId: getBroken
+      responses:
+        "200":
+          description: Documented as a greeting; the corpus service answers 500 instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Greeting"
+components:
+  schemas:
+    Greeting:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string

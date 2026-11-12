@@ -1,5 +1,6 @@
-"""Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0) into counted results and alerts, and coverage
-reports (LCOV, Cobertura, JaCoCo) and mutation reports (mutation-testing-report-schema JSON) into measurements."""
+"""Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0, k6 summaries) into counted results and alerts,
+and coverage reports (LCOV, Cobertura, JaCoCo) and mutation reports (mutation-testing-report-schema JSON) into
+measurements. A k6 summary's thresholds are its tests; its metrics travel beside them."""
 from __future__ import annotations
 
 import json
@@ -68,6 +69,14 @@ class Mutant:
 
 
 @dataclass(frozen=True)
+class Metric:
+    """One metric a load-test tool measured: its ``type`` (k6: counter, gauge, rate, trend) and its finite statistics."""
+    name: str
+    type: str
+    values: Dict[str, float]
+
+
+@dataclass(frozen=True)
 class ReportSummary:
     format: str
     kind: str  # tests | alerts | coverage | mutants
@@ -77,6 +86,8 @@ class ReportSummary:
     anomalies: Tuple[str, ...]
     files: Tuple[FileCoverage, ...] = ()
     mutants: Tuple[Mutant, ...] = ()
+    metrics: Tuple[Metric, ...] = ()
+    run_duration_ms: Optional[int] = None
 
     @property
     def lines_total(self) -> int:
@@ -215,6 +226,8 @@ def merge(summaries: List[ReportSummary]) -> ReportSummary:
         anomalies=tuple(anomalies),
         files=tuple(f for s in summaries for f in s.files),
         mutants=tuple(m for s in summaries for m in s.mutants),
+        metrics=tuple(m for s in summaries for m in s.metrics),
+        run_duration_ms=max((s.run_duration_ms for s in summaries if s.run_duration_ms is not None), default=None),
     )
 
 
@@ -258,15 +271,18 @@ from qa.ingest import ctrf as _ctrf  # noqa: E402  (after the models they import
 from qa.ingest import cobertura as _cobertura  # noqa: E402
 from qa.ingest import jacoco as _jacoco  # noqa: E402
 from qa.ingest import junit as _junit  # noqa: E402
+from qa.ingest import k6 as _k6  # noqa: E402
 from qa.ingest import lcov as _lcov  # noqa: E402
 from qa.ingest import mutation as _mutation  # noqa: E402
 from qa.ingest import sarif as _sarif  # noqa: E402
 
 _PARSERS = {"junit": _junit.parse, "ctrf": _ctrf.parse, "sarif": _sarif.parse, "lcov": _lcov.parse,
-            "cobertura": _cobertura.parse, "jacoco": _jacoco.parse, "mutation": _mutation.parse}
+            "cobertura": _cobertura.parse, "jacoco": _jacoco.parse, "mutation": _mutation.parse, "k6": _k6.parse}
 # What each format counts, so a request mixing kinds is refused before anything runs.
 FORMAT_KINDS = {"junit": "tests", "ctrf": "tests", "sarif": "alerts", "lcov": "coverage", "cobertura": "coverage",
-                "jacoco": "coverage", "mutation": "mutants"}
+                "jacoco": "coverage", "mutation": "mutants", "k6": "tests"}
+# Load-test summaries: their thresholds decide the run, but a load test is not the project's suite (gate.py).
+LOAD_TEST_FORMATS = ("k6",)
 # Measurement reports are numbers a tool measured. They are recorded beside a run and never decide its status.
 MEASUREMENT_KINDS = ("coverage", "mutants")
 

@@ -14,6 +14,9 @@ ENTRIES = json.loads((CORPUS / "MANIFEST.json").read_text())
 
 @pytest.mark.parametrize("entry", ENTRIES, ids=[e["file"] for e in ENTRIES])
 def test_corpus_matches_tool_console(entry):
+    if entry["kind"] == "attachment":
+        check_attachment(entry)
+        return
     s = ingest.parse_report(entry["format"], CORPUS / entry["file"], 50 * 2**20)
     if s.kind == "coverage":
         check_coverage(s, entry)
@@ -23,6 +26,15 @@ def test_corpus_matches_tool_console(entry):
         return
     got = {"total": s.total, "passed": s.passed, "failed": s.failed, "errors": s.errors, "skipped": s.skipped} if s.kind == "tests" else {"alerts": len(s.alerts), "runs": s.runs}
     assert got == entry["expected"]
+
+
+def check_attachment(entry):
+    """A tool output no parser reads (squawk's JSON, which qa-database converts to SARIF): kept as the tool wrote it, and
+    holding the number of findings the tool reported."""
+    assert entry["format"] == "squawk-json" and entry["file"].startswith("attachments/")
+    violations = json.loads((CORPUS / entry["file"]).read_text(encoding="utf-8"))
+    assert isinstance(violations, list) and all(isinstance(v, dict) and v.get("rule_name") for v in violations)
+    assert {"violations": len(violations)} == entry["expected"]
 
 
 def check_coverage(s, entry):
@@ -145,3 +157,35 @@ def test_normalize_is_idempotent_on_committed_sarif():
     n = load_producer_module("normalize.py")
     text = (CORPUS / "sarif" / "gitleaks-8.30.1.sarif").read_text(encoding="utf-8")
     assert n.normalize_text(text) == text
+
+
+IMAGES = {e["id"]: e for e in json.loads((CORPUS.parents[1] / "shared" / "policies" / "container-images.json").read_text())["images"]}
+# The domain tools' real outputs, each produced through `qa run --container` with the image pinned for it.
+NEW_CORPUS = [("sarif", "sarif/zap-2.17.0-baseline.sarif"), ("sarif", "sarif/spectral-6.17.1.sarif"),
+              ("junit", "junit/schemathesis-4.33.2-mixed.xml"), ("junit", "junit/hurl-8.1.0-mixed.xml"),
+              ("junit", "junit/oasdiff-1.37.0-breaking.xml"), ("k6", "k6/k6-2.3.0-thresholds.json")]
+
+
+@pytest.mark.parametrize("fmt,file", NEW_CORPUS, ids=[f for _fmt, f in NEW_CORPUS])
+def test_domain_corpus_parses_with_the_manifest_counts(fmt, file):
+    entry = next(e for e in ENTRIES if e["file"] == file)
+    s = ingest.parse_report(fmt, CORPUS / file, 50 * 2**20)
+    got = {"alerts": len(s.alerts), "runs": s.runs} if s.kind == "alerts" else {
+        "total": s.total, "passed": s.passed, "failed": s.failed, "errors": s.errors, "skipped": s.skipped}
+    assert (entry["format"], got) == (fmt, entry["expected"])
+    image = IMAGES[entry["producer"]]
+    assert entry["version"] == image["tool_version"] and image["image"] in entry["command"]
+    assert "qa run --container" in entry["command"] and (CORPUS / "producers").joinpath(*entry["command"].split()[1].split("/")[3:]).is_file()
+
+
+def test_zap_sarif_keeps_no_snippet():
+    """ZAP copies response text into each result's region snippet; the parser never copies a code snippet anywhere."""
+    from dataclasses import asdict
+
+    path = CORPUS / "sarif" / "zap-2.17.0-baseline.sarif"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    snippets = [loc["physicalLocation"]["region"]["snippet"]["text"] for run in raw["runs"] for result in run["results"]
+                for loc in result.get("locations", []) if loc.get("physicalLocation", {}).get("region", {}).get("snippet", {}).get("text")]
+    assert snippets  # the cookie findings quote the response header
+    kept = json.dumps([asdict(a) for a in ingest.parse_report("sarif", path, 50 * 2**20).alerts])
+    assert not any(json.dumps(text)[1:-1] in kept for text in snippets)
