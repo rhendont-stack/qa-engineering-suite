@@ -20,8 +20,8 @@ The kernel compares a k6 report with the grant that covered its run: `vus_max.ma
 
 The skill's scripts run directly, from the project root:
 
-- `python3 .claude/skills/qa-performance/scripts/k6_script.py --workload .qa/work/performance/<name>.json --max-vus N --max-duration-s S --max-rps R --out .qa/work/performance/<name>.js` writes the k6 script from `assets/k6-template.js` and the workload (`references/workload-model.md`). It refuses users or a rate above the limits, a duration that does not leave 5 seconds of the grant's for the stop, any URL, and a workload without thresholds. Pass the limits the user's grant carries, or the ones you will propose to them. It prints the path the run sees, `/work/.qa-input/performance/<name>.js`.
-- `python3 .claude/skills/qa-performance/scripts/perf_table.py --execution EXE-…` reads one recorded run through the kernel and lists its numbers with their labels (`references/labels.md`): percentiles, error rate, throughput, peak users, the threshold verdicts. A run that is not `passed` or `failed` gives `"measured": false` and no number. It writes `.qa/work/performance/perf-<EXE>.json`.
+- `python3 .claude/skills/qa-performance/scripts/k6_script.py --workload .qa/work/performance/<name>.json --max-vus N --max-duration-s S --max-rps R --out .qa/work/performance/<name>.js` writes the k6 script from `assets/k6-template.js` and the workload (`references/workload-model.md`). It refuses users or a rate above the limits, a duration that does not leave 5 seconds of the grant's for the stop, a duration above 272 seconds (the most the leg's `--timeout 300` can finish), any URL, and a workload without thresholds. Pass the limits the user's grant carries, or the ones you will propose to them. It prints the path the run sees, `/work/.qa-input/performance/<name>.js`.
+- `python3 .claude/skills/qa-performance/scripts/perf_table.py --execution EXE-…` reads one recorded run through the kernel and lists its numbers with their labels (`references/labels.md`): percentiles, error rate, throughput, peak users, the threshold verdicts. A run that is not `passed` or `failed` gives `"measured": false` and no number. A k6 summary attached to the run that the run did not produce is listed under `attested` and gives no number. It writes `.qa/work/performance/perf-<EXE>.json`.
 
 ## The images
 
@@ -50,6 +50,7 @@ python3 .claude/skills/qa-performance/scripts/qa.py --role verifier --skill qa-p
 
 - `<serve>` starts the service on `127.0.0.1:8080` from the copy at `/work`, in the foreground, as the project's README or entry point says, for example `cd /work && exec python3 -m orders_api.server --host 127.0.0.1 --port 8080`. Add the service's own options for the data volume the objective is about (for example `--preload 1000`), never a change to its code.
 - `<script>` is the name `k6_script.py` wrote. Nothing else in the line changes.
+- `--timeout 300` ends the whole run: the container's set-up, the service's start, the `sleep 3`, k6 and its summary. A run ended there is `inconclusive`, `timeout`, with no summary, so `k6_script.py` refuses more than 272 seconds of load. For a longer question, run shorter workloads one after the other.
 - The script refuses a `BASE_URL` that is not `http://127.0.0.1:<port>`.
 - k6 exits 99 when a threshold is crossed (with `abortOnFail`, as soon as it is): the run is `failed`, and the crossed threshold is the failing test. A run that finished with every threshold held is `passed`.
 - Run a workload twice, one run after the other and never beside another run, before comparing it with anything: one run is one sample.
@@ -60,10 +61,11 @@ python3 .claude/skills/qa-performance/scripts/qa.py --role verifier --skill qa-p
 |---|---|---|
 | `blocked`, `not_authorized` | No `load-test` grant covers the run, or a limit is missing | "The k6 run was not run: it needs your approval of a load test (EXE-…)", and the sentence it needs: the service, at most N users, R requests a second, S seconds |
 | `blocked`, `dependency_unavailable`, limitation `container_engine_unavailable` | No container engine answered | "The k6 run was blocked: no container engine on this machine (EXE-…)". No number, no estimate of a percentile |
-| `blocked`, `container_image_missing` | The pinned image is not on the machine; the kernel never pulls | The image the user would need, by digest |
+| `blocked`, `dependency_unavailable`, limitation `container_image_missing` | The pinned image is not on the machine; the kernel never pulls | The image the user would need, by digest |
 | `blocked`, `policy_denied` | The guard refused the command | Read the reason; never rewrite the command to slip past it |
 | `failed` | k6 ran and a threshold was crossed (or the service did not answer) | The crossed objective and the numbers, from `perf_table.py`, with the EXE |
 | `passed` | k6 ran and every threshold held | The numbers, from `perf_table.py`, with the EXE and their labels |
+| `inconclusive`, `timeout` | The run passed the leg's `--timeout 300`; no summary | That it ran out of time, with the EXE; no number. A shorter workload next |
 | anomaly `load_limit_exceeded` | The run went past a limit of its grant | Say so first, with the limit; the run's numbers stand, and the next run stays within the grant |
 
 A blocked run measured nothing. What you read in the code (a loop over every order, a missing page size) is a lead, labelled `estimated` where it carries a number, and never a percentile.

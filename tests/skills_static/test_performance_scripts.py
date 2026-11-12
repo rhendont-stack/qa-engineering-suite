@@ -100,6 +100,22 @@ def test_a_script_for_the_load_objective_meets_the_graders_reading(tmp_path):
     assert grade.script_problems(text) == [] and '"maxVUs": 20' in text and '"rate": 25' in text
 
 
+def test_a_workload_the_documented_leg_cannot_finish_is_refused_whatever_the_grant(tmp_path):
+    """The leg's --timeout 300 also holds its sleep 3, the 5 s stop and 20 s for the container: 272 s of load at most."""
+    root = project(tmp_path)
+    wide = ["--max-vus", "20", "--max-duration-s", "4000", "--max-rps", "25"]
+    tools = (SKILL / "references" / "tools.md").read_text(encoding="utf-8")
+    leg = re.search(r"^```qa-leg k6 [^\n]*\n(.*?)\n```$", tools, re.M | re.S).group(1)
+    assert "--timeout 300 " in leg and "'sleep 3; k6 run " in leg
+    code, out = script(root, "--workload", write_workload(root, objective_workload(duration_s=272)), *wide, "--out", OUT)
+    assert code == 0 and out["limits"]["max_leg_duration_s"] == 272, out
+    for duration in (273, 3600):
+        code, out = script(root, "--workload", write_workload(root, objective_workload(duration_s=duration)), *wide,
+                           "--out", ".qa/work/performance/long.js")
+        assert (code, out["ok"]) == (2, False) and "--timeout 300" in out["error"], (duration, out)
+        assert not (root / ".qa" / "work" / "performance" / "long.js").exists()
+
+
 REFUSED = [
     ("vus-over", objective_workload(vus=21), "above --max-vus"),
     ("duration-over", objective_workload(duration_s=86), "--max-duration-s"),
@@ -264,20 +280,40 @@ def test_a_run_with_a_k6_report_is_listed_with_labels_simulated_on_a_local_class
     assert written["rows"] == out["rows"]
 
 
-def test_an_ingested_summary_is_read_and_a_blocked_run_measures_nothing(qa_on_fixture):
+def test_an_attested_summary_is_never_the_run_s_numbers_and_a_blocked_run_measures_nothing(qa_on_fixture):
+    """A k6 summary attached to a run that did not produce it is ``attested``: no row, no label, no threshold, no EXE."""
     fixture = qa_on_fixture("rest-api")
     code, ran = fixture.cli("run", "--", sys.executable, "-c", "pass")
     assert ran["status"] == "passed", ran
     (fixture.root / "later.json").write_text(json.dumps(summary()))
     code, ingested = fixture.cli("ingest", "k6", "later.json", "--from", ran["execution"])
-    assert code == 0, ingested
+    assert code == 0 and ingested["strength"] == "attested", ingested
     code, out = table(fixture.root, ran["execution"])
-    assert code == 0 and out["measured"] is True and out["source"].startswith("the k6 summary ingested/"), out
-    assert {(r["metric"], r["stat"]): r["value"] for r in out["rows"]}[("http_req_duration", "p(95)")] == 143.2
+    assert code == 0 and out["measured"] is False and out["rows"] == [] and "thresholds" not in out, out
+    assert len(out["attested"]) == 1 and out["attested"][0].startswith("ingested/") and "attested" in out["why"], out
+    written = json.loads((fixture.root / ".qa" / "work" / "performance" / ("perf-%s.json" % ran["execution"])).read_text(encoding="utf-8"))
+    assert written["measured"] is False and written["rows"] == []
     code, blocked = fixture.cli("run", "--container", "grafana/k6@sha256:" + "0" * 64, "--shell", "--", "k6 run x.js")
     assert blocked["status"] == "blocked", blocked
     code, out = table(fixture.root, blocked["execution"])
     assert code == 0 and out["measured"] is False and out["rows"] == [] and "blocked" in out["why"], out
+
+
+def test_a_structured_ingest_of_the_run_s_own_report_is_read_beside_it(qa_on_fixture):
+    """The run's own stored report, attached again, is ``structured`` (its evidence manifest lists it): it stays the run's."""
+    fixture = qa_on_fixture("rest-api")
+    (fixture.root / "summary.json").write_text(json.dumps(summary(thresholds_ok=False, p95=230.0)))
+    code, ran = fixture.cli("run", "--category", "performance", "--report", "k6:{evidence}/k6-summary.json", "--", sys.executable, "-c", COPY,
+                            "summary.json", "{evidence}/k6-summary.json")
+    assert ran["status"] == "failed", ran
+    stored = fixture.root / ".qa" / "evidence" / ran["execution"] / "reports" / "k6-summary.json"
+    (fixture.root / "own.json").write_bytes(stored.read_bytes())
+    code, ingested = fixture.cli("ingest", "k6", "own.json", "--from", ran["execution"])
+    assert code == 0 and ingested["strength"] == "structured", ingested
+    code, out = table(fixture.root, ran["execution"])
+    assert code == 0 and out["measured"] is True and out["attested"] == [], out
+    assert {(r["metric"], r["stat"]): (r["value"], r["label"]) for r in out["rows"]}[("http_req_duration", "p(95)")] == (230.0, "simulated")
+    assert out["thresholds"] == [{"metric": "http_req_duration", "threshold": "p(95)<200", "ok": False}]
 
 
 @pytest.mark.parametrize("execution", ["x", "EXE-1", "EXE-01AAAAAAAAAAAAAAAAAAAAAAAA; ls", "EXE-01AAAAAAAAAAAAAAAAAAAAAAAA"])
@@ -289,15 +325,16 @@ def test_an_unknown_or_malformed_execution_is_refused(qa_on_fixture, execution):
 
 def test_a_stored_summary_reached_through_a_link_is_not_read(qa_on_fixture, tmp_path):
     fixture = qa_on_fixture("rest-api")
-    code, ran = fixture.cli("run", "--", sys.executable, "-c", "pass")
-    (fixture.root / "later.json").write_text(json.dumps(summary()))
-    code, ingested = fixture.cli("ingest", "k6", "later.json", "--from", ran["execution"])
-    assert code == 0, ingested
-    folder = fixture.root / ".qa" / "evidence" / ran["execution"] / "ingested"
-    stored = next(p for p in folder.iterdir() if p.is_file())
+    (fixture.root / "summary.json").write_text(json.dumps(summary(thresholds_ok=False, p95=230.0)))
+    code, ran = fixture.cli("run", "--category", "performance", "--report", "k6:{evidence}/k6-summary.json", "--", sys.executable, "-c", COPY,
+                            "summary.json", "{evidence}/k6-summary.json")
+    assert ran["status"] == "failed", ran
+    stored = fixture.root / ".qa" / "evidence" / ran["execution"] / "reports" / "k6-summary.json"
     elsewhere = tmp_path / "elsewhere.json"
-    elsewhere.write_text(json.dumps(summary(p95=999.0)))
+    elsewhere.write_text(json.dumps(summary(p95=999.0, thresholds_ok=True)))
     os.replace(str(stored), str(tmp_path / "moved.json"))
     stored.symlink_to(elsewhere)
     code, out = table(fixture.root, ran["execution"])
-    assert code == 0 and out["measured"] is False and out["rows"] == [], out
+    # the numbers are the record's own (the kernel read them at the run); the linked file gives no threshold verdict
+    assert code == 0 and out["measured"] is True and out["thresholds"] == [], out
+    assert {(r["metric"], r["stat"]): r["value"] for r in out["rows"]}[("http_req_duration", "p(95)")] == 230.0

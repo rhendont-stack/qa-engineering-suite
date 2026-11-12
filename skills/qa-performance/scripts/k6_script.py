@@ -21,6 +21,9 @@ any other; ``handleSummary`` writes the whole summary to ``__ENV.SUMMARY_PATH``.
 Refused (one JSON line with ``"ok": false``, exit 2, nothing written):
 
 * ``vus`` above ``--max-vus``; ``duration_s`` plus 5 seconds (the stop and k6's start) above ``--max-duration-s``;
+  ``duration_s`` above 272 seconds, which the k6 leg of ``references/tools.md`` cannot finish: its ``--timeout 300`` also
+  holds the leg's ``sleep 3``, the 5-second stop and 20 seconds for the container, the service and the summary, and a run
+  the kernel ends at its timeout is ``inconclusive`` with no summary;
 * with ``--max-rps``: an open ``rate_per_s`` above it, or a closed workload whose ``vus / think_time_s`` (the most requests a
   second it can send) is above it;
 * any URL (``scheme://``) or protocol-relative path anywhere in the workload, a path that does not start with one ``/``, a
@@ -53,6 +56,10 @@ WORK = (".qa", "work", "performance")
 MAX_WORKLOAD = 64 * 1024
 STOP_S = 2
 MARGIN_S = 5            # the graceful stop plus k6's own start and end, kept out of the grant's duration
+LEG_TIMEOUT_S = 300     # the k6 leg's --timeout (references/tools.md): the kernel ends the whole run there, inconclusive
+LEG_SLEEP_S = 3         # the leg's "sleep 3" before k6 starts, while the service comes up
+CUSHION_S = 20          # the container's set-up, the service's start and the summary's write, inside the same timeout
+MAX_LEG_DURATION_S = LEG_TIMEOUT_S - CUSHION_S - LEG_SLEEP_S - MARGIN_S
 MAX_REQUESTS = 20
 MAX_BODY = 16 * 1024
 MAX_DEPTH = 6           # workload > requests > request > headers, and a request body object two levels deep
@@ -270,6 +277,10 @@ def workload(doc: Dict[str, Any], max_vus: int, max_duration_s: int, max_rps: Op
     duration_s = integer(doc, "duration_s", 1, 86400)
     if duration_s + MARGIN_S > max_duration_s:
         raise Refused("duration_s %d plus %d seconds for the stop is above --max-duration-s %d" % (duration_s, MARGIN_S, max_duration_s))
+    if duration_s > MAX_LEG_DURATION_S:
+        raise Refused("duration_s %d is above %d: the k6 leg's --timeout %d must also hold its %d s sleep, the %d s stop and %d s for "
+                      "the container and the service, or the kernel ends the run inconclusive with no summary; shorten it"
+                      % (duration_s, MAX_LEG_DURATION_S, LEG_TIMEOUT_S, LEG_SLEEP_S, MARGIN_S, CUSHION_S))
     timeout_s = integer(dict(request_timeout_s=doc.get("request_timeout_s", 10)), "request_timeout_s", 1, 60)
     if model == "closed":
         if "rate_per_s" in doc:
@@ -341,7 +352,8 @@ def main(argv: Sequence[str]) -> int:
         return 2
     print(json.dumps({"ok": True, "written": written, "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
                       "input": "/work/.qa-input/performance/" + PurePosixPath(written).name, "workload": shape,
-                      "limits": {"max_vus": args.max_vus, "max_duration_s": args.max_duration_s, "max_rps": args.max_rps}},
+                      "limits": {"max_vus": args.max_vus, "max_duration_s": args.max_duration_s, "max_rps": args.max_rps,
+                                 "max_leg_duration_s": MAX_LEG_DURATION_S}},
                      sort_keys=True))
     return 0
 

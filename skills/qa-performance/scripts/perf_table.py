@@ -7,8 +7,11 @@ from a file someone could have written. Only a run whose status is ``passed`` or
 status the table says so (``"measured": false`` and why) and holds no number.
 
 The numbers come from the k6 report the run stored (the execution's ``report.metrics``, which the kernel read from the
-summary) or, for a run with none, from a k6 summary attached to it later with ``qa ingest k6 FILE --from EXE`` (read under
-``.qa/evidence/<EXE>/``, never through a link, at most 16 MiB). Each row is labelled:
+summary) or, for a run with none, from a k6 summary attached to it later with ``qa ingest k6 FILE --from EXE`` whose
+``strength`` the kernel recorded as ``structured``: a file the run's own evidence manifest lists, so the run produced it
+(read under ``.qa/evidence/<EXE>/``, never through a link, at most 16 MiB). A summary the kernel recorded as ``attested`` (a
+file the run did not produce, attached after it) is never read as the run's numbers: it is listed under ``attested`` and
+gives no row, no label and no threshold verdict. Each row is labelled:
 
 * ``measured``: read from the report of a run in an environment of class ``staging`` or ``production``;
 * ``simulated``: read from the report of a run in a class below ``staging`` (``local``, ``ci``, ``ephemeral``,
@@ -115,12 +118,18 @@ def summary_of(data: Optional[bytes]) -> Optional[Dict[str, Any]]:
     return doc if isinstance(doc, dict) and isinstance(doc.get("metrics"), dict) else None
 
 
-def k6_files(record: Dict[str, Any]) -> List[str]:
-    """The k6 summaries the run stored, then those ingested into it, latest last."""
+def k6_files(record: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """``(the k6 summaries backed by the run, latest last; the attested ones)``. Backed: the reports the run stored, and the
+    summaries ingested into it whose recorded ``strength`` is ``structured`` (its own evidence manifest lists the file).
+    Any other ingested summary, ``attested`` or with no strength recorded, is not the run's."""
     files = [str(f) for r in record.get("reports") or [] if isinstance(r, dict) and r.get("format") == "k6" and not r.get("error")
              for f in r.get("files") or [] if isinstance(f, str)]
-    files += [str(i.get("file")) for i in record.get("ingested") or [] if isinstance(i, dict) and i.get("format") == "k6" and i.get("file")]
-    return files
+    attested = []
+    for item in record.get("ingested") or []:
+        if not (isinstance(item, dict) and item.get("format") == "k6" and isinstance(item.get("file"), str) and item["file"]):
+            continue
+        (files if item.get("strength") == "structured" else attested).append(item["file"])
+    return files, attested
 
 
 def metrics_of(record: Dict[str, Any], summaries: List[Tuple[str, Dict[str, Any]]]) -> Tuple[Optional[Dict[str, Dict[str, Any]]], str]:
@@ -191,11 +200,20 @@ def table(root: Path, execution: str) -> Dict[str, Any]:
     if status not in ("passed", "failed"):
         out.update(measured=False, why="a %s run measured nothing%s" % (status, (": " + str(reason)) if reason else ""), rows=[])
         return out
-    summaries = [(name, doc) for name in k6_files(record) for doc in [summary_of(read_evidence(root, execution, name))] if doc is not None]
+    backed, attested = k6_files(record)
+    out["attested"] = [name[:200] for name in attested]
+    summaries = [(name, doc) for name in backed for doc in [summary_of(read_evidence(root, execution, name))] if doc is not None]
     metrics, source = metrics_of(record, summaries)
     label, note = label_for(record)
     if metrics is None or label is None:
-        out.update(measured=False, why="no k6 metrics in the run's record or its stored summaries" if metrics is None else note, rows=[])
+        if metrics is None:
+            why = "no k6 metrics in the run's record or in a summary the run produced"
+            if attested:
+                why += ("; the k6 summaries attached to it (%s) are attested, not the run's: the kernel did not find them in its "
+                        "evidence manifest" % ", ".join(out["attested"][:5]))
+        else:
+            why = note
+        out.update(measured=False, why=why, rows=[])
         return out
     out.update(measured=True, source=source, environment_class=record["environment"]["class"], label_note=note,
                rows=rows_of(metrics, label, execution), thresholds=threshold_verdicts(summaries))

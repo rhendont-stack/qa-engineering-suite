@@ -17,6 +17,9 @@ Every number in an answer about performance carries one of four labels, in the s
 - **A comparison needs two labelled numbers of one kind.** Measured against measured, simulated against simulated, from runs of one workload. A difference smaller than the gap between two repeats of one run is noise.
 - **Simulated is not a weaker word for measured.** It says what the number stands in for. "The local copy held p(95) under 200 ms at 20 users (simulated, EXE-…)" says nothing yet about production at 20 users.
 - **Derived numbers name their inputs.** "Throughput 38 requests a second" is `measured` or `simulated` when it is k6's `http_reqs.rate`, `derived` when you computed it.
+- **The workload's own numbers are simulated load.** Users, a rate, seconds, think time and the data volume you set are what k6 will send, not results: k6's virtual users are simulated users. Write them once, on the answer's `Workload` line, as "(simulated load, not a measurement)", and keep them off the `Objectives` line unless they are part of an objective ("p95 under 200 ms at 20 users").
+- **The record's `measured` is the kernel's word, not the answer's.** The kernel's `report.label` on an execution is `measured` whenever the run's report carries metrics, whatever the environment's class. The answer uses `perf_table.py`'s label, which reads the class: a run on `local` is `simulated`.
+- **An attested summary is no run's number.** A k6 summary attached to a run after it, which the run did not produce (`perf_table.py` lists it under `attested`), gives no row and no label. Only the run's own report, or a summary its evidence manifest lists (`structured`), does.
 
 ## Verdicts
 
