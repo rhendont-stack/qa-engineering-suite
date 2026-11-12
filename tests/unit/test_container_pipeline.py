@@ -868,6 +868,19 @@ def test_a_service_that_cannot_start_is_a_step_failure(fake_engine):
     assert SVC in targets and CTL in targets
 
 
+def test_a_service_gone_before_the_tests_start_is_a_step_failure(fake_engine):
+    service_daemon(fake_engine)
+    fake_engine.when(is_service_inspect, stdout=service_inspected(running=False, code=1))
+    fake_engine.when(is_start, exit_code=125, stderr=b"Error response from daemon: cannot join network of a non running container\n")
+    fake_engine.when(lambda args: args == ["inspect", NAME], stdout=inspected(status="created"))
+    with pytest.raises(QaError) as failed:
+        run_service(fake_engine)
+    assert failed.value.code == "container_step_failed" and failed.value.details["step"] == "start"
+    assert not any(is_copy_out(call) for call in fake_engine.calls)
+    targets = removed(fake_engine)
+    assert SVC in targets and CTL in targets and NAME in targets and WORK in targets
+
+
 def removed(fake_engine):
     return [call[-1] for call in fake_engine.calls if is_cleanup(call)]
 

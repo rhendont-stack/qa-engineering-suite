@@ -244,24 +244,31 @@ def _check_service_request(req: RunRequest) -> None:
 
 
 def _refused_input(index: int, why: str) -> QaError:
-    return QaError("input_refused", "an input must be a regular file under .qa/work/, reached through real directories only; "
-                   "at most %d of them and %d bytes in all" % (_MAX_INPUTS, _MAX_INPUT_BYTES), index=index, why=why)
+    return QaError("input_refused", "an input must be a regular file under .qa/work/, reached through real directories only, "
+                   "named once; at most %d of them and %d bytes in all" % (_MAX_INPUTS, _MAX_INPUT_BYTES), index=index, why=why)
 
 
 def _read_inputs(ws: Workspace, req: RunRequest) -> Tuple[_Input, ...]:
     """Each input, checked and read once, before anything runs or is recorded.
 
-    The path is read as written, relative to the workspace root: ``.qa/work/`` spelled exactly, no empty, ``.`` or ``..``
-    part. Every directory on the way is checked with ``lstat`` and the file is opened without following a link, so a link
-    at any depth, including a link to the workspace itself, never leads elsewhere."""
+    The path is read as written, relative to the workspace root: ``.qa/work/`` spelled exactly, with no empty, ``.`` or
+    ``..`` part and no NUL, and each path at most once. Then each component in turn is checked with ``lstat`` (a link
+    anywhere is refused; directories above, a regular file last), and the file is opened once with ``O_NOFOLLOW`` and read
+    from that descriptor: what is hashed is what is packed. The walk and the open are separate lookups, so the check
+    holds against what was on disk, not against a process on this host rewriting ``.qa/work/`` at the same moment; such a
+    writer already owns the workspace and is out of scope."""
     if len(req.inputs) > _MAX_INPUTS:
         raise _refused_input(_MAX_INPUTS, "too_many")
     found: List[_Input] = []
+    seen: Set[str] = set()
     total = 0
     for index, text in enumerate(req.inputs):
-        parts = text.split("/") if isinstance(text, str) and _encodable(text) else []
+        parts = text.split("/") if isinstance(text, str) and _encodable(text) and "\x00" not in text else []
         if len(parts) <= len(_INPUT_ROOT) or parts[:len(_INPUT_ROOT)] != _INPUT_ROOT or any(part in ("", ".", "..") for part in parts):
             raise _refused_input(index, "not_under_qa_work")
+        if text in seen:  # two reads of one file could differ, and only the last would be packed
+            raise _refused_input(index, "duplicate")
+        seen.add(text)
         here = str(ws.root)
         for depth, part in enumerate(parts, 1):
             here = os.path.join(here, part)

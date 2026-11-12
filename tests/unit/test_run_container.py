@@ -745,6 +745,20 @@ def test_a_service_the_engine_lacks_blocks_and_records_the_request(ws_untrusted,
         "image": SERVICE, "image_id": None, "network_mode": None, "running_at_end": False, "exit_code": None}
 
 
+def test_a_service_gone_before_the_tests_start_is_blocked(ws_untrusted, actor, fake):
+    answer_with_a_service(fake)
+    fake.when(is_service_inspect, stdout=service_inspected(running=False, code=1))
+    fake.when(is_start, exit_code=125, stderr=b"Error response from daemon: cannot join network of a non running container\n")
+    fake.when(lambda args: is_inspect(args) and not is_service_inspect(args), stdout=inspected(status_text="created"))
+    result = run_service(ws_untrusted, actor)
+    assert (result["status"], result["reason"], result["strength"]) == ("blocked", "dependency_unavailable", None)
+    assert any("container_step_failed" in text and "start" in text and "remedy" in text for text in result["limitations"])
+    removed = [call[-1] for call in fake.calls if is_remove(call)]
+    name = "qa-" + result["execution"].lower()
+    assert name + "-svc" in removed and name + "-ctl" in removed
+    assert calls_like(fake, is_copy_out) == [] and record_of(ws_untrusted, result)["exit_code"] is None
+
+
 def test_input_outside_qa_work_is_refused(ws, tmp_path, actor, fake):
     outside = tmp_path / "outside.txt"
     outside.write_bytes(b"HOST-FILE")
@@ -783,6 +797,24 @@ def test_inputs_past_the_caps_are_refused(ws, actor, fake):
     with pytest.raises(QaError) as refused:
         run(ws, actor, inputs=(".qa/work/half-a", ".qa/work/half-b"))
     assert (refused.value.details["index"], refused.value.details["why"]) == (1, "too_large")
+    assert ledger_events(ws) == [] and fake.calls == []
+
+
+def test_an_input_path_with_a_nul_is_refused(ws, actor, fake):
+    put(ws, ".qa/work/f")
+    for bad in (".qa/work/f\x00", ".qa/work/\x00/f", "\x00"):
+        with pytest.raises(QaError) as refused:
+            run(ws, actor, inputs=(".qa/work/f", bad))
+        assert (refused.value.code, refused.value.details["index"], refused.value.details["why"]) == ("input_refused", 1, "not_under_qa_work")
+    assert ledger_events(ws) == [] and fake.calls == []
+
+
+def test_an_input_named_twice_is_refused(ws, actor, fake):
+    put(ws, ".qa/work/a")
+    put(ws, ".qa/work/b")
+    with pytest.raises(QaError) as refused:
+        run(ws, actor, inputs=(".qa/work/a", ".qa/work/b", ".qa/work/a"))
+    assert (refused.value.code, refused.value.details["index"], refused.value.details["why"]) == ("input_refused", 2, "duplicate")
     assert ledger_events(ws) == [] and fake.calls == []
 
 
@@ -869,17 +901,20 @@ def test_an_attempt_keeps_to_the_service_of_the_run_it_repeats(ws_untrusted, act
     assert (alone["status"], alone["reason"]) == ("blocked", "policy_denied")
 
 
-def test_cli_passes_the_service_and_inputs(cli, ws_untrusted):
-    # The launcher runs in its own process, past the fake: no engine holds these made-up digests, so the run is blocked,
-    # and its command.json still says what was asked.
+def test_cli_passes_the_service_and_inputs(cli, ws_untrusted, tmp_path):
+    # The launcher runs in its own process, past the fake. Its PATH holds no engine client, so no engine is ever reached:
+    # the run is blocked as container_engine_unavailable, and its command.json still says what was asked.
+    no_engine = tmp_path / "no-engine-on-this-path"
+    no_engine.mkdir()
     put(ws_untrusted, ".qa/work/plan.yaml", b"p\n")
     code, body = cli("run", "--service-run=" + SERVE, "--", "pytest")
     assert (code, body["error"]["code"]) == (2, "service_needs_container")
     code, body = cli("run", "--input=.qa/work/plan.yaml", "--", "pytest")
     assert (code, body["error"]["code"]) == (2, "input_needs_container")
     code, body = cli("run", "--container=" + IMAGE, "--service=" + SERVICE, "--service-run=" + SERVE, "--service-user=1000:1000",
-                     "--input=.qa/work/plan.yaml", "--", "true")
+                     "--input=.qa/work/plan.yaml", "--", "true", env={"PATH": str(no_engine)})
     assert (code, body["status"], body["reason"]) == (3, "blocked", "dependency_unavailable"), body
+    assert any(text.startswith("container_engine_unavailable") for text in body["limitations"]), body["limitations"]
     stored = loads(ws_untrusted.path("evidence", body["execution"], "command.json").read_bytes())
     assert (stored["service"], stored["service_user"], [entry["path"] for entry in stored["inputs"]]) == (
         SERVICE, "1000:1000", [".qa/work/plan.yaml"])
