@@ -398,10 +398,10 @@
       "match": {"program": ["zap-baseline.py"]}
     },
     {
-      "id": "zap-af-extra-plan",
+      "id": "zap-af-other-argument",
       "effect": "require_grant:dast-active",
-      "reason": "A ZAP command line that names a plan other than the baseline plan runs that plan, which may attack; it needs a dast-active grant per target (§12.2, §12.3).",
-      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "args_regex": "^(?!/work/\\.qa-input/security/zap-baseline\\.yaml$).*\\.ya?ml$"}
+      "reason": "Only the exact arguments of the suite's baseline ZAP invocation run passively; any other argument (another plan, a quick-scan target, a configuration, script or add-on option) may attack or load other behaviour, so it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "args_regex": "^(?!(-cmd|-notel|-autorun|/work/\\.qa-input/security/zap-baseline\\.yaml)$)"}
     },
     {
       "id": "zap-af-baseline",
@@ -559,8 +559,14 @@
     {
       "id": "osv-scanner-offline",
       "effect": "require_grant:data-egress",
-      "reason": "OSV-Scanner sends the dependency list to a third-party service unless it runs offline against a local database; it then needs a data-egress grant (§12.2).",
-      "match": {"program": ["osv-scanner"], "unless_args": ["--offline", "--offline-vulnerabilities"]}
+      "reason": "OSV-Scanner sends the dependency list to a third-party service unless --offline disables every feature that needs the network; --offline-vulnerabilities alone still resolves transitive dependencies online, so it needs a data-egress grant (§12.2).",
+      "match": {"program": ["osv-scanner"], "unless_args": ["--offline"]}
+    },
+    {
+      "id": "osv-scanner-offline-value",
+      "effect": "require_grant:data-egress",
+      "reason": "An offline flag given an explicit value can switch offline mode back off (the last value wins), so the command needs a data-egress grant (§12.2).",
+      "match": {"program": ["osv-scanner"], "args_regex": "^-{1,2}offline(-vulnerabilities)?="}
     },
     {
       "id": "network-download",

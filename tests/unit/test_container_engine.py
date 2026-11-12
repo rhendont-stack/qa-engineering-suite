@@ -314,6 +314,7 @@ def test_every_catalog_image_is_pinned_for_amd64():
     for entry in tools:
         assert isinstance(entry["size_bytes"], int) and entry["size_bytes"] > 0, entry["id"]
         assert entry["tool_version"] and entry["tag"], entry["id"]
+        assert not entry["tool_version"].startswith("v"), entry["id"]
         assert not entry["tag"].endswith(":latest") and "latest" not in entry["tag"].split(":")[-1], entry["id"]
 
 

@@ -21,7 +21,8 @@
             "items": {"type": "string", "pattern": "^linux/[a-z0-9]+(/v[0-9]+)?$"}
           },
           "tool_version": {"type": "string", "minLength": 1},
-          "size_bytes": {"type": "integer", "minimum": 1}
+          "size_bytes": {"type": "integer", "minimum": 1},
+          "notes": {"type": "string", "minLength": 1}
         },
         "required": ["id", "tag", "image", "platforms"],
         "additionalProperties": false

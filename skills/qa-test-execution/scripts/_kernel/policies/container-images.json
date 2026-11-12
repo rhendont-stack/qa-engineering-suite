@@ -55,7 +55,7 @@
       "tag": "tufin/oasdiff:v1.37.0",
       "image": "tufin/oasdiff@sha256:ff02af37a254b5199b9d72e7bba93dae5837a9119d59459168d1398893b47aea",
       "platforms": ["linux/amd64", "linux/arm64"],
-      "tool_version": "v1.37.0",
+      "tool_version": "1.37.0",
       "size_bytes": 17368524
     },
     {
@@ -112,6 +112,7 @@
       "image": "grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8",
       "platforms": ["linux/amd64", "linux/arm64"],
       "tool_version": "2.3.0",
+      "notes": "k6 run takes --no-usage-report (a flag of the run command, not of k6 or version); K6_NO_USAGE_REPORT=true is the environment form. Outbound reports cannot leave a network-none container either way.",
       "size_bytes": 36137604
     }
   ]

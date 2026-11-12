@@ -556,6 +556,12 @@ NEW_CASE_IDS = (
     "zap-baseline-plan", "zap-other-plan", "zap-plan-without-target-in-argv", "zap-without-a-plan-is-active", "zap-baseline-plus-other-plan-is-active",
     "schemathesis-baseline-phases", "schemathesis-default-phases-is-active", "schemathesis-two-token-phases-is-active",
     "schemathesis-baseline-plus-other-phases-is-active", "osv-offline", "osv-online",
+    "zap-baseline-plus-plan-of-other-suffix-is-active", "zap-baseline-plus-plan-in-capitals-is-active",
+    "zap-baseline-plus-quick-scan-target-is-active", "zap-baseline-plus-config-option-is-active",
+    "zap-baseline-plus-script-option-is-active", "zap-baseline-plus-addon-option-is-active",
+    "zap-x-launcher-with-baseline-is-passive", "zap-bare-launcher-is-active", "osv-offline-vulnerabilities-only-needs-egress",
+    "osv-offline-switched-off-by-value", "osv-offline-vulnerabilities-switched-off-by-value",
+    "osv-offline-with-explicit-true-needs-egress",
     "k6-base-url-loopback", "k6-base-url-other-host", "spectral-lint", "oasdiff-breaking",
 )
 NEW_CASES = [c for c in CASES if c["id"] in NEW_CASE_IDS]
@@ -571,6 +577,18 @@ NEW_EXPECTED = {
     "schemathesis-two-token-phases-is-active": ("require_grant", ("dast-active",), ("127.0.0.1",)),
     "schemathesis-baseline-plus-other-phases-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
     "osv-offline": ("allow", (), ()),
+    "zap-baseline-plus-plan-of-other-suffix-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-plan-in-capitals-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-quick-scan-target-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-config-option-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-script-option-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-addon-option-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-bare-launcher-is-active": ("require_grant", ("dast-active",), ()),
+    "zap-x-launcher-with-baseline-is-passive": ("require_grant", ("dast-passive",), ()),
+    "osv-offline-vulnerabilities-only-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-switched-off-by-value": ("require_grant", ("data-egress",), ()),
+    "osv-offline-vulnerabilities-switched-off-by-value": ("require_grant", ("data-egress",), ()),
+    "osv-offline-with-explicit-true-needs-egress": ("require_grant", ("data-egress",), ()),
     "osv-online": ("require_grant", ("data-egress",), ()),
     "k6-base-url-loopback": ("require_grant", ("load-test",), ("127.0.0.1",)),
     "k6-base-url-other-host": ("require_grant", ("load-test",), ("192.0.2.5",)),
@@ -580,7 +598,7 @@ NEW_EXPECTED = {
 
 
 def test_the_new_cases_are_all_in_the_corpus():
-    assert [c["id"] for c in NEW_CASES] == list(NEW_CASE_IDS) and set(NEW_EXPECTED) == set(NEW_CASE_IDS)
+    assert sorted(c["id"] for c in NEW_CASES) == sorted(NEW_CASE_IDS) and set(NEW_EXPECTED) == set(NEW_CASE_IDS)
 
 
 @pytest.mark.parametrize("case", NEW_CASES, ids=[c["id"] for c in NEW_CASES])
@@ -624,12 +642,27 @@ def test_any_other_schemathesis_phase_choice_is_active(ws, args):
     assert d.required_activities == ("test-execution-local", "dast-active")
 
 
-def test_osv_scanner_needs_data_egress_unless_it_runs_offline(ws):
+def test_osv_scanner_needs_data_egress_unless_it_runs_fully_offline(ws):
     assert classify(["osv-scanner", "scan", "source", "."], ws).required_activities == ("test-execution-local", "data-egress")
-    for flag in ("--offline", "--offline-vulnerabilities"):
-        assert classify(["osv-scanner", "scan", "source", flag, "."], ws).required_activities == ("test-execution-local",)
-    assert classify(["osv-scanner", "scan", "source", "--offline-vulnerabilities", "."], ws, activity="static-analysis").decision == "allow"
+    assert classify(["osv-scanner", "scan", "source", "--offline", "."], ws).required_activities == ("test-execution-local",)
+    assert classify(["osv-scanner", "scan", "source", "--offline", "."], ws, activity="static-analysis").decision == "allow"
+    # the vulnerability lookup alone is offline; manifest resolution still reaches the network
+    assert classify(["osv-scanner", "scan", "source", "--offline-vulnerabilities", "."], ws).required_activities == ("test-execution-local", "data-egress")
     assert classify(["osv-scanner", "scan", "source", "."], ws, activity="static-analysis").required_activities == ("static-analysis", "data-egress")
+
+
+@pytest.mark.parametrize("flag", ["--offline=false", "--offline=true", "-offline=false", "--offline-vulnerabilities=false"])
+def test_an_offline_flag_with_an_explicit_value_needs_data_egress(ws, flag):
+    for argv in (["osv-scanner", "scan", "source", "--offline", flag, "."], ["osv-scanner", "scan", "source", flag, "--offline", "."]):
+        assert classify(argv, ws).required_activities == ("test-execution-local", "data-egress")
+
+
+@pytest.mark.parametrize("extra", [["-quickurl", "http://127.0.0.1:8080"], ["-autorun", "plan.YAML"], ["-autorun", "plan"], ["-config", "a=b"],
+                                   ["-script", "s.js"], ["-addoninstall", "x"], ["-port", "8090"], ["-silent"], [""]])
+def test_zap_is_passive_only_for_the_exact_baseline_arguments(ws, extra):
+    baseline = ["zap.sh", "-cmd", "-notel", "-autorun", "/work/.qa-input/security/zap-baseline.yaml"]
+    assert classify(baseline, ws).required_activities == ("test-execution-local", "dast-passive")
+    assert classify(baseline + extra, ws).required_activities == ("test-execution-local", "dast-active", "dast-passive")
 
 
 @pytest.mark.parametrize("program", ["spectral", "oasdiff"])
