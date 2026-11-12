@@ -1,6 +1,7 @@
 """Tests for tools/run_skill_eval.py, driven by a fake ``claude`` executable (no real agent, no network)."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -195,7 +196,7 @@ def world(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     exe = bin_dir / "claude"
-    exe.write_text(FAKE.replace("FAKE_SOURCE_PLACEHOLDER", FAKE_SOURCE))
+    exe.write_text(FAKE.replace("FAKE_SOURCE_PLACEHOLDER", FAKE_SOURCE).replace("#!/usr/bin/env python3", "#!" + sys.executable, 1))   # runs with a system-only PATH too
     exe.chmod(0o755)
 
     fixture = tmp_path / "fixture"
@@ -532,6 +533,41 @@ def test_runtime_venv_goes_first_on_path_and_into_allow_read_only(world, monkeyp
     assert settings["sandbox"]["filesystem"]["allowRead"] == [os.path.realpath(call["cwd"]), real]
     assert real not in settings["sandbox"]["filesystem"]["denyRead"]
     assert os.path.realpath(str(repo)) in settings["sandbox"]["filesystem"]["denyRead"]      # the repository stays denied
+
+
+def test_base_tools_hold_no_raw_git():
+    spec = importlib.util.spec_from_file_location("run_skill_eval_for_tools", str(HARNESS))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert not [t for t in module.BASE_TOOLS if t.startswith("Bash(git ")]
+
+
+def _case_with(world, **fields):
+    spec = json.loads(world.case.read_text())
+    spec.update(fields)
+    world.case.write_text(json.dumps(spec))
+
+
+def test_system_path_only_sets_the_system_path(world):
+    _case_with(world, system_path_only=True)
+    assert run(world).returncode == 0
+    assert calls(world)[0]["env"]["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def test_system_path_only_keeps_the_runtime_venv_first(world, monkeypatch):
+    repo = _harness_copy(world, monkeypatch)
+    (repo / ".venv-x" / "bin").mkdir(parents=True)
+    _case_with(world, system_path_only=True, runtime_venv=".venv-x")
+    assert run(world).returncode == 0
+    real = os.path.realpath(str(repo / ".venv-x"))
+    assert calls(world)[0]["env"]["PATH"] == os.path.join(real, "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None, []])
+def test_system_path_only_must_be_a_boolean(world, value):
+    _case_with(world, system_path_only=value)
+    r = run(world)
+    assert r.returncode == 2 and calls(world) == [] and not world.ledger.exists()
 
 
 @pytest.mark.parametrize("path", ["/usr", "..", "../elsewhere", "tools", ""])

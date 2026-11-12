@@ -446,3 +446,37 @@ def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
     assert words[0] == "python3" and words[1].endswith("qa.py") and words[2:6] == ["--role", "verifier", "--skill", "qa-regression-guard"]
     reply = qa(*words[words.index("revalidate"):])
     assert reply["outcome"] == "passed", reply                 # the kernel decides; the script only proposed
+
+
+def test_printed_command_is_root_relative_from_a_worktree(tmp_path):
+    root, c = history(tmp_path, checkout=3)
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+    launcher = SCRIPTS / "qa.py" if (SCRIPTS / "qa.py").is_file() else REPO / "shared" / "launcher" / "qa.py"
+
+    def qa(*args, cwd=root):
+        done = subprocess.run([sys.executable, "-I", str(launcher), "--role", "verifier", "--skill", "qa-regression-guard"] + list(args),
+                              cwd=str(cwd), capture_output=True, text=True, timeout=300, env=env)
+        return json.loads(done.stdout)
+
+    qa("init")
+    qa("config", "set", "project.trust", "trusted", "--approval", "test")
+    (tmp_path / "f.json").write_text(json.dumps(base(title="Order total one cent short", category="functional",
+                                                     severity_rationale={"anchor": "FUNC-C3", "modifiers": []},
+                                                     component={"path": "orders/pricing.py", "criticality": "high"},
+                                                     refs={"rule": "manual", "location": "orders/pricing.py"},
+                                                     key_attributes={"test": ORDER_TOTAL})))
+    qa("finding", "add", "--json", str(tmp_path / "f.json"))
+    (tmp_path / "fix.json").write_text(json.dumps({"findings": ["FND-001"], "base_commit": c[2], "fix_commit": c[3], "description": "d"}))
+    qa("fix", "add", "--json", str(tmp_path / "fix.json"))
+    runs = []
+    for commit in (c[2], c[3]):
+        tree = qa("worktree", "add", commit)["path"]
+        runs.append(qa("run", "--report", "junit:{evidence}/junit.xml", "--", sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                       "-o", "junit_family=xunit2", "--junitxml={evidence}/junit.xml", cwd=root / tree)["execution"])
+    worktree = root / tree
+    code, out, err = run("fail_to_pass.py", "--fix", "FIX-001", "--base-run", runs[0], "--head-run", runs[1], cwd=worktree)
+    assert code == 0 and out["status"] == "proposed", err
+    assert out["run_from"] == "Run from the project root:"
+    assert out["command"].startswith("python3 .claude/skills/qa-regression-guard/scripts/qa.py ")
+    printed = json.dumps(out)
+    assert str(root) not in printed and str(SCRIPTS) not in printed

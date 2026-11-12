@@ -3,9 +3,10 @@
 Usage: python -I tools/run_skill_eval.py --case PATH --config with-skill|baseline --model MODEL --budget-usd N --out DIR
        [--timeout SECONDS] [--ledger PATH] [--keep-workdir]
 
-The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?, "exclude"?, "keep_history"?,
-"checkout"?}``. ``fixture`` and ``skill`` are paths, relative ones resolved against the repository root. The harness copies the
-fixture into a fresh temporary directory without answer keys or any SKILL.md, gives the copy a one-commit git history of its own
+The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?, "system_path_only"?, "exclude"?,
+"keep_history"?, "checkout"?}``. ``fixture`` and ``skill`` are paths, relative ones resolved against the repository root. The harness
+copies the fixture into a fresh temporary directory without answer keys or any SKILL.md, gives the copy a one-commit git history of
+its own
 (or, with ``keep_history``, the generator's), places only the skill under test in ``.claude/skills/`` (``with-skill`` only),
 runs the agent there, and appends one record per run to ``DIR/costs.jsonl``. It never reads, prints or records the environment it
 passes to the agent.
@@ -52,6 +53,9 @@ allowed, in either configuration so the two arms differ only by what is installe
 packages the project's tests need. When present its ``bin`` is put first on the child's PATH and the directory is added to
 ``sandbox.filesystem.allowRead``, which re-opens that one path inside the denied repository; it is added to nothing else. A
 path outside the repository is refused.
+
+``system_path_only`` (optional case field, a boolean) makes the child's ``PATH`` ``/usr/bin:/bin:/usr/sbin:/sbin``, with the
+``runtime_venv`` ``bin`` first when one is given, so no scanner installed on the host is on the agent's ``PATH``.
 
 The CLI runs with ``--output-format stream-json --verbose``. The ``init`` event gives ``api_key_source`` and the skills and
 tools listed; the final ``result`` event gives the metrics. A run whose ``api_key_source`` is not ``HELPER_KEY_SOURCE`` (or
@@ -145,10 +149,9 @@ CONFIGS = ("with-skill", "baseline")
 DEFAULT_TIMEOUT = 1800
 SETUP_TIMEOUT = 120
 SETUP_OUTPUT_LIMIT = 1_000_000
-# Narrow on purpose: read and search the copy and read-only git. No editing, network or interpreter tools, no permission
+# Narrow on purpose: read and search the copy. No raw git, no editing, network or interpreter tools, no permission
 # bypass. A case adds narrow prefixes (for example the skill's launcher) in ``bash_allow``.
-BASE_TOOLS = ["Read", "Grep", "Glob", "Bash(git status *)", "Bash(git log *)", "Bash(git diff *)", "Bash(git show *)",
-              "Bash(ls *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)"]
+BASE_TOOLS = ["Read", "Grep", "Glob", "Bash(ls *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)"]
 FORBIDDEN_BARE = {"python", "python3", "find", "bash", "sh", "zsh", "env", "node", "sudo", "xargs", "eval", "exec"}
 KEY_VAR = "ANTHROPIC_API_KEY"
 # The ``api_key_source`` the CLI reports when it takes its key from an ``apiKeyHelper``, as measured by the paid probe of
@@ -223,6 +226,8 @@ def load_case(path: Path) -> Dict[str, Any]:
         if field in case:
             case[field] = check_installables(field, case[field], kind)
     venv = case.get("runtime_venv")
+    if "system_path_only" in case and not isinstance(case["system_path_only"], bool):
+        raise usage_error("system_path_only must be true or false")
     if venv is not None:
         if not isinstance(venv, str) or not venv.strip():
             raise usage_error("runtime_venv must be a repository-relative directory")
@@ -670,9 +675,12 @@ def write_key_helper(key: str, helper_dir: Path) -> str:
     return shlex.quote(str(script))
 
 
-def child_env(home: Path, config_dir: Path, path_prefix: Optional[str] = None) -> Dict[str, str]:
+SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def child_env(home: Path, config_dir: Path, path_prefix: Optional[str] = None, system_path_only: bool = False) -> Dict[str, str]:
     """The only environment the agent gets: no key (it comes from the helper), and nothing inherited, so no GIT_* either."""
-    path = os.environ.get("PATH", os.defpath)
+    path = SYSTEM_PATH if system_path_only else os.environ.get("PATH", os.defpath)
     if path_prefix:
         path = path_prefix + os.pathsep + path
     return {"PATH": path, "HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir)}
@@ -1359,7 +1367,8 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
         except Refused as exc:
             return refuse(str(exc))
         command = build_command(exe, args.model, plan)
-        outcome = execute(command, case["prompt"], workdir, args.timeout, child_env(home, home / "config", os.path.join(venv_real, "bin") if venv_real else None))
+        outcome = execute(command, case["prompt"], workdir, args.timeout, child_env(home, home / "config", os.path.join(venv_real, "bin") if venv_real else None,
+                                                                case.get("system_path_only") is True))
     finally:
         shutil.rmtree(str(home), ignore_errors=True)
     if outcome["sweeper_blind"]:
