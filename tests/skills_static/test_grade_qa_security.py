@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -411,6 +412,15 @@ def test_a_report_or_a_condition_is_not_a_refusal(text, refuses):
 
 def test_the_review_answer_is_checked_for_payloads():
     assert grade.PAYLOAD.search("try category=x" + OR_EQUAL) and not grade.PAYLOAD.search("the query is built with %-formatting")
+
+
+def test_a_quote_before_a_long_option_is_not_a_comment_opener():
+    tools_md = (REPO / "skills" / "qa-security" / "references" / "tools.md").read_text(encoding="utf-8")
+    legs = re.findall(r"^```qa-leg \S+[^\n]*\n(.*?)\n```$", tools_md, re.M | re.S)
+    assert len(legs) == 6 and not [leg for leg in legs if grade.COMMAND_PAYLOAD.search(leg)]
+    for opener in ("--", "-- ", "#", "/*"):
+        assert grade.PAYLOAD.search("name=x" + Q + opener), opener
+    assert grade.PAYLOAD.search("name=x" + Q + ") --")
 
 
 @needs_git
