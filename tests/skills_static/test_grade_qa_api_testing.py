@@ -350,10 +350,13 @@ CHECK_FILE = textwrap.dedent('''\
 ''')
 
 
-def kernel(root, *args):
+def kernel(root, *args, path=None):
+    env = {k: v for k, v in os.environ.items() if k != "QA_TEST_CONTAINER_ENGINE"}
+    if path is not None:
+        env["PATH"] = path
     done = subprocess.run([sys.executable, "-I", str(REPO / "shared" / "launcher" / "qa.py"), "--workspace", str(root), "--role", "verifier",
                            "--skill", "qa-api-testing"] + list(args), capture_output=True, text=True, timeout=180, cwd=str(root),
-                          env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+                          env=dict(env, PYTHONDONTWRITEBYTECODE="1"))
     return json.loads(done.stdout)
 
 
@@ -368,7 +371,11 @@ def test_a_real_ledger_grades_end_to_end(tmp_path):
     ran = kernel(root, "run", "--report", "junit:{evidence}/junit.xml", "--", sys.executable, "-B", "-m", "pytest", "-p", "no:cacheprovider",
                  ".qa/work/api/test_conformance.py", "--junitxml={evidence}/junit.xml")
     assert ran["status"] == "failed", ran
-    blocked = kernel(root, "run", "--container", "stoplight/spectral@sha256:3b05e6cd9d43375c454cc0c022e91b3285851043b05c3e738342ea3f84cde76d", "--shell", "--", "spectral lint openapi.yaml")
+    no_engine = tmp_path / "no-engine-bin"      # a PATH with git and nothing else: this run has no container engine, whatever the host has
+    no_engine.mkdir()
+    (no_engine / "git").symlink_to(shutil.which("git"))
+    blocked = kernel(root, "run", "--container", "stoplight/spectral@sha256:3b05e6cd9d43375c454cc0c022e91b3285851043b05c3e738342ea3f84cde76d", "--shell", "--", "spectral lint openapi.yaml",
+                     path=str(no_engine))
     assert blocked["status"] == "blocked", blocked
     note = root / ".qa" / "work" / "api" / "fnd.json"
     note.write_text(json.dumps({"title": "POST /orders answers 200 where openapi.yaml documents 201", "description": "Seen in the checks run.",

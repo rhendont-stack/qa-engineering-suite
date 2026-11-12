@@ -364,6 +364,7 @@ DB_TOOLS_MD = REPO / "skills" / "qa-database" / "references" / "tools.md"
 DB_SCRIPTS = REPO / "skills" / "qa-database" / "scripts"
 DB_LEG_PREFIX = ["python3", ".claude/skills/qa-database/scripts/qa.py", "--role", "auditor", "--skill", "qa-database"]
 A5_APPROVAL = "Hacer lo necesario para ejecutar el requerimiento, no me preguntes, ejecute de forma autonoma."
+PG_EXECUTION_APPROVAL = "Sí, apruébalo"       # the user's answer of 2026-11-12 to: approve test-execution-local on fixture-pg in this test's own workspace
 FIXTURE_PG = {"id": "fixture-pg", "class": "ephemeral", "base_urls": [], "dsn_env": "QA_FIXTURE_DSN", "ephemeral_basis": "user-declared"}
 DB_LEG_IMAGES = {"squawk": "squawk", "sqlite-roundtrip": "python-newest", "postgres-roundtrip": "postgres"}
 DB_LEG_MIGRATIONS = {"squawk": "postgres/migrations", "sqlite-roundtrip": "migrations", "postgres-roundtrip": "postgres/migrations"}
@@ -420,6 +421,14 @@ def declare_fixture_pg_and_grant(project):
     assert code == 0, out
     code, out = project.cli("authorize", "--environment", "fixture-pg", "--activity", "db-ephemeral", "--approval", A5_APPROVAL)
     assert code == 0 and out["ok"], out
+    return out["id"]
+
+
+def grant_fixture_pg_execution(project):
+    """The user's 2026-11-12 grant: test-execution-local on fixture-pg only, in this test's own temporary workspace."""
+    code, out = project.cli("authorize", "--environment", "fixture-pg", "--activity", "test-execution-local", "--approval", PG_EXECUTION_APPROVAL)
+    if code != 0:
+        pytest.skip("kernel refused the test-execution-local grant: " + json.dumps(out.get("error"), sort_keys=True))
     return out["id"]
 
 
@@ -516,20 +525,22 @@ def test_f3_sqlite_roundtrip_leg(db_project):
 
 @pytest.mark.docker
 def test_f3_postgres_roundtrip_and_plan_leg(db_project):
+    grant_fixture_pg_execution(db_project)
     work = db_project.root / ".qa" / "work" / "database"
     work.mkdir(parents=True)
     (work / "pg-plan.sql").write_text(pg_plan_sql(), encoding="utf-8")
     code, out = db_leg_cli(db_project, db_leg_words("postgres-roundtrip")[1])
     print("postgres leg:", out["execution"], out["status"], out.get("reason"), json.dumps(out.get("limitations"), sort_keys=True))
-    if (out["status"], out.get("reason")) == ("blocked", "not_authorized"):
-        pytest.skip("kernel refused the postgres leg under the db-ephemeral grant alone (%s): %s"
-                    % (out["execution"], json.dumps([n for n in out["limitations"] if "not_authorized" in n])))
-    assert (code, out["status"]) == (1, "failed"), out
+    assert (code, out["status"], out.get("reason")) == (1, "failed", "nonzero_exit"), out      # measured: the leg's script exits nonzero by design (the down step of 0003)
     run = db_recorded(db_project, out["execution"])
     assert run["container"]["service"]["image"] == registry_image("postgres") and run["container"]["network_mode"] == "none"
     stdout = (db_project.root / ".qa" / "evidence" / out["execution"] / "stdout.log").read_text(encoding="utf-8")
+    print("postgres leg stdout:\n" + stdout[-6000:])
     steps = dict(line.rsplit(" ", 1) for line in stdout.splitlines() if re.match(r"(up|down|reup) \d{4}_", line))
     assert all(steps["up " + name] == "0" for name in ("0001_create_customers.up.sql", "0003_create_orders.up.sql", "0005_create_audit_log.up.sql"))
     assert steps["down 0003_create_orders.down.sql"] != "0"
     plan = json.loads(stdout.split("plan-begin", 1)[1].split("plan-end", 1)[0])
     assert plan[0]["Plan"]["Node Type"] == "Seq Scan" and plan[0]["Plan"]["Relation Name"] == "order_items"
+    assert plan[0]["Plan"]["Filter"] == "(order_id = 42)"      # F3-07: the lookup by order_id has no index in PostgreSQL, so it scans the table
+    assert [steps["down " + name] for name in ("0004_split_customer_name.down.sql", "0002_create_products.down.sql", "0001_create_customers.down.sql")] == ["0"] * 3
+    assert (steps["reup 0003_create_orders.up.sql"], steps["reup 0005_create_audit_log.up.sql"]) == ("3", "3")      # re-applying onto the tables the failed down left
