@@ -211,9 +211,11 @@ def pinned_image(image_id):
 
 def contract_diff_words():
     """The words of the ``qa-leg contract-diff`` block, after the launcher prefix, with ``<spec>`` read as the project's ``openapi.yaml``."""
-    match = re.search(r"^```qa-leg contract-diff\n(.*?)\n```$", TOOLS_MD.read_text(encoding="utf-8"), re.M | re.S)
+    match = re.search(r"^```qa-leg contract-diff((?: [\w-]+=\S+)*)\n(.*?)\n```$", TOOLS_MD.read_text(encoding="utf-8"), re.M | re.S)
     assert match, "references/tools.md has no qa-leg contract-diff block"
-    words = shlex.split(match.group(1).replace("<spec>", "openapi.yaml"))
+    attributes = dict(a.split("=", 1) for a in match.group(1).split())
+    assert attributes == {"grant": "none", "report": "junit"}, attributes
+    words = shlex.split(match.group(2).replace("<spec>", "openapi.yaml"))
     assert words[:len(LEG_PREFIX)] == LEG_PREFIX, words[:len(LEG_PREFIX)]
     return words[len(LEG_PREFIX):]
 

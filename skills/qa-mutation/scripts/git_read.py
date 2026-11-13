@@ -43,7 +43,7 @@ if not sys.path or sys.path[0] != KERNEL:
 if "qa" in sys.modules and not hasattr(sys.modules["qa"], "__path__"):
     del sys.modules["qa"]  # the launcher module, not the package
 
-from qa import gitinfo  # noqa: E402
+from qa import gitinfo, workspace  # noqa: E402
 
 MAX_COUNT = 200
 MAX_DIFF_BYTES = 4 * 1024 * 1024
@@ -194,14 +194,7 @@ def show(reader: Reader, root: Path, rev: str, path: str, out: str) -> Dict[str,
         raise Refused("too_large", "the file is larger than %d bytes" % MAX_BLOB_BYTES, path=path, bytes=len(data))
     target.parent.mkdir(parents=True, exist_ok=True)
     _out_target(root, out)  # the directories now exist: look again before writing
-    temporary = target.parent / (".%s.tmp-%d" % (target.name, os.getpid()))
-    try:
-        with open(str(temporary), "wb") as handle:
-            handle.write(data)
-        os.replace(str(temporary), str(target))
-    finally:
-        if os.path.lexists(str(temporary)):
-            os.unlink(str(temporary))
+    workspace.write_atomic(target, data)  # a random temporary name, created exclusively, then os.replace
     return {"ok": True, "commit": commit, "path": path, "out": out, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 

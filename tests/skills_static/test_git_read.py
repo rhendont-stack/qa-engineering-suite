@@ -210,6 +210,22 @@ def test_show_refuses_a_blob_above_the_cap(repo, monkeypatch):
     assert caught.value.code == "too_large" and not (repo / ".qa" / "work" / "big.txt").exists()
 
 
+def test_show_leaves_an_entry_at_a_sibling_name_untouched(repo, tmp_path):
+    work = repo / ".qa" / "work" / "contract"
+    work.mkdir(parents=True)
+    outside = tmp_path / "victim.txt"
+    outside.write_text("keep\n")
+    names = [".base.yaml.tmp-%d" % n for n in range(1, 5)] + [".base.yaml.tmp"]
+    for name in names:
+        os.symlink(str(outside), str(work / name))
+    (work / "other.yaml").write_text("other\n")
+    code, body = show(repo)
+    assert code == 0 and (work / "base.yaml").read_bytes() == b"x = 1\n"
+    assert outside.read_text() == "keep\n" and (work / "other.yaml").read_text() == "other\n"
+    assert all(os.path.islink(str(work / name)) for name in names)
+    assert sorted(p.name for p in work.iterdir()) == sorted(names + ["base.yaml", "other.yaml"])      # no temporary name is left behind
+
+
 def test_show_says_so_for_a_path_absent_at_that_commit_or_not_a_file(repo):
     code, body = show(repo, path="b.py", rev=commits(repo)[0])
     assert code == 2 and body["error"]["code"] == "git_failed" and not (repo / ".qa").exists()

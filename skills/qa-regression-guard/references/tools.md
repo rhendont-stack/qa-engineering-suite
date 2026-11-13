@@ -50,7 +50,7 @@ For an OpenAPI contract the suite pins oasdiff by digest (`oasdiff` in `scripts/
 
 Keep the head version in the project tree, then run from the project root, with `<spec>` the head spec's path:
 
-```qa-leg contract-diff
+```qa-leg contract-diff grant=none report=junit
 python3 .claude/skills/qa-regression-guard/scripts/qa.py --role verifier --skill qa-regression-guard run --container tufin/oasdiff@sha256:ff02af37a254b5199b9d72e7bba93dae5837a9119d59459168d1398893b47aea --timeout 300 --input .qa/work/contract/base.yaml --allow-empty --report 'junit:{evidence}/oasdiff.xml' --shell -- 'oasdiff breaking .qa-input/contract/base.yaml <spec> --fail-on ERR --format junit > {evidence}/oasdiff.xml'
 ```
 
