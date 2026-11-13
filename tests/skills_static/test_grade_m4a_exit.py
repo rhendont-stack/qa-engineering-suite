@@ -50,10 +50,14 @@ def local_env():
     return {"id": "local", "class": "local", "base_urls": ["http://localhost", "http://127.0.0.1", "http://[::1]"]}
 
 
-def facts(executions=None, findings=None, grants=(), environments=None):
+DRIFT_RECORD = {"accepted_hash": None, "drift": False, "history": []}     # what the folded state's "config" key holds
+
+
+def facts(executions=None, findings=None, grants=(), environments=None, trust="untrusted"):
     events = [{"type": "authorization.granted", "data": dict(g, id=gid)} for gid, g in grants]
-    config = {"project": {"trust": "untrusted"}, "environments": environments if environments is not None else [local_env()]}
-    return {"state": {"executions": dict(executions or {}), "findings": dict(findings or {}), "config": config}, "events": events}
+    config = {"project": {"trust": trust}, "environments": environments if environments is not None else [local_env()]}
+    state = {"executions": dict(executions or {}), "findings": dict(findings or {}), "config": dict(DRIFT_RECORD)}
+    return {"state": state, "events": events, "config": config}
 
 
 def stream(*events):
@@ -183,6 +187,26 @@ def test_recorded_grants_environments_and_commands_name_only_loopback_hosts():
     near = execution("sleep 3; st run /work/openapi.yaml --url=http://127.0.0.1:8080")
     far = execution("sleep 3; st run /work/openapi.yaml --url=https://api.example.org")
     assert grade.host_record(facts({E1: near}))["pass"] is True and grade.host_record(facts({E1: far}))["pass"] is False
+    no_config = dict(facts(), config=None)
+    assert grade.host_record(no_config)["pass"] is False and "config.json" in grade.host_record(no_config)["detail"]
+
+
+def test_the_configuration_is_the_saved_config_json_not_the_drift_record(tmp_path):
+    saved = tmp_path / "qa-state"
+    saved.mkdir()
+    assert grade.saved_config(tmp_path) is None
+    (saved / "config.json").write_text(json.dumps({"project": {"trust": "trusted"}, "environments": [local_env()]}))
+    assert grade.saved_config(tmp_path)["project"]["trust"] == "trusted"
+    (saved / "config.json").write_text("[1]")
+    assert grade.saved_config(tmp_path) is None
+    (saved / "config.json").write_text("{")
+    assert grade.saved_config(tmp_path) is None
+    (saved / "config.json").unlink()
+    (tmp_path / "elsewhere.json").write_text(json.dumps({"project": {"trust": "trusted"}}))
+    (saved / "config.json").symlink_to(tmp_path / "elsewhere.json")
+    assert grade.saved_config(tmp_path) is None
+    assert grade.trusted(facts(trust="trusted")) is True and grade.trusted(facts()) is False
+    assert grade.trusted(dict(facts(trust="trusted"), config=None)) is False
 
 
 # --------------------------------------------------------------------------- tool legs and claims
@@ -338,6 +362,8 @@ def test_main_grades_a_saved_run_with_a_real_blocked_leg(tmp_path, capsys):
     body = json.loads(capsys.readouterr().out)
     assert body["verdict"] == "pass" and body["kernel_state_found"] is True and body["hard_failed"] == []
     assert body["observations"]["executions"][leg["execution"]]["status"] == "blocked"
+    assert body["observations"]["trusted"] is False
+    assert next(c for c in body["criteria"] if c["name"] == "no_external_host_recorded")["pass"] is True
     assert body["observations"]["recall"]["entries"] == 7 and body["observations"]["recall"]["located"] == 0
     (out / "costs.jsonl").write_text(json.dumps({"event": "end", "run_id": "R1", "case_id": F3, "config": "baseline", "cost_usd": 0.5}) + "\n")
     assert grade.main(["--out", str(out), "--run-id", "R1"]) == 2
