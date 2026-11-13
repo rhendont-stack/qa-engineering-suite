@@ -58,11 +58,17 @@ def name_pattern(name: str) -> Optional["re.Pattern[str]"]:
 
 
 def sensitive_patterns() -> List[Tuple[str, "re.Pattern[str]", str]]:
-    """(label, pattern, replacement token) for this machine, most specific first."""
+    """(label, pattern, replacement token) for this machine, most specific first.
+
+    A checkout whose root is itself one of ``CONTAINER_PATHS`` (the kernel's container runs the project at ``/work``) has no
+    root-directory pattern: that path names no machine, ``normalize_text`` already writes it as ``{WORK}``, and the manifest
+    quotes it in the container commands that produced the corpus.
+    """
     host = socket.gethostname()
     home = str(Path.home())
+    root = None if CONTAINER_PATHS.fullmatch(str(ROOT)) else re.compile(re.escape(str(ROOT)) + r"(?![\w.-])")
     candidates = [
-        ("root directory", re.compile(re.escape(str(ROOT)) + r"(?![\w.-])"), "{ROOT}"),
+        ("root directory", root, "{ROOT}"),
         ("home directory", home_pattern(home), "{HOME}"),
         ("host name", name_pattern(host), "HOST"),
         ("host name", name_pattern(host.split(".")[0]), "HOST"),

@@ -135,6 +135,18 @@ def test_trace_rule_matches_whole_tokens_only():
     assert n.home_pattern("/") is None and n.home_pattern("") is None
 
 
+def test_a_checkout_at_a_container_path_has_no_root_pattern_and_any_other_root_keeps_it():
+    n = load_producer_module("normalize.py")
+    n.ROOT = Path("/work")
+    assert "root directory" not in [label for label, _pattern, _token in n.sensitive_patterns()]
+    n.ROOT = Path("/w")
+    roots = [pattern for label, pattern, _token in n.sensitive_patterns() if label == "root directory"]
+    assert len(roots) == 1 and roots[0].search("/w/x") and not roots[0].search("/work/x")
+    n.ROOT = Path("/work/repo")
+    roots = [pattern for label, pattern, _token in n.sensitive_patterns() if label == "root directory"]
+    assert len(roots) == 1 and roots[0].search("at /work/repo/x") and not roots[0].search("/work/.qa-input/x")
+
+
 @pytest.mark.parametrize("name", ["root", "runner", "localhost", "Runner"])
 def test_exempt_names_are_never_checked_or_replaced(name):
     n = load_producer_module("normalize.py")

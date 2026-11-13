@@ -174,6 +174,7 @@ def test_the_cases_name_the_partner_and_the_key_has_eleven_static_entries():
         grade.case_prompt("no-such-case")
 
 
+@needs_git
 def test_the_setup_prints_digests_only_and_the_key_is_found_by_its_tail(tmp_path):
     evidence, key = evidence_for(tmp_path)
     digests = grade.setup_digests(evidence)
