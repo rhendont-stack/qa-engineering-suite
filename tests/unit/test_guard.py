@@ -564,6 +564,9 @@ NEW_CASE_IDS = (
     "osv-offline-with-explicit-true-needs-egress",
     "zap-baseline-token-with-trailing-line-feed-is-active", "zap-baseline-plan-with-trailing-line-feed-is-active", "schemathesis-phases-with-trailing-line-feed-is-active", "osv-offline-as-the-value-of-another-option-needs-egress", "osv-offline-after-end-of-options-needs-egress", "osv-offline-with-database-download-needs-egress", "osv-offline-with-trailing-line-feed-needs-egress", "osv-offline-format-as-two-tokens-needs-egress",
     "k6-base-url-loopback", "k6-base-url-other-host", "spectral-lint", "oasdiff-breaking",
+    # final-review fix wave: ledger lines 71 and 152
+    "schemathesis-phases-option-name-with-trailing-line-feed-is-active", "osv-offline-with-a-dot-segment-path-needs-egress",
+    "osv-offline-scan-step-with-environment-prefix-and-absolute-path",
 )
 NEW_CASES = [c for c in CASES if c["id"] in NEW_CASE_IDS]
 # decision, the activities the run needs beyond the declared one, the hosts the command line names
@@ -603,11 +606,39 @@ NEW_EXPECTED = {
     "k6-base-url-other-host": ("require_grant", ("load-test",), ("192.0.2.5",)),
     "spectral-lint": ("allow", (), ()),
     "oasdiff-breaking": ("allow", (), ()),
+    "schemathesis-phases-option-name-with-trailing-line-feed-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "osv-offline-with-a-dot-segment-path-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-scan-step-with-environment-prefix-and-absolute-path": ("allow", (), ()),
 }
 
 
 def test_the_new_cases_are_all_in_the_corpus():
     assert sorted(c["id"] for c in NEW_CASES) == sorted(NEW_CASE_IDS) and set(NEW_EXPECTED) == set(NEW_CASE_IDS)
+
+
+@pytest.mark.parametrize("path", ["/work/.", "/work/..", "/work/./src", "/work/../src", "/work/src/..",
+                                  "--output-file=/qa-evidence/.", "--output-file=/qa-evidence/.."])
+def test_an_osv_path_with_a_dot_segment_needs_egress(path, ws):
+    """Ledger line 71: rule osv-scanner-other-argument admits a /work path or an evidence file name only when no segment is
+    . or .. alone."""
+    d = classify(["osv-scanner", "scan", "source", "--offline", path], ws)
+    assert (d.decision, d.rule_id, d.required_activities) == (
+        "require_grant", "osv-scanner-other-argument", ("test-execution-local", "data-egress"))
+
+
+@pytest.mark.parametrize("path", ["/work/.config", "/work/..data", "/work/src.", "--output-file=/qa-evidence/.osv.sarif"])
+def test_an_osv_name_that_only_starts_or_ends_with_dots_stays_offline(path, ws):
+    assert classify(["osv-scanner", "scan", "source", "--offline", path], ws).decision == "allow"
+
+
+@pytest.mark.parametrize("phases", ["--phases", "--phases=", "--phases=fuzzing", "--phases=examples,fuzzing", "--phases-x",
+                                    "--phases=examples ", "--phases=Examples"])
+def test_any_other_phases_argument_beside_the_baseline_is_active(phases, ws):
+    """Ledger line 71: rule schemathesis-extra-phases judges active every argument that starts with --phases other than an
+    exact baseline choice."""
+    d = classify(["schemathesis", "run", "/work/.qa-input/api/openapi.json", "--phases=examples", phases], ws)
+    assert (d.decision, d.rule_id) == ("require_grant", "schemathesis-extra-phases")
+    assert d.required_activities == ("test-execution-local", "dast-active", "dast-passive")
 
 
 @pytest.mark.parametrize("case", NEW_CASES, ids=[c["id"] for c in NEW_CASES])

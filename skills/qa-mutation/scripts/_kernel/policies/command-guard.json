@@ -418,8 +418,8 @@
     {
       "id": "schemathesis-extra-phases",
       "effect": "require_grant:dast-active",
-      "reason": "A Schemathesis command line with a phase choice beyond the examples and coverage phases may fuzz; it needs a dast-active grant per target (§12.2, §12.3).",
-      "match": {"program": ["schemathesis", "st"], "args_regex": "^--phases(=(?!(examples|coverage|examples,coverage|coverage,examples)\\Z)[\\s\\S]*)?\\Z"}
+      "reason": "A Schemathesis command line with any argument that starts with --phases other than an exact choice of the examples and coverage phases (a phase choice beyond them, the option name alone or with anything after it) may fuzz; it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["schemathesis", "st"], "args_regex": "^--phases(?!=(examples|coverage|examples,coverage|coverage,examples)\\Z)"}
     },
     {
       "id": "schemathesis-baseline",
@@ -565,8 +565,8 @@
     {
       "id": "osv-scanner-other-argument",
       "effect": "require_grant:data-egress",
-      "reason": "Only the exact arguments of the suite's offline scan step run without data-egress; any other argument (a value given as a separate word, an end-of-options marker, a database download, a registry or data-source option, an offline flag with a value) can reach the network or hide the offline flag, so it needs a data-egress grant (§12.2).",
-      "match": {"program": ["osv-scanner"], "args_regex": "^(?!(scan|source|--offline|--recursive|--format=(sarif|json)|--output-file=/qa-evidence/[A-Za-z0-9._-]+|/work(/[A-Za-z0-9._-]+)*)\\Z)"}
+      "reason": "Only the exact arguments of the suite's offline scan step run without data-egress; any other argument (a value given as a separate word, an end-of-options marker, a database download, a registry or data-source option, an offline flag with a value, a path with a . or .. segment) can reach the network, hide the offline flag or leave the paths the step names, so it needs a data-egress grant (§12.2).",
+      "match": {"program": ["osv-scanner"], "args_regex": "^(?!(scan|source|--offline|--recursive|--format=(sarif|json)|--output-file=/qa-evidence/(?!\\.\\.?\\Z)[A-Za-z0-9._-]+|/work(/(?!\\.\\.?(?:/|\\Z))[A-Za-z0-9._-]+)*)\\Z)"}
     },
     {
       "id": "network-download",
