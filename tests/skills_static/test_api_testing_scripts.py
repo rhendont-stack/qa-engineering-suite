@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -25,9 +26,16 @@ EXE_ID = "EXE-01M77PJTWG6R7VNCR52TMTT8TN"
 
 
 def load():
-    spec = importlib.util.spec_from_file_location("qa_api_endpoint_inventory", str(SCRIPT))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    """The script in this process. Its kernel import finds the source kernel already loaded, and the path entry and bytecode
+    flag it sets are put back, so no later test imports the vendored copy."""
+    import qa.workspace  # noqa: F401  (the source kernel, from pytest's pythonpath)
+    saved_path, saved_flag = list(sys.path), sys.dont_write_bytecode
+    try:
+        spec = importlib.util.spec_from_file_location("qa_api_endpoint_inventory", str(SCRIPT))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:], sys.dont_write_bytecode = saved_path, saved_flag
     return module
 
 
@@ -101,6 +109,37 @@ def test_the_inventory_is_written_only_under_qa_work(f2):
         code, body, _ = run("scan", "--spec", "openapi.yaml", "--out", out, cwd=f2)
         assert code == 2 and body["ok"] is False and "only under .qa/work/" in body["error"]
     assert not (f2 / "inventory.json").exists() and not (f2.parent / "outside.json").exists()
+
+
+def test_the_inventory_never_follows_a_link_at_the_old_temporary_name(f2, tmp_path):
+    """Final review I1: the inventory was written through the fixed name ``inventory.json.tmp`` with a write that follows a
+    link. A link already at that name under .qa/work/ stays a link with its target untouched, and the inventory is a regular
+    file, after ``scan`` and after ``mark``."""
+    work = f2 / ".qa" / "work" / "api"
+    work.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep\n", encoding="utf-8")
+    os.symlink(str(outside), str(work / "inventory.json.tmp"))
+    code, body, err = run("scan", "--spec", "openapi.yaml", cwd=f2)
+    assert code == 0 and body["ok"] is True, err
+    target = work / "inventory.json"
+    assert target.is_file() and not target.is_symlink() and sum(1 for o in inventory(f2)["operations"] if o["documented"]) == 7
+    assert outside.read_text(encoding="utf-8") == "keep\n" and os.path.islink(str(work / "inventory.json.tmp"))
+    code, body, err = run("mark", "--operation", "GET /health", "--status", "blocked", "--reason", "engine absent", cwd=f2)
+    assert code == 0 and body["marked"] == ["GET /health"], err
+    assert target.is_file() and not target.is_symlink() and outside.read_text(encoding="utf-8") == "keep\n"
+    assert sorted(p.name for p in work.iterdir()) == ["inventory.json", "inventory.json.tmp"]      # no temporary name left behind
+
+
+def test_a_link_at_the_inventory_name_that_leaves_qa_work_is_refused(f2, tmp_path):
+    work = f2 / ".qa" / "work" / "api"
+    work.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep\n", encoding="utf-8")
+    os.symlink(str(outside), str(work / "inventory.json"))
+    code, body, _ = run("scan", "--spec", "openapi.yaml", cwd=f2)
+    assert code == 2 and "only under .qa/work/" in body["error"]
+    assert outside.read_text(encoding="utf-8") == "keep\n" and os.path.islink(str(work / "inventory.json"))
 
 
 def test_a_missing_contract_is_an_argument_error(f2):
@@ -321,6 +360,45 @@ def test_assets_are_copied_under_qa_work_and_never_overwritten(f2):
     assert (f2 / ".qa" / "work" / "api" / "smoke.hurl").read_text(encoding="utf-8").startswith("GET http://127.0.0.1:8080/health")
     code, body, _ = run("assets", "--dest", "assets-here", cwd=f2)
     assert code == 2 and not (f2 / "assets-here").exists()
+
+
+def test_assets_never_follow_a_link_at_a_copy_name(f2, tmp_path, monkeypatch, capsys):
+    """Final review I1, the assets path: a copy was written after a separate look for an entry, with a write that follows a
+    link. A link already at a copy's name is kept and never followed, whether it leads out of .qa/work/ or stays inside, and
+    whether or not a look before the write sees it (here every look is made to see nothing, as for a link that appears just
+    after it)."""
+    work = f2 / ".qa" / "work" / "api"
+    work.mkdir(parents=True)
+    outside = tmp_path / "outside.hurl"
+    outside.write_text("keep\n", encoding="utf-8")
+    os.symlink(str(outside), str(work / "smoke.hurl"))
+    os.symlink(str(tmp_path / "absent.yaml"), str(work / "spectral.yaml"))              # a dangling link out of .qa/work/
+    code, body, err = run("assets", cwd=f2)
+    assert code == 0 and body["copied"] == [".qa/work/api/schemathesis-baseline.toml"], err
+    assert sorted(body["kept"]) == [".qa/work/api/smoke.hurl", ".qa/work/api/spectral.yaml"]
+    copy = work / "schemathesis-baseline.toml"
+    assert not copy.is_symlink() and copy.read_bytes() == (SCRIPT.parent.parent / "assets" / copy.name).read_bytes()
+    assert outside.read_text(encoding="utf-8") == "keep\n" and not (tmp_path / "absent.yaml").exists()
+    assert os.path.islink(str(work / "smoke.hurl")) and os.path.islink(str(work / "spectral.yaml"))
+
+    for name in ("smoke.hurl", "spectral.yaml", "schemathesis-baseline.toml"):
+        os.unlink(str(work / name))
+    inside = work / "inside.hurl"
+    inside.write_text("keep\n", encoding="utf-8")
+    os.symlink(str(inside), str(work / "smoke.hurl"))                                     # links that stay under .qa/work/
+    os.symlink(str(work / "absent.yaml"), str(work / "spectral.yaml"))
+    module = load()
+    monkeypatch.chdir(f2)
+    monkeypatch.setattr(os.path, "lexists", lambda path: False)
+    monkeypatch.setattr(pathlib.Path, "exists", lambda self: False)
+    monkeypatch.setattr(pathlib.Path, "is_symlink", lambda self: False)
+    code = module.main(["assets"])
+    monkeypatch.undo()
+    body = json.loads(capsys.readouterr().out)
+    assert code == 0 and body["copied"] == [".qa/work/api/schemathesis-baseline.toml"], body
+    assert sorted(body["kept"]) == [".qa/work/api/smoke.hurl", ".qa/work/api/spectral.yaml"]
+    assert inside.read_text(encoding="utf-8") == "keep\n" and not (work / "absent.yaml").exists()
+    assert os.path.islink(str(work / "smoke.hurl")) and os.path.islink(str(work / "spectral.yaml"))
 
 
 def test_the_assets_hold_the_bounds_the_skill_states():

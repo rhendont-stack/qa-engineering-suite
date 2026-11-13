@@ -24,19 +24,35 @@ only with a reason.
 ``assets`` copies the skill's tool configurations (``spectral.yaml``, ``schemathesis-baseline.toml``, ``smoke.hurl``) into
 ``.qa/work/api/``, where ``qa run --input`` takes them from; a file already there is kept, never overwritten.
 
-The inventory and the copies are written only under ``.qa/work/``. Standard library only; reads the project, never changes it. Prints one
-JSON summary on stdout; exit 0, 1 when the contract cannot be read at all, 2 on bad arguments.
+The inventory and the copies are written only under ``.qa/work/``, checked again on the final path once its directories exist.
+The inventory goes through the vendored kernel's atomic write (a random temporary name, created exclusively, then renamed over
+the target); each copy is created exclusively at its own name, so a link or file already there is kept and never followed.
+Standard library and the vendored kernel only; reads the project, never changes it. Prints one JSON summary on stdout; exit 0,
+1 when the contract cannot be read at all, 2 on bad arguments or a path outside ``.qa/work/``.
 """
 from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import json
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+sys.dont_write_bytecode = True  # no bytecode cache beside the vendored kernel
+HERE = os.path.dirname(os.path.realpath(__file__))
+KERNEL = os.path.join(HERE, "_kernel")
+if not os.path.isdir(KERNEL):  # run from the source tree, before the kernel is vendored
+    KERNEL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "shared", "kernel")
+if not sys.path or sys.path[0] != KERNEL:
+    sys.path.insert(0, KERNEL)  # first: this directory holds qa.py, the launcher, which would shadow the kernel package
+if "qa" in sys.modules and not hasattr(sys.modules["qa"], "__path__"):
+    del sys.modules["qa"]  # the launcher module, not the package
+
+from qa import workspace  # noqa: E402
 
 METHODS = ("get", "put", "post", "delete", "patch", "head", "options", "trace")
 EXE = re.compile(r"^EXE-[0-9A-Z]{26}$")
@@ -461,11 +477,31 @@ def emit(body: Dict[str, Any], code: int) -> int:
     return code
 
 
-def write(path: Path, inventory: Dict[str, Any]) -> None:
+def write(path: Path, inventory: Dict[str, Any]) -> bool:
+    """Replace ``path`` with the inventory through the kernel's atomic write; False, writing nothing, when ``path`` no longer
+    resolves under ``.qa/work/`` once its directories exist."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(str(temporary), str(path))
+    if not inside_work(path):  # the directories now exist: look again at the final target before writing
+        return False
+    workspace.write_atomic(path, (json.dumps(inventory, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    return True
+
+
+def create_new(target: Path, data: bytes) -> bool:
+    """Create ``target`` with ``data`` only when nothing is at that name; an exclusive open never follows a link. False when
+    something (a file or a link) is already there."""
+    try:
+        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    except FileExistsError:
+        return False
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(str(target))
+        raise
+    return True
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
@@ -477,7 +513,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         return emit({"ok": False, "error": "no contract at %s" % args.spec}, 2)
     root = Path(args.root)
     inventory, readable = build(spec, args.spec, root)
-    write(out, inventory)
+    if not write(out, inventory):
+        return emit({"ok": False, "error": "the inventory is written only under .qa/work/: %s" % args.out}, 2)
     drift = inventory["drift"]
     return emit({"ok": readable, "inventory": args.out, "documented": sum(1 for o in inventory["operations"] if o["documented"]),
                  "routes_found": inventory["routes_found"], "unreadable": len(inventory["unreadable"]),
@@ -514,7 +551,8 @@ def cmd_mark(args: argparse.Namespace) -> int:
     missing = sorted(wanted - {normal(*o.split(" ", 1)) for o in changed})
     if missing:
         return emit({"ok": False, "error": "not in the inventory: %s" % ", ".join(missing)}, 2)
-    write(path, inventory)
+    if not write(path, inventory):
+        return emit({"ok": False, "error": "no inventory under .qa/work/ at %s" % args.inventory}, 2)
     return emit({"ok": True, "inventory": args.inventory, "marked": changed, "status": args.status}, 0)
 
 
@@ -527,11 +565,16 @@ def cmd_assets(args: argparse.Namespace) -> int:
     copied, kept = [], []
     for name in ASSETS:
         target = dest / name
-        if target.exists() or target.is_symlink():
-            kept.append((dest / name).as_posix())
+        if os.path.lexists(str(target)):                 # a file or a link already there is kept, never followed
+            kept.append(target.as_posix())
             continue
-        target.write_bytes((source / name).read_bytes())
-        copied.append(target.as_posix())
+        if not inside_work(target):                      # the directories now exist: look again at the final target
+            return emit({"ok": False, "error": "the copies are written only under .qa/work/: %s" % args.dest, "copied": copied,
+                         "kept": kept}, 2)
+        if create_new(target, (source / name).read_bytes()):   # exclusive: one that appeared since the look above is kept too
+            copied.append(target.as_posix())
+        else:
+            kept.append(target.as_posix())
     return emit({"ok": True, "copied": copied, "kept": kept}, 0)
 
 
