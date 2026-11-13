@@ -56,7 +56,7 @@ python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-a
 6. License, costs, restrictions: MIT, free. The hosted Schemathesis service is paid and is not used: nothing leaves the container.
 7. Reason selected: property-based contract checking with JUnit and HAR output, bounded by phases, a request cap and a rate cap.
 
-The guard reads the command line: `--phases=examples,coverage` is `dast-passive`; any other phase, or no `--phases`, is `dast-active`. Keep the caps on the command line in both forms.
+The guard reads the command line: `--phases=examples,coverage` is `dast-passive`; any other phase, or no `--phases`, is `dast-active`. The baseline carries its caps in `assets/schemathesis-baseline.toml`, passed with `--config-file`; the all-phases form carries them on the command line.
 
 Baseline (copy `assets/schemathesis-baseline.toml` first; grant: `dast-passive`). The HAR file is not a report format the kernel keeps, so the run prints it as its own stdout, stored as the run's `stdout.log`:
 
