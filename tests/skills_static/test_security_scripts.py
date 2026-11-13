@@ -302,6 +302,55 @@ def test_unicode_scan_reads_a_phrase_broken_by_a_nul_byte_behind_a_wide_reading(
         "utf-8, utf-16-le and nul-stripped"]
 
 
+def test_unicode_scan_reads_a_nul_between_words_as_a_space_behind_a_wide_reading(tmp_path):
+    """Ledger line 211: a UTF-16 mark, then single-byte text whose marker phrase has NUL bytes in place of the spaces between its
+    first words. At even length the UTF-16 reading counts; removing the NUL bytes joins the words, so that view alone missed the
+    phrase. It is now read with each such NUL as a space as well; at odd length no reading qualifies and the file is skipped."""
+    module = load(UNICODE, "qa_security_unicode_scan_n")
+    root = tmp_path / "p"
+    root.mkdir()
+    joined = (EN_PHRASE.replace(" ", "\x00", 3) + "\n").encode()                         # NUL bytes between the first four words
+    assert joined.count(b"\x00") == 3 and b"\x00 " not in joined and b" \x00" not in joined
+    (root / "even.txt").write_bytes(b"\xff\xfe" + b"x\n" + joined)
+    (root / "odd.txt").write_bytes(b"\xff\xfe" + b"xy\n" + joined)
+    assert (len((root / "even.txt").read_bytes()) % 2, len((root / "odd.txt").read_bytes()) % 2) == (0, 1)
+    found, _ = module.readings((root / "even.txt").read_bytes())
+    assert [name for name, _ in found] == ["utf-8", "utf-16-le", "nul-stripped", "nul-stripped"]
+    assert module.merged_hits(found[:3]) == []                                       # the phrase, unread before this change
+    code, out, err = run(UNICODE, cwd=root)
+    assert (code, out["files_scanned"], out["skipped_files"]) == (0, 1, [{"path": "odd.txt", "reason": "utf16"}]), (out, err)
+    marker = "a phrase that tries to override an agent's instructions (English); the line is not quoted"
+    assert sarif_results(root) == [("even.txt", "qa-injection-marker", 2, 1, "nul-stripped", marker + "; reading: nul-stripped")], (out, err)
+
+
+def test_unicode_scan_reads_the_earlier_nul_classes_as_before(tmp_path):
+    """The NUL-as-space view adds no result and changes no label for the classes read before it: a stray NUL between two letters,
+    UTF-32 and unmarked UTF-16 text, a NUL before a space inside a phrase, and a NUL inside a word, which only the view with the
+    NUL bytes removed reads. Each still has that view, unchanged."""
+    module = load(UNICODE, "qa_security_unicode_scan_u")
+    line_2 = ("\n" + EN_PHRASE + "\n").encode()
+    cases = {
+        "stray": b"\xff\xfe" + b"x\x00y" + line_2,
+        "wide32-le": b"\xff\xfe\x00\x00" + ("x\n" + EN_PHRASE + "\n").encode("utf-32-le"),
+        "wide32-be": b"\x00\x00\xfe\xff" + ("x\n" + ES_PHRASE + "\n").encode("utf-32-be"),
+        "wide": ("x " + EN_PHRASE).encode("utf-16"),
+        "wide-le": ("x " + EN_PHRASE).encode("utf-16-le"),
+        "wide-be": ("x\n" + ES_PHRASE).encode("utf-16-be"),
+        "nul-before-space": b"\xff\xfe" + b"xy\n" + (EN_PHRASE.replace(" ", "\x00 ", 1) + "\n").encode(),
+        "nul-in-word": b"\xff\xfe" + b"xy\n" + (EN_PHRASE.replace("Ignore", "Ign\x00ore", 1) + "\n").encode(),
+    }
+    for name, data in cases.items():
+        found, skip = module.readings(data)
+        assert found and skip == "", name
+        rest = data[module.mark_of(data)[0]:]
+        spaced = (module.NUL_STRIPPED, rest.replace(b"\x00", b" ").decode("utf-8", "replace"))
+        earlier = [entry for entry in found if entry != spaced]
+        assert (module.NUL_STRIPPED, rest.replace(b"\x00", b"").decode("utf-8", "replace")) in earlier, name
+        assert module.merged_hits(found) == module.merged_hits(earlier), name
+    found, _ = module.readings(cases["nul-in-word"])
+    assert [hit[1:3] + hit[4:] for hit in module.merged_hits(found)] == [(2, 1, "nul-stripped")]
+
+
 def test_unicode_scan_names_every_skipped_file(tmp_path):
     module = load(UNICODE, "qa_security_unicode_scan_s")
     root = tmp_path / "p"

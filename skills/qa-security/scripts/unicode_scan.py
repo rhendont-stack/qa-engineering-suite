@@ -29,10 +29,12 @@ whole content in a form that shows the markers. Two readings qualify:
 
 Every qualifying reading is scanned. When the single-byte reading holds a NUL and the file is counted (on its wide reading),
 two more views of the single-byte text are scanned, neither of which counts: that reading as it is, and that reading with its
-NUL bytes removed (``nul-stripped``), which is how a viewer that ignores NUL bytes shows it. So a NUL byte, stray or inside a
-phrase, cannot hide single-byte text behind a wide reading: a qualifying wide reading is never the only reading of a file
-whose single-byte reading holds text. A file whose single-byte reading holds a NUL and whose wide reading does not qualify is
-skipped. A hit that more than one reading finds at the same line, column and rule is reported once. No reading is dropped: a
+NUL bytes removed (``nul-stripped``), which is how a viewer that ignores NUL bytes shows it. When a NUL byte stands between two
+characters that are neither white space nor NUL, as between two words, that reading is also scanned with each NUL byte read
+as a space, under the same name and counting neither, since removing such a NUL joins the words it separates. So a NUL byte,
+stray, inside a phrase or between its words, cannot hide single-byte text behind a wide reading: a qualifying wide reading
+is never the only reading of a file whose single-byte reading holds text. A file whose single-byte reading holds a NUL and
+whose wide reading does not qualify is skipped. A hit that more than one reading finds at the same line, column and rule is reported once. No reading is dropped: a
 mark before single-byte text makes a wide reading of characters that are not in the bytes as written (a mark before ASCII
 text can read as a bidirectional control), but a tool that honours the mark shows that reading. So whenever a file is
 scanned in more than one reading, every result names the readings that found it, as ``properties.reading`` and at the end
@@ -225,6 +227,7 @@ BYTE_ORDER_MARKS = ((b"\xff\xfe\x00\x00", "utf-32-le"), (b"\x00\x00\xfe\xff", "u
                     (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"), (b"\xef\xbb\xbf", None))
 SINGLE = "utf-8"
 NUL_STRIPPED = "nul-stripped"
+NUL_BETWEEN = re.compile(rb"[^\x00\s]\x00+[^\x00\s]")   # NUL bytes between two characters that are neither space nor NUL
 SKIP_REASONS = {
     "large": "over 2 MiB",
     "utf16": "a UTF-16 or UTF-32 byte-order mark or the UTF-16 NUL pattern, and no reading that qualifies",
@@ -279,6 +282,8 @@ def readings(data: bytes) -> Tuple[List[Tuple[str, str]], str]:
         found.append((wide, wide_text))
     if not single_counts:                         # counted on its wide reading: the single-byte text as a NUL-blind viewer shows it
         found.append((NUL_STRIPPED, rest.replace(b"\x00", b"").decode("utf-8", "replace")))
+        if NUL_BETWEEN.search(rest):              # a NUL between two words joins them once removed: also read it as a space
+            found.append((NUL_STRIPPED, rest.replace(b"\x00", b" ").decode("utf-8", "replace")))
     return found, ""
 
 
