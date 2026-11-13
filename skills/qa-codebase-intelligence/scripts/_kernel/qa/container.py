@@ -9,6 +9,10 @@ and refuses everything else. Which of them a workspace may use is ``config.conta
 runs the tests with no network, and copies the evidence out through ``safetar``. There is no bind mount and no host
 environment in any step, and no fallback to the host. Every object has a name derived from the execution ID; only those
 exact names are ever removed, and a removal that fails is reported.
+
+With a ``ServiceSpec`` a fixture service starts first, detached, with network ``none``, and the tests join its network
+namespace: the two share one loopback interface and nothing else. The run counts as isolated only when the daemon
+confirms both halves (``_effective_network``).
 """
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from . import gitinfo, runner, safetar
 from .canonical import loads
 from .errors import QaError
+from .workspace import FileTooLarge, read_limited
 
 # QaError codes raised here: container_engine_invalid, container_unsafe_token, container_stdin_unreadable,
 # container_engine_unavailable, container_spec_invalid, container_step_failed, container_image_missing,
@@ -51,9 +56,21 @@ _SKIPPED_DIRS = (".git", ".qa")
 _EXECUTION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _PINNED_IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}")
 _WORKDIR = re.compile(r"/work(/[A-Za-z0-9._-]+)*")
-WORK_MOUNT, EVIDENCE_MOUNT = "/work", "/qa-evidence"
+_SERVICE_USER = re.compile(r"[0-9]{1,10}(:[0-9]{1,10})?")
+WORK_MOUNT, EVIDENCE_MOUNT, CONTROL_MOUNT = "/work", "/qa-evidence", "/qa-ctl"
+INPUT_DIR = ".qa-input"  # where the run's inputs land in the archive; a project entry of that name stays out
+SERVICE_SCRIPT = "service.sh"
 # Every container that runs project code: the tests, and the install step, which differs only in having a network.
 _CONFINED = ("--cpus=2", "--memory=2g", "--pids-limit=512", "--init", "--cap-drop=ALL", "--security-opt=no-new-privileges")
+# The steps that only move files (copy in, open the volumes, control in, copy out) run as root whatever user the image
+# names, so an image that runs its tool as another user still receives the project and gives its evidence back. They run
+# tar or chmod from the image on the suite's own archives, with no network, every capability dropped but the one each
+# needs (measured across the catalog images): unpacking a project that holds a read-only directory needs DAC_OVERRIDE,
+# and reading back a file the tool wrote for its own user only needs DAC_READ_SEARCH.
+_HELPER_USER = "0"
+_HELPER_SECURITY = ("--cap-drop=ALL", "--security-opt=no-new-privileges")
+_HELPER_CAPS = {"copy_in": ("DAC_OVERRIDE",), "prepare": (), "control_in": (), "copy_out": ("DAC_READ_SEARCH",)}
+_OPEN_MODE = "0777"
 
 
 class EngineUnavailable(QaError):
@@ -145,6 +162,18 @@ class Engine:
 
 
 
+def is_service_user(text: object) -> bool:
+    """Whether ``text`` is ``UID`` or ``UID:GID`` in digits: a name could mean anything in the image."""
+    return isinstance(text, str) and _SERVICE_USER.fullmatch(text) is not None
+
+
+@dataclass(frozen=True)
+class ServiceSpec:
+    image: str  # name@sha256:<digest>; never pulled
+    script: str  # shell text, run as /qa-ctl/service.sh from ``workdir``; it travels in a tar on stdin
+    user: Optional[str] = None  # UID or UID:GID
+
+
 @dataclass(frozen=True)
 class ContainerSpec:
     execution_id: str
@@ -154,7 +183,8 @@ class ContainerSpec:
     archive: Path
     workdir: str
     timeout_s: float
-    max_bytes: int  # per stream of the test step, and the evidence copied out
+    max_bytes: int  # per stream of the test step, the service log, and the evidence copied out
+    service: Optional[ServiceSpec] = None
 
 
 @dataclass(frozen=True)
@@ -169,12 +199,18 @@ class ContainerOutcome:
     facts: DaemonFacts
     anomalies: Tuple[str, ...] = ()
     cleanup_failed: Tuple[str, ...] = ()  # exact names of objects that could not be removed
+    # {"image", "image_id", "network_mode", "running_at_end", "exit_code"} as the daemon described the service; None without one
+    service: Optional[dict] = None
+    service_log: bytes = b""  # what ``logs`` returned, stdout then stderr, within ``max_bytes``
+    service_log_dropped: int = 0  # bytes of it past the cap
+    service_log_error: Optional[str] = None  # connection_lost or logs_failed: the log could not be read
 
 
 # --------------------------------------------------------------------------- the project archive
 
 def _is_skipped(name: str) -> bool:
-    return any(part.casefold() in _SKIPPED_DIRS for part in name.split("/"))
+    parts = name.split("/")
+    return any(part.casefold() in _SKIPPED_DIRS for part in parts) or parts[0].casefold() == INPUT_DIR
 
 
 def _raise(exc: OSError) -> None:
@@ -230,8 +266,46 @@ def _too_large(limit: int) -> QaError:
     return QaError("project_too_large", "the project archive would exceed the cap", limit=limit)
 
 
-def project_archive(root: Path, dest: Path, max_bytes: int) -> int:
-    """Pack the project's files into ``dest`` and return its size. Links stay links; no owner from this host goes along."""
+def _plain_name(name: object) -> bool:
+    return isinstance(name, str) and bool(name) and not name.startswith("/") and all(
+        part not in ("", ".", "..") for part in name.split("/"))
+
+
+def _directory_entry(name: str) -> tarfile.TarInfo:
+    info = _anonymous(tarfile.TarInfo(name))
+    info.type, info.mode = tarfile.DIRTYPE, 0o755
+    return info
+
+
+def _pack_inputs(tar: tarfile.TarFile, inputs: Sequence[Tuple[str, Path]], max_bytes: int) -> None:
+    """Each input at ``.qa-input/<name>``, readable by any user the service runs as. A source is read once, never through a link."""
+    made = set()
+    for name, source in inputs:
+        if not _plain_name(name):
+            raise QaError("project_unreadable", "an input name must be a plain relative path", name=str(name))
+        try:
+            data = read_limited(Path(source), max_bytes)
+        except FileTooLarge:
+            raise _too_large(max_bytes) from None
+        except OSError as exc:
+            raise QaError("project_unreadable", "an input could not be read", name=name, error=type(exc).__name__) from None
+        parts = (INPUT_DIR + "/" + name).split("/")
+        for depth in range(1, len(parts)):
+            directory = "/".join(parts[:depth])
+            if directory not in made:
+                made.add(directory)
+                tar.addfile(_directory_entry(directory))
+        info = _anonymous(tarfile.TarInfo("/".join(parts)))
+        info.size, info.mode = len(data), 0o644
+        if tar.offset + 2 * tarfile.BLOCKSIZE + len(data) > max_bytes:
+            raise _too_large(max_bytes)
+        tar.addfile(info, io.BytesIO(data))
+
+
+def project_archive(root: Path, dest: Path, max_bytes: int, inputs: Sequence[Tuple[str, Path]] = ()) -> int:
+    """Pack the project's files into ``dest`` and return its size. Links stay links; no owner from this host goes along.
+
+    ``inputs`` are (name under ``.qa/work/``, file) pairs, packed after the project at ``.qa-input/<name>``."""
     names = _project_names(root)
     try:
         with tarfile.open(str(dest), "w", format=tarfile.GNU_FORMAT) as tar:
@@ -250,6 +324,7 @@ def project_archive(root: Path, dest: Path, max_bytes: int) -> int:
                     continue
                 except OSError as exc:
                     raise QaError("project_unreadable", "a project file could not be read", name=name, error=type(exc).__name__) from None
+            _pack_inputs(tar, inputs, max_bytes)
         size = os.stat(str(dest)).st_size
         if size > max_bytes:
             raise _too_large(max_bytes)
@@ -272,11 +347,68 @@ def _require_valid(spec: ContainerSpec) -> None:
         raise QaError("container_spec_invalid", "the image must be pinned as name@sha256:<digest>", field="image")
     if _WORKDIR.fullmatch(spec.workdir) is None or any(part in (".", "..") for part in spec.workdir.split("/")):
         raise QaError("container_spec_invalid", "the working directory must lie under /work", field="workdir")
+    service = spec.service
+    if service is not None:
+        if not is_pinned(service.image):
+            raise QaError("container_spec_invalid", "the service image must be pinned as name@sha256:<digest>", field="service.image")
+        if service.user is not None and not is_service_user(service.user):
+            raise QaError("container_spec_invalid", "the service user must be UID or UID:GID", field="service.user")
+        if not isinstance(service.script, str):
+            raise QaError("container_spec_invalid", "the service script must be text", field="service.script")
 
 
 def _wrapped(script: str) -> bytes:
     """``sh -s`` reads its script from stdin, so the commands get their own empty stdin and cannot read what follows them."""
     return b"(\n" + script.encode("utf-8", "surrogateescape") + b"\n) </dev/null\n"
+
+
+def _control_archive(dest: Path, script: str) -> None:
+    """A tar holding only ``service.sh``: the script reaches its volume on stdin, never on a command line."""
+    data = script.encode("utf-8", "surrogateescape") + b"\n"
+    info = _anonymous(tarfile.TarInfo(SERVICE_SCRIPT))
+    info.size, info.mode = len(data), 0o644
+    with tarfile.open(str(dest), "w", format=tarfile.GNU_FORMAT) as tar:
+        tar.addfile(info, io.BytesIO(data))
+
+
+def _first(reported: object) -> dict:
+    first = reported[0] if isinstance(reported, list) and reported else None
+    return first if isinstance(first, dict) else {}
+
+
+def _section(info: dict, key: str) -> dict:
+    value = info.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value: object) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def _service_facts(image: str, info: dict) -> dict:
+    """What the record says about the service. Anything the daemon did not say stays None; not seen running is not running."""
+    state = _section(info, "State")
+    running = state.get("Running") is True
+    code = state.get("ExitCode")
+    return {"image": image, "image_id": _text(info.get("Image")), "network_mode": _text(_section(info, "HostConfig").get("NetworkMode")),
+            "running_at_end": running, "exit_code": code if not running and isinstance(code, int) and not isinstance(code, bool)
+            and state.get("Status") in ("exited", "dead") else None}
+
+
+def _effective_network(test_mode: str, service_info: Optional[dict]) -> Tuple[str, bool]:
+    """(the network mode to record, whether the tests were isolated).
+
+    Without a service the tests are isolated only with mode ``none``. With one, only in the namespace of exactly this run's
+    service (``container:<the Id the daemon reports for it>``) whose own mode is ``none``: then the pair shares loopback and
+    nothing else, and the record says ``none``. Anything else is the test container's mode as reported, not isolated; a
+    test container that reports ``none`` here did not join the service it was started for."""
+    if service_info is None:
+        return test_mode, test_mode == "none"
+    ident = _text(service_info.get("Id"))
+    service_mode = _section(service_info, "HostConfig").get("NetworkMode")
+    if ident is not None and test_mode == "container:" + ident and service_mode == "none":
+        return "none", True
+    return test_mode, False
 
 
 def _read_evidence(stdout: bytes, max_bytes: int) -> Tuple[Dict[str, bytes], Optional[str]]:
@@ -291,7 +423,8 @@ class _Pipeline:
     def __init__(self, engine: Engine, spec: ContainerSpec) -> None:
         self.engine, self.spec = engine, spec
         self.name = "qa-" + spec.execution_id.lower()
-        self.work, self.evidence = self.name + "-work", self.name + "-evidence"
+        self.work, self.evidence, self.control = self.name + "-work", self.name + "-evidence", self.name + "-ctl"
+        self.service = self.name + "-svc"
         self.label = "--label=qa.execution=" + spec.execution_id
         self.containers: List[str] = []  # each name is recorded before the spawn that could create it
         self.volumes: List[str] = []
@@ -310,7 +443,7 @@ class _Pipeline:
             return True
         return False
 
-    def _require_ok(self, step: str, done: runner.RunOutcome) -> None:
+    def _require_ok(self, step: str, done: runner.RunOutcome, image: Optional[str] = None) -> None:
         if self._lost(done):
             raise EngineUnavailable("connection_lost", step=step)
         if done.timed_out:
@@ -318,28 +451,80 @@ class _Pipeline:
         if done.exit_code != 0:
             complaint = done.stderr.lower()
             if b"no such image" in complaint or b"unable to find image" in complaint:
-                raise QaError("container_image_missing", "the image is not on this engine, and a run never pulls", image=self.spec.image)
+                raise QaError("container_image_missing", "the image is not on this engine, and a run never pulls",
+                              image=image or self.spec.image)
             raise QaError("container_step_failed", "a pipeline step failed", step=step, exit_code=done.exit_code)
 
     def _container(self, head: List[str], suffix: str, network: str, entrypoint: str, mounts: Sequence[str],
-                   command: Sequence[str], confined: bool = False) -> List[str]:
-        """The arguments for one container; records its name, so cleanup knows it from here on."""
+                   command: Sequence[str], confined: bool = False, image: Optional[str] = None,
+                   user: Optional[str] = None, helper: Optional[str] = None) -> List[str]:
+        """The arguments for one container; records its name, so cleanup knows it from here on. ``helper`` names a file
+        step, which runs as root with only that step's capabilities."""
         name = self.name + suffix
         self.containers.append(name)
         args = head + ["--pull=never", "--network=" + network, "--entrypoint=" + entrypoint, self.label, "--name=" + name]
         if confined:
             args += list(_CONFINED) + ["--workdir=" + self.spec.workdir]
-        return args + ["--volume=" + mount for mount in mounts] + [self.spec.image] + list(command)
+        if helper is not None:
+            args += [*_HELPER_SECURITY, *("--cap-add=" + cap for cap in _HELPER_CAPS[helper]), "--user=" + _HELPER_USER]
+        if user is not None:
+            args.append("--user=" + user)
+        return args + ["--volume=" + mount for mount in mounts] + [image or self.spec.image] + list(command)
 
     def _create_volumes(self) -> None:
-        for volume in (self.work, self.evidence):
+        for volume in (self.work, self.evidence) + ((self.control,) if self.spec.service is not None else ()):
             self.volumes.append(volume)
             self._require_ok("volume_create", self._call(["volume", "create", self.label, volume]))
 
     def _copy_in(self) -> None:
         args = self._container(["run", "--rm", "-i"], "-in", "none", "tar", [self.work + ":" + WORK_MOUNT],
-                               ["-x", "--no-same-owner", "-C", WORK_MOUNT])
+                               ["-x", "--no-same-owner", "-C", WORK_MOUNT], helper="copy_in")
         self._require_ok("copy_in", self._call(args, stdin_path=self.spec.archive, timeout_s=_COPY_TIMEOUT_S))
+
+    def _open_volumes(self) -> None:
+        """The tests run as the image's own user, which need not be root, and a new volume belongs to root: let any user
+        write at the top of the working copy and of the evidence volume. Only the top: not recursive. Both volumes are this
+        run's own; the only other container that mounts one is the run's service, and it mounts the working copy
+        read-only."""
+        args = self._container(["run", "--rm"], "-prep", "none", "chmod",
+                               [self.work + ":" + WORK_MOUNT, self.evidence + ":" + EVIDENCE_MOUNT],
+                               [_OPEN_MODE, WORK_MOUNT, EVIDENCE_MOUNT], helper="prepare")
+        self._require_ok("prepare", self._call(args))
+
+    def _copy_control(self, scratch: Path) -> None:
+        archive = scratch / "control.tar"
+        _control_archive(archive, self.spec.service.script)
+        args = self._container(["run", "--rm", "-i"], "-ctl-in", "none", "tar", [self.control + ":" + CONTROL_MOUNT],
+                               ["-x", "--no-same-owner", "-C", CONTROL_MOUNT], helper="control_in")
+        self._require_ok("control_in", self._call(args, stdin_path=archive, timeout_s=_COPY_TIMEOUT_S))
+
+    def _start_service(self) -> None:
+        """Detached, with no network of its own: the tests join its namespace, so loopback is all either of them has."""
+        service = self.spec.service
+        args = self._container(["run", "-d"], "-svc", "none", "sh", [self.work + ":" + WORK_MOUNT + ":ro", self.control + ":" + CONTROL_MOUNT + ":ro"],
+                               [CONTROL_MOUNT + "/" + SERVICE_SCRIPT], confined=True, image=service.image, user=service.user)
+        self._require_ok("service_start", self._call(args), image=service.image)
+
+    def _describe_service(self) -> Tuple[dict, bytes, int, Optional[str]]:
+        """The service as the daemon describes it after the tests, its log and the bytes of it dropped, or why there is no
+        log. Neither may cost the test result: a service that cannot be described is simply not counted as isolated."""
+        done = self._call(["inspect", self.service])
+        info = {} if done.timed_out or done.exit_code != 0 else self._parsed(done.stdout)
+        logs = self._call(["logs", self.service], timeout_s=_COPY_TIMEOUT_S, max_bytes=self.spec.max_bytes)
+        if self._lost(logs):
+            return info, b"", 0, "connection_lost"
+        if logs.timed_out or logs.exit_code != 0:
+            return info, b"", 0, "logs_failed"
+        text = logs.stdout + logs.stderr
+        dropped = logs.stdout_dropped + logs.stderr_dropped + max(len(text) - self.spec.max_bytes, 0)
+        return info, text[:self.spec.max_bytes], dropped, None
+
+    @staticmethod
+    def _parsed(stdout: bytes) -> dict:
+        try:
+            return _first(loads(stdout))
+        except QaError:
+            return {}
 
     def _install(self, script: Path) -> runner.RunOutcome:
         args = self._container(["run", "--rm", "-i"], "-install", "bridge", "sh", [self.work + ":" + WORK_MOUNT], ["-s"], confined=True)
@@ -355,15 +540,11 @@ class _Pipeline:
             raise EngineUnavailable("connection_lost", step="inspect")
         if done.timed_out or done.exit_code != 0:
             return {}
-        try:
-            reported = loads(done.stdout)
-        except QaError:
-            return {}
-        first = reported[0] if isinstance(reported, list) and reported else None
-        return first if isinstance(first, dict) else {}
+        return self._parsed(done.stdout)
 
     def _test(self, script: Path) -> Tuple[runner.RunOutcome, dict]:
-        args = self._container(["create", "-i"], "", "none", "sh", [self.work + ":" + WORK_MOUNT, self.evidence + ":" + EVIDENCE_MOUNT],
+        network = "none" if self.spec.service is None else "container:" + self.service
+        args = self._container(["create", "-i"], "", network, "sh", [self.work + ":" + WORK_MOUNT, self.evidence + ":" + EVIDENCE_MOUNT],
                                ["-s"], confined=True)
         self._require_ok("create", self._call(args))
         done = self._call(["start", "-a", "-i", self.name], stdin_path=script, timeout_s=self.spec.timeout_s, max_bytes=self.spec.max_bytes)
@@ -385,7 +566,7 @@ class _Pipeline:
 
     def _copy_out(self) -> Tuple[Dict[str, bytes], Optional[str]]:
         args = self._container(["run", "--rm"], "-out", "none", "tar", [self.evidence + ":" + EVIDENCE_MOUNT + ":ro"],
-                               ["-c", "-C", EVIDENCE_MOUNT, "."])
+                               ["-c", "-C", EVIDENCE_MOUNT, "."], helper="copy_out")
         done = self._call(args, timeout_s=_COPY_TIMEOUT_S, max_bytes=self.spec.max_bytes)
         if self._lost(done):
             return {}, "connection_lost"
@@ -398,6 +579,9 @@ class _Pipeline:
     def steps(self, scratch: Path, facts: DaemonFacts) -> ContainerOutcome:
         self._create_volumes()
         self._copy_in()
+        self._open_volumes()
+        if self.spec.service is not None:
+            self._copy_control(scratch)
         install_ran = self.spec.install_script is not None
         if self.spec.install_script is not None:
             install_path = scratch / "install.sh"
@@ -406,17 +590,24 @@ class _Pipeline:
             if installed.timed_out or installed.exit_code != 0:
                 return ContainerOutcome(run=installed, evidence={}, evidence_error="install_failed", install_ran=True, install_failed=True,
                                         network_mode="", image_id="", facts=facts)
+        if self.spec.service is not None:
+            self._start_service()
         script = scratch / "test.sh"
         script.write_bytes(_wrapped(self.spec.script))
         done, info = self._test(script)
-        host = info.get("HostConfig")
-        mode = host.get("NetworkMode") if isinstance(host, dict) else None
-        network_mode = mode if isinstance(mode, str) and mode else "unknown"
+        mode = _section(info, "HostConfig").get("NetworkMode")
+        reported = mode if isinstance(mode, str) and mode else "unknown"
+        service, service_info, service_log, service_log_dropped, service_log_error = None, None, b"", 0, None
+        if self.spec.service is not None:
+            service_info, service_log, service_log_dropped, service_log_error = self._describe_service()
+            service = _service_facts(self.spec.service.image, service_info)
+        network_mode, isolated = _effective_network(reported, service_info)
         image = info.get("Image")
         evidence, evidence_error = self._copy_out()
         return ContainerOutcome(run=done, evidence=evidence, evidence_error=evidence_error, install_ran=install_ran, install_failed=False,
                                 network_mode=network_mode, image_id=image if isinstance(image, str) else "", facts=facts,
-                                anomalies=("network_not_isolated",) if network_mode != "none" else ())
+                                anomalies=() if isolated else ("network_not_isolated",), service=service, service_log=service_log,
+                                service_log_dropped=service_log_dropped, service_log_error=service_log_error)
 
     def _removed(self, args: List[str]) -> bool:
         try:

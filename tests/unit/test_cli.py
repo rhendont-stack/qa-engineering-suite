@@ -209,6 +209,7 @@ REPORTS = {
     "ctrf": '{"results": {"tests": [{"name": "t", "status": "passed", "duration": 1}]}}',
     "sarif": '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "scanner"}}, "results": []}]}',
     "mutation": '{"schemaVersion": "2", "files": {"a.js": {"language": "javascript", "mutants": [{"id": "1", "mutatorName": "m", "status": "Killed", "location": {"start": {"line": 1, "column": 1}}}]}}}',
+    "k6": '{"metrics": {"m": {"type": "trend", "values": {"avg": 1}, "thresholds": {"avg<2": {"ok": true}}}}}',
 }
 
 
@@ -224,7 +225,8 @@ def _report_file(tmp_path, fmt):
     return str(path)
 
 
-@pytest.mark.parametrize("fmt,category", [("junit", "functional"), ("ctrf", "functional"), ("sarif", "security"), ("mutation", "functional")])
+@pytest.mark.parametrize("fmt,category", [("junit", "functional"), ("ctrf", "functional"), ("sarif", "security"), ("mutation", "functional"),
+                                          ("k6", "performance")])
 def test_ingest_category_defaults_by_format(executed, qa_cli, tmp_path, fmt, category):  # T18-R5
     code, out = qa_cli("ingest", fmt, _report_file(tmp_path, fmt), "--from", executed)
     assert code == 0 and out["event"].startswith("EVT-")

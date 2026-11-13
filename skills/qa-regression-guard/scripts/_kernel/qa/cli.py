@@ -51,6 +51,7 @@ _INPUT_ERROR = 2
 _INTERNAL_ERROR = 70
 _REPORT_FORMATS = ("md", "json", "sarif", "executive")
 _DEFAULT_REPORT_FORMATS = ("md", "json")
+_INGEST_CATEGORIES = {"sarif": "security", "k6": "performance"}  # `qa ingest`'s default category per format; else functional
 
 
 class _HelpRequested(Exception):
@@ -203,11 +204,17 @@ def _add_execution_commands(groups: Dict[str, Any]) -> None:
     run.add_argument("--allow-empty", action="store_true", help="a report with no tests is not inconclusive")
     run.add_argument("--container", metavar="IMAGE@DIGEST", help="run in a container from this image, which is never pulled")
     run.add_argument("--install", metavar="SHELL", help="with --container: install dependencies first, with a network; needs install-dependencies")
+    run.add_argument("--service", metavar="IMAGE@DIGEST",
+                     help="with --container: start a fixture service from this image; it and the tests share loopback and no other network")
+    run.add_argument("--service-run", metavar="SHELL", help="with --service: the shell text that starts the service; guarded as test execution")
+    run.add_argument("--service-user", metavar="UID[:GID]", help="with --service: the numeric user the service runs as")
+    run.add_argument("--input", action="append", metavar="PATH", default=[], dest="inputs",
+                     help="with --container: a file under .qa/work/ (relative to the project root), found at /work/.qa-input/ in the container")
     attach = _command(groups, "ingest", "attach a report file to a recorded execution, or import an evidence bundle")
-    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "bundle"), metavar="FORMAT")
+    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6", "bundle"), metavar="FORMAT")
     attach.add_argument("file", metavar="FILE")
     attach.add_argument("--from", dest="from_execution", metavar="EXE", help="the execution the report belongs to (not for a bundle)")
-    attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, else functional)")
+    attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, performance for k6, else functional)")
     _group(groups, "result", "change recorded results")
     reclassify = _command(groups, "result reclassify", "change a result's status within the limits, citing evidence")
     reclassify.add_argument("result", metavar="RES")
@@ -716,7 +723,8 @@ def cmd_run(args: argparse.Namespace, ctx: Context) -> int:
         command=_command_words(args), shell=args.shell, cwd=_working_directory(ctx.ws),
         reports=tuple(_report_pair(text) for text in args.report),
         timeout_s=args.timeout, attempt_of=args.attempt_of, activity=args.activity, environment=args.environment,
-        scope=args.scope, allow_empty=args.allow_empty, category=args.category, container=args.container, install=args.install)
+        scope=args.scope, allow_empty=args.allow_empty, category=args.category, container=args.container, install=args.install,
+        service=args.service, service_run=args.service_run, service_user=args.service_user, inputs=tuple(args.inputs))
     result = execution.execute(ctx.ws, ctx.actor, request)
     ctx.reply(**result)
     return _RUN_EXIT[result["status"]]
@@ -731,7 +739,7 @@ def cmd_ingest(args: argparse.Namespace, ctx: Context) -> int:
     if args.from_execution is None:
         raise QaError("usage", "--from is required: the execution the report belongs to")
     _refuse_irregular(args.file)
-    category = args.category if args.category is not None else "security" if args.format == "sarif" else "functional"
+    category = args.category if args.category is not None else _INGEST_CATEGORIES.get(args.format, "functional")
     ctx.reply(**execution.ingest_file(ctx.ws, ctx.actor, args.format, Path(args.file), from_execution=args.from_execution,
                                       category=category))
     return 0

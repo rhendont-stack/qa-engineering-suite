@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
 
 import pytest
 
-from helpers import FIXTURES, answer_key, base
+from helpers import FIXTURES, LAUNCHER, REPO, answer_key, base
 
 GENERATOR = FIXTURES / "regression-repo" / "generate.py"
 PYTEST = ("-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "junit_family=xunit2", "--junitxml={evidence}/junit.xml")
@@ -193,3 +195,56 @@ def test_f7_c4_passes_its_test_while_neighbouring_inputs_stay_wrong(qa_on_genera
     assert json.loads(done.stdout) == [5, 5, 10, 5, 5, 10]             # the docstring gives 10 from 20 units: only 22 was made right
     source = (project.root / "orders" / "pricing.py").read_text(encoding="utf-8")
     assert "quantity == 22" in source and "quantity > 25" in source
+
+
+# ------------------------------------------------------------------------------------------- the contract diff at C2, in a container
+# The command is read from the ``qa-leg`` block of the skill's references/tools.md, the one text the skill follows.
+
+TOOLS_MD = REPO / "skills" / "qa-regression-guard" / "references" / "tools.md"
+LEG_PREFIX = ["python3", ".claude/skills/qa-regression-guard/scripts/qa.py", "--role", "verifier", "--skill", "qa-regression-guard"]
+
+
+def pinned_image(image_id):
+    listing = json.loads((REPO / "shared" / "policies" / "container-images.json").read_text(encoding="utf-8"))
+    return next(entry["image"] for entry in listing["images"] if entry["id"] == image_id)
+
+
+def contract_diff_words():
+    """The words of the ``qa-leg contract-diff`` block, after the launcher prefix, with ``<spec>`` read as the project's ``openapi.yaml``."""
+    match = re.search(r"^```qa-leg contract-diff((?: [\w-]+=\S+)*)\n(.*?)\n```$", TOOLS_MD.read_text(encoding="utf-8"), re.M | re.S)
+    assert match, "references/tools.md has no qa-leg contract-diff block"
+    attributes = dict(a.split("=", 1) for a in match.group(1).split())
+    assert attributes == {"grant": "none", "report": "junit"}, attributes
+    words = shlex.split(match.group(2).replace("<spec>", "openapi.yaml"))
+    assert words[:len(LEG_PREFIX)] == LEG_PREFIX, words[:len(LEG_PREFIX)]
+    return words[len(LEG_PREFIX):]
+
+
+@pytest.mark.docker
+def test_f7_c2_contract_diff_in_container(qa_on_generated):
+    engine = os.environ.get("QA_TEST_CONTAINER_ENGINE")
+    if not engine:
+        pytest.skip("tool missing: QA_TEST_CONTAINER_ENGINE is not set")
+    project = qa_on_generated("regression-repo", checkout=2)
+    assert project.cli("config", "set", "container.engine", engine, "--approval", "fixture test")[0] == 0
+    c0, c1, c2 = commits(project.root)
+    base_spec = project.root / ".qa" / "work" / "contract" / "base.yaml"       # the base version: C1's contract, written by the skill's helper
+    done = subprocess.run([sys.executable, "-I", str(REPO / "skills" / "qa-regression-guard" / "scripts" / "git_read.py"), "show", "--rev", c1,
+                           "--path", "openapi.yaml", "--out", ".qa/work/contract/base.yaml"], cwd=str(project.root), capture_output=True,
+                          text=True, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert json.loads(done.stdout)["commit"] == c1 and base_spec.read_text(encoding="utf-8") == git(project.root, "show", "%s:openapi.yaml" % c1)
+    assert "payable_cents" in base_spec.read_text(encoding="utf-8") and "amount_due_cents" in (project.root / "openapi.yaml").read_text(encoding="utf-8")
+    words = contract_diff_words()
+    assert words[words.index("--container") + 1] == pinned_image("oasdiff")
+    done = subprocess.run([sys.executable, str(LAUNCHER), "--workspace", str(project.root), "--role", "verifier", "--skill", "qa-regression-guard",
+                           *words], cwd=str(project.root), capture_output=True, timeout=600)
+    out = json.loads(done.stdout)
+    print("contract diff:", out.get("execution"), out.get("status"), out.get("reason"))
+    assert (done.returncode, out["status"]) == (1, "failed"), out
+    evidence = project.root / out["evidence"]
+    report = (evidence / "reports" / "oasdiff.xml").read_text(encoding="utf-8")
+    print(report)
+    assert "payable_cents" in report, report                       # the breaking change names the response field that was renamed
+    recorded = project.cli("state", "show", "executions")[1]["state"][out["execution"]]
+    assert recorded["container"]["network_mode"] == "none"

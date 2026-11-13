@@ -107,7 +107,7 @@
       "additionalProperties": false
     },
     "container": {
-      "description": "How a run that reached the engine was isolated. image_id, daemon_version and network_mode are null when the engine did not say. engine_kind never names the host.",
+      "description": "How a run that reached the engine was isolated. image_id, daemon_version and network_mode are null when the engine did not say. engine_kind never names the host. network_mode is none only when the tests had no network: alone with mode none, or in the namespace of this run's own service whose mode is none. service is absent in records written before services existed.",
       "type": "object",
       "properties": {
         "image": {"type": "string"},
@@ -115,9 +115,23 @@
         "engine_kind": {"enum": ["local", "ssh"]},
         "daemon_version": {"type": ["string", "null"]},
         "network_mode": {"type": ["string", "null"]},
-        "install_ran": {"type": "boolean"}
+        "install_ran": {"type": "boolean"},
+        "service": {"anyOf": [{"$ref": "#/$defs/service"}, {"type": "null"}]}
       },
       "required": ["image", "image_id", "engine_kind", "daemon_version", "network_mode", "install_ran"],
+      "additionalProperties": false
+    },
+    "service": {
+      "description": "The fixture service of a container run, as the daemon described it after the tests. image_id and network_mode are null when it did not say; running_at_end is false unless it was seen running; exit_code is set only for a service that had exited.",
+      "type": "object",
+      "properties": {
+        "image": {"type": "string"},
+        "image_id": {"type": ["string", "null"]},
+        "network_mode": {"type": ["string", "null"]},
+        "running_at_end": {"type": "boolean"},
+        "exit_code": {"type": ["integer", "null"]}
+      },
+      "required": ["image", "image_id", "network_mode", "running_at_end", "exit_code"],
       "additionalProperties": false
     },
     "evidence_manifest": {
@@ -133,7 +147,7 @@
     "declared_report": {
       "type": "object",
       "properties": {
-        "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation"]},
+        "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6"]},
         "pattern": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
         "error": {"enum": ["report_missing", "report_invalid", null]}
@@ -142,16 +156,20 @@
       "additionalProperties": false
     },
     "test_report": {
+      "description": "metrics and label appear only for a report that carried metrics (a k6 summary): what the run measured, per metric and statistic, labelled measured.",
       "type": "object",
       "properties": {
-        "format": {"enum": ["junit", "ctrf", "sarif", "mixed"]},
+        "format": {"enum": ["junit", "ctrf", "sarif", "k6", "mixed"]},
         "kind": {"const": "tests"},
         "tests": {"type": "integer", "minimum": 0},
         "failures": {"type": "integer", "minimum": 0},
         "errors": {"type": "integer", "minimum": 0},
-        "skipped": {"type": "integer", "minimum": 0}
+        "skipped": {"type": "integer", "minimum": 0},
+        "metrics": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "number"}}},
+        "label": {"const": "measured"}
       },
       "required": ["format", "kind", "tests", "failures", "errors", "skipped"],
+      "dependentRequired": {"metrics": ["label"], "label": ["metrics"]},
       "additionalProperties": false
     },
     "alert_report": {

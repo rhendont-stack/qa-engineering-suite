@@ -1,0 +1,2 @@
+# Pinned to an old release with published advisories; the corpus scans this manifest only, nothing is installed.
+jinja2==2.10

@@ -1,12 +1,16 @@
 {
   "version": 1,
   "skills": [
+    "qa-api-testing",
     "qa-codebase-intelligence",
+    "qa-database",
     "qa-mutation",
     "qa-orchestrator",
+    "qa-performance",
     "qa-regression-guard",
     "qa-reporting",
     "qa-requirements",
+    "qa-security",
     "qa-test-execution",
     "qa-test-generation",
     "qa-test-strategy"
@@ -47,6 +51,34 @@
     {
       "key": "measure-test-effectiveness",
       "owner": "qa-mutation"
+    },
+    {
+      "key": "verify-api-conformance",
+      "owner": "qa-api-testing"
+    },
+    {
+      "key": "check-documented-api-authorization",
+      "owner": "qa-api-testing"
+    },
+    {
+      "key": "audit-database-integrity",
+      "owner": "qa-database"
+    },
+    {
+      "key": "analyse-query-plans",
+      "owner": "qa-database"
+    },
+    {
+      "key": "find-security-weaknesses",
+      "owner": "qa-security"
+    },
+    {
+      "key": "adversarial-authorization-testing",
+      "owner": "qa-security"
+    },
+    {
+      "key": "measure-performance-under-load",
+      "owner": "qa-performance"
     }
   ]
 }

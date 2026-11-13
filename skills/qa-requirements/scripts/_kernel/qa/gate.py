@@ -167,10 +167,12 @@ def _no_unresolved_findings(c: dict, st: dict, ctx: GateContext) -> _Outcome:
 
 def _is_suite_run(record: dict) -> bool:
     """A clean scan is not a suite run, and a dirty scan does not fail one. Nor is a run that declared only measurement
-    reports: a coverage file says how much code ran, not that the tests passed."""
+    reports: a coverage file says how much code ran, not that the tests passed. Nor is a load test: its thresholds say how
+    the system held up under load, not whether the project's suite passed."""
     reports = record.get("reports") or []
     measured_only = bool(reports) and all(ingest.is_measurement(declared["format"]) for declared in reports)
-    return (record["activity"] == _SUITE_ACTIVITY and not measured_only
+    load_test = any(declared["format"] in ingest.LOAD_TEST_FORMATS for declared in reports)
+    return (record["activity"] == _SUITE_ACTIVITY and not measured_only and not load_test
             and (record["report"] is None or record["report"]["kind"] != "alerts"))
 
 

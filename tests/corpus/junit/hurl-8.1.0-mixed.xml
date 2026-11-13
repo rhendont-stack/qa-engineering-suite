@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?><testsuites><testsuite tests="2" errors="0" failures="1"><testcase id="{WORK}/.qa-input/hurl/hello.hurl" name="{WORK}/.qa-input/hurl/hello.hurl" time="0.027" /><testcase id="{WORK}/.qa-input/hurl/broken.hurl" name="{WORK}/.qa-input/hurl/broken.hurl" time="0.027"><failure>Assert status code
+  --&gt; {WORK}/.qa-input/hurl/broken.hurl:3:6
+   |
+   | GET {{base}}/broken
+ 3 | HTTP 200
+   |      ^^^ actual value is &lt;500&gt;
+   |</failure></testcase></testsuite></testsuites>

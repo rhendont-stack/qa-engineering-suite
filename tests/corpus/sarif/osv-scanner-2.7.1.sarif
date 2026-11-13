@@ -1,0 +1,643 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "addresses": [],
+      "artifacts": [
+        {
+          "length": -1,
+          "location": {
+            "index": -1,
+            "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+          },
+          "parentIndex": -1,
+          "roles": []
+        }
+      ],
+      "graphs": [],
+      "invocations": [],
+      "language": "en-US",
+      "logicalLocations": [],
+      "newlineSequences": [
+        "\r\n",
+        "\n"
+      ],
+      "policies": [],
+      "redactionTokens": [],
+      "results": [
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d34935c893c83dac0ea40e121b98ee38efda2c6fdcf9354db1faaafbf5aad798"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2019-10906' (also known as 'PYSEC-2019-217', 'GHSA-462w-v97r-4m45')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2019-10906",
+          "ruleIndex": 0,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "927631bb02e6c994a7f8af4a10c6dca539f3db5121579a8f069c69414f521502"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2025-27516' (also known as 'PYSEC-2026-1471', 'GHSA-cpwx-vrp4-4pq7')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2025-27516",
+          "ruleIndex": 1,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "cf968ec1fe52b8cd3c9edea16061eb732dd23fe1b5a8e74ab242dbed9b586775"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2020-28493' (also known as 'PYSEC-2021-66', 'SNYK-PYTHON-JINJA2-1012994', 'GHSA-g3rq-g295-4j3m')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2020-28493",
+          "ruleIndex": 2,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "e210d2f9dccbd40fb8dad8419e3cadbe42f2c7b94e671cd1dd603b3b4f26c6a6"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2024-22195' (also known as 'PYSEC-2026-1473', 'GHSA-h5c8-rqwp-cp95')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2024-22195",
+          "ruleIndex": 3,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "0ec026023be9e205ed1711355bba6b0cdc81a61c24786cbc4d8edaae3f0a93ae"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2024-34064' (also known as 'PYSEC-2026-1474', 'GHSA-h75v-3vvj-5mfj')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2024-34064",
+          "ruleIndex": 4,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b1711fdc550712bd08f7745dc99b9005382d8d6a286c515c770b747ce2ab6e9"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2024-56326' (also known as 'PYSEC-2026-1475', 'GHSA-q2x7-8rv6-6q7h')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2024-56326",
+          "ruleIndex": 5,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d34935c893c83dac0ea40e121b98ee38efda2c6fdcf9354db1faaafbf5aad798"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2019-10906' (also known as 'PYSEC-2019-217', 'GHSA-462w-v97r-4m45')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2019-10906",
+          "ruleIndex": 0,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "cf968ec1fe52b8cd3c9edea16061eb732dd23fe1b5a8e74ab242dbed9b586775"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2020-28493' (also known as 'PYSEC-2021-66', 'SNYK-PYTHON-JINJA2-1012994', 'GHSA-g3rq-g295-4j3m')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2020-28493",
+          "ruleIndex": 2,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "927631bb02e6c994a7f8af4a10c6dca539f3db5121579a8f069c69414f521502"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2025-27516' (also known as 'PYSEC-2026-1471', 'GHSA-cpwx-vrp4-4pq7')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2025-27516",
+          "ruleIndex": 1,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "e210d2f9dccbd40fb8dad8419e3cadbe42f2c7b94e671cd1dd603b3b4f26c6a6"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2024-22195' (also known as 'PYSEC-2026-1473', 'GHSA-h5c8-rqwp-cp95')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2024-22195",
+          "ruleIndex": 3,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "0ec026023be9e205ed1711355bba6b0cdc81a61c24786cbc4d8edaae3f0a93ae"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2024-34064' (also known as 'PYSEC-2026-1474', 'GHSA-h75v-3vvj-5mfj')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2024-34064",
+          "ruleIndex": 4,
+          "stacks": [],
+          "taxa": []
+        },
+        {
+          "partialFingerprints": {
+            "primaryLocationLineHash": "1b1711fdc550712bd08f7745dc99b9005382d8d6a286c515c770b747ce2ab6e9"
+          },
+          "attachments": [],
+          "codeFlows": [],
+          "fixes": [],
+          "graphTraversals": [],
+          "graphs": [],
+          "kind": "fail",
+          "level": "warning",
+          "locations": [
+            {
+              "annotations": [],
+              "id": -1,
+              "logicalLocations": [],
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": -1,
+                  "uri": "file://{WORK}/.qa-input/osv/requirements.txt"
+                }
+              },
+              "relationships": []
+            }
+          ],
+          "message": {
+            "arguments": [],
+            "text": "Package 'jinja2@2.10' is vulnerable to 'CVE-2024-56326' (also known as 'PYSEC-2026-1475', 'GHSA-q2x7-8rv6-6q7h')."
+          },
+          "rank": -1,
+          "relatedLocations": [],
+          "ruleId": "CVE-2024-56326",
+          "ruleIndex": 5,
+          "stacks": [],
+          "taxa": []
+        }
+      ],
+      "runAggregates": [],
+      "taxonomies": [],
+      "threadFlowLocations": [],
+      "tool": {
+        "driver": {
+          "contents": [
+            "localizedData",
+            "nonLocalizedData"
+          ],
+          "informationUri": "https://github.com/google/osv-scanner",
+          "isComprehensive": false,
+          "language": "en-US",
+          "locations": [],
+          "name": "osv-scanner",
+          "notifications": [],
+          "rules": [
+            {
+              "deprecatedIds": [
+                "CVE-2019-10906",
+                "PYSEC-2019-217",
+                "GHSA-462w-v97r-4m45"
+              ],
+              "fullDescription": {
+                "markdown": "In Pallets Jinja before 2.10.1, `str.format_map` allows a sandbox escape.\n\nThe sandbox is used to restrict what code can be evaluated when rendering untrusted, user-provided templates. Due to the way string formatting works in Python, the `str.format_map` method could be used to escape the sandbox.\n\nThis issue was previously addressed for the `str.format` method in Jinja 2.8.1, which discusses the issue in detail. However, the less-common `str.format_map` method was overlooked. This release applies the same sandboxing to both methods.\n\nIf you cannot upgrade Jinja, you can override the `is_safe_attribute` method on the sandbox and explicitly disallow the `format_map` method on string objects.",
+                "text": "In Pallets Jinja before 2.10.1, `str.format_map` allows a sandbox escape.\n\nThe sandbox is used to restrict what code can be evaluated when rendering untrusted, user-provided templates. Due to the way string formatting works in Python, the `str.format_map` method could be used to escape the sandbox.\n\nThis issue was previously addressed for the `str.format` method in Jinja 2.8.1, which discusses the issue in detail. However, the less-common `str.format_map` method was overlooked. This release applies the same sandboxing to both methods.\n\nIf you cannot upgrade Jinja, you can override the `is_safe_attribute` method on the sandbox and explicitly disallow the `format_map` method on string objects."
+              },
+              "help": {
+                "markdown": "**Your dependency is vulnerable to [CVE-2019-10906](https://osv.dev/CVE-2019-10906)**\n(Also published as: [PYSEC-2019-217](https://osv.dev/PYSEC-2019-217), [GHSA-462w-v97r-4m45](https://osv.dev/GHSA-462w-v97r-4m45), ).\n\n## [PYSEC-2019-217](https://osv.dev/PYSEC-2019-217)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e In Pallets Jinja before 2.10.1, str.format_map allows a sandbox escape.\n\n\u003c/details\u003e\n\n## [GHSA-462w-v97r-4m45](https://osv.dev/GHSA-462w-v97r-4m45)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e In Pallets Jinja before 2.10.1, `str.format_map` allows a sandbox escape.\n\u003e \n\u003e The sandbox is used to restrict what code can be evaluated when rendering untrusted, user-provided templates. Due to the way string formatting works in Python, the `str.format_map` method could be used to escape the sandbox.\n\u003e \n\u003e This issue was previously addressed for the `str.format` method in Jinja 2.8.1, which discusses the issue in detail. However, the less-common `str.format_map` method was overlooked. This release applies the same sandboxing to both methods.\n\u003e \n\u003e If you cannot upgrade Jinja, you can override the `is_safe_attribute` method on the sandbox and explicitly disallow the `format_map` method on string objects.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-462w-v97r-4m45 | jinja2 | 2.10.1 |\n| PYSEC-2019-217 | jinja2 | 2.10.1 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2019-10906\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n",
+                "text": "**Your dependency is vulnerable to [CVE-2019-10906](https://osv.dev/CVE-2019-10906)**\n(Also published as: [PYSEC-2019-217](https://osv.dev/PYSEC-2019-217), [GHSA-462w-v97r-4m45](https://osv.dev/GHSA-462w-v97r-4m45), ).\n\n## [PYSEC-2019-217](https://osv.dev/PYSEC-2019-217)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e In Pallets Jinja before 2.10.1, str.format_map allows a sandbox escape.\n\n\u003c/details\u003e\n\n## [GHSA-462w-v97r-4m45](https://osv.dev/GHSA-462w-v97r-4m45)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e In Pallets Jinja before 2.10.1, `str.format_map` allows a sandbox escape.\n\u003e \n\u003e The sandbox is used to restrict what code can be evaluated when rendering untrusted, user-provided templates. Due to the way string formatting works in Python, the `str.format_map` method could be used to escape the sandbox.\n\u003e \n\u003e This issue was previously addressed for the `str.format` method in Jinja 2.8.1, which discusses the issue in detail. However, the less-common `str.format_map` method was overlooked. This release applies the same sandboxing to both methods.\n\u003e \n\u003e If you cannot upgrade Jinja, you can override the `is_safe_attribute` method on the sandbox and explicitly disallow the `format_map` method on string objects.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-462w-v97r-4m45 | jinja2 | 2.10.1 |\n| PYSEC-2019-217 | jinja2 | 2.10.1 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2019-10906\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n"
+              },
+              "id": "CVE-2019-10906",
+              "name": "CVE-2019-10906",
+              "properties": {
+                "security-severity": "8.6"
+              },
+              "relationships": [],
+              "shortDescription": {
+                "markdown": "CVE-2019-10906: Jinja2 sandbox escape via string formatting",
+                "text": "CVE-2019-10906: Jinja2 sandbox escape via string formatting"
+              }
+            },
+            {
+              "deprecatedIds": [
+                "CVE-2025-27516",
+                "PYSEC-2026-1471",
+                "GHSA-cpwx-vrp4-4pq7"
+              ],
+              "fullDescription": {
+                "markdown": "An oversight in how the Jinja sandboxed environment interacts with the `|attr` filter allows an attacker that controls the content of a template to execute arbitrary Python code.\n\nTo exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\nJinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to use the `|attr` filter to get a reference to a string's plain format method, bypassing the sandbox. After the fix, the `|attr` filter no longer bypasses the environment's attribute lookup.",
+                "text": "An oversight in how the Jinja sandboxed environment interacts with the `|attr` filter allows an attacker that controls the content of a template to execute arbitrary Python code.\n\nTo exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\nJinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to use the `|attr` filter to get a reference to a string's plain format method, bypassing the sandbox. After the fix, the `|attr` filter no longer bypasses the environment's attribute lookup."
+              },
+              "help": {
+                "markdown": "**Your dependency is vulnerable to [CVE-2025-27516](https://osv.dev/CVE-2025-27516)**\n(Also published as: [PYSEC-2026-1471](https://osv.dev/PYSEC-2026-1471), [GHSA-cpwx-vrp4-4pq7](https://osv.dev/GHSA-cpwx-vrp4-4pq7), ).\n\n## [PYSEC-2026-1471](https://osv.dev/PYSEC-2026-1471)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment interacts with the `|attr` filter allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to use the `|attr` filter to get a reference to a string's plain format method, bypassing the sandbox. After the fix, the `|attr` filter no longer bypasses the environment's attribute lookup.\n\n\u003c/details\u003e\n\n## [GHSA-cpwx-vrp4-4pq7](https://osv.dev/GHSA-cpwx-vrp4-4pq7)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment interacts with the `|attr` filter allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to use the `|attr` filter to get a reference to a string's plain format method, bypassing the sandbox. After the fix, the `|attr` filter no longer bypasses the environment's attribute lookup.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-cpwx-vrp4-4pq7 | jinja2 | 3.1.6 |\n| PYSEC-2026-1471 | jinja2 | 3.1.6 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2025-27516\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n",
+                "text": "**Your dependency is vulnerable to [CVE-2025-27516](https://osv.dev/CVE-2025-27516)**\n(Also published as: [PYSEC-2026-1471](https://osv.dev/PYSEC-2026-1471), [GHSA-cpwx-vrp4-4pq7](https://osv.dev/GHSA-cpwx-vrp4-4pq7), ).\n\n## [PYSEC-2026-1471](https://osv.dev/PYSEC-2026-1471)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment interacts with the `|attr` filter allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to use the `|attr` filter to get a reference to a string's plain format method, bypassing the sandbox. After the fix, the `|attr` filter no longer bypasses the environment's attribute lookup.\n\n\u003c/details\u003e\n\n## [GHSA-cpwx-vrp4-4pq7](https://osv.dev/GHSA-cpwx-vrp4-4pq7)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment interacts with the `|attr` filter allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to use the `|attr` filter to get a reference to a string's plain format method, bypassing the sandbox. After the fix, the `|attr` filter no longer bypasses the environment's attribute lookup.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-cpwx-vrp4-4pq7 | jinja2 | 3.1.6 |\n| PYSEC-2026-1471 | jinja2 | 3.1.6 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2025-27516\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n"
+              },
+              "id": "CVE-2025-27516",
+              "name": "CVE-2025-27516",
+              "properties": {
+                "security-severity": "5.4"
+              },
+              "relationships": [],
+              "shortDescription": {
+                "markdown": "CVE-2025-27516: Jinja2 vulnerable to sandbox breakout through attr filter selecting format method",
+                "text": "CVE-2025-27516: Jinja2 vulnerable to sandbox breakout through attr filter selecting format method"
+              }
+            },
+            {
+              "deprecatedIds": [
+                "CVE-2020-28493",
+                "PYSEC-2021-66",
+                "SNYK-PYTHON-JINJA2-1012994",
+                "GHSA-g3rq-g295-4j3m"
+              ],
+              "fullDescription": {
+                "markdown": "This affects the package jinja2 from 0.0.0 and before 2.11.3. The ReDOS vulnerability of the regex is mainly due to the sub-pattern [a-zA-Z0-9._-]+.[a-zA-Z0-9._-]+ This issue can be mitigated by Markdown to format user content instead of the urlize filter, or by implementing request timeouts and limiting process memory.",
+                "text": "This affects the package jinja2 from 0.0.0 and before 2.11.3. The ReDOS vulnerability of the regex is mainly due to the sub-pattern [a-zA-Z0-9._-]+.[a-zA-Z0-9._-]+ This issue can be mitigated by Markdown to format user content instead of the urlize filter, or by implementing request timeouts and limiting process memory."
+              },
+              "help": {
+                "markdown": "**Your dependency is vulnerable to [CVE-2020-28493](https://osv.dev/CVE-2020-28493)**\n(Also published as: [PYSEC-2021-66](https://osv.dev/PYSEC-2021-66), [GHSA-g3rq-g295-4j3m](https://osv.dev/GHSA-g3rq-g295-4j3m), ).\n\n## [PYSEC-2021-66](https://osv.dev/PYSEC-2021-66)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e This affects the package jinja2 from 0.0.0 and before 2.11.3. The ReDoS vulnerability is mainly due to the `_punctuation_re regex` operator and its use of multiple wildcards. The last wildcard is the most exploitable as it searches for trailing punctuation. This issue can be mitigated by Markdown to format user content instead of the urlize filter, or by implementing request timeouts and limiting process memory.\n\n\u003c/details\u003e\n\n## [GHSA-g3rq-g295-4j3m](https://osv.dev/GHSA-g3rq-g295-4j3m)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e This affects the package jinja2 from 0.0.0 and before 2.11.3. The ReDOS vulnerability of the regex is mainly due to the sub-pattern [a-zA-Z0-9._-]+.[a-zA-Z0-9._-]+ This issue can be mitigated by Markdown to format user content instead of the urlize filter, or by implementing request timeouts and limiting process memory.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-g3rq-g295-4j3m | jinja2 | 2.11.3 |\n| PYSEC-2021-66 | jinja2 | 2.11.3 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2020-28493\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n",
+                "text": "**Your dependency is vulnerable to [CVE-2020-28493](https://osv.dev/CVE-2020-28493)**\n(Also published as: [PYSEC-2021-66](https://osv.dev/PYSEC-2021-66), [GHSA-g3rq-g295-4j3m](https://osv.dev/GHSA-g3rq-g295-4j3m), ).\n\n## [PYSEC-2021-66](https://osv.dev/PYSEC-2021-66)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e This affects the package jinja2 from 0.0.0 and before 2.11.3. The ReDoS vulnerability is mainly due to the `_punctuation_re regex` operator and its use of multiple wildcards. The last wildcard is the most exploitable as it searches for trailing punctuation. This issue can be mitigated by Markdown to format user content instead of the urlize filter, or by implementing request timeouts and limiting process memory.\n\n\u003c/details\u003e\n\n## [GHSA-g3rq-g295-4j3m](https://osv.dev/GHSA-g3rq-g295-4j3m)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e This affects the package jinja2 from 0.0.0 and before 2.11.3. The ReDOS vulnerability of the regex is mainly due to the sub-pattern [a-zA-Z0-9._-]+.[a-zA-Z0-9._-]+ This issue can be mitigated by Markdown to format user content instead of the urlize filter, or by implementing request timeouts and limiting process memory.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-g3rq-g295-4j3m | jinja2 | 2.11.3 |\n| PYSEC-2021-66 | jinja2 | 2.11.3 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2020-28493\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n"
+              },
+              "id": "CVE-2020-28493",
+              "name": "CVE-2020-28493",
+              "properties": {
+                "security-severity": "6.9"
+              },
+              "relationships": [],
+              "shortDescription": {
+                "markdown": "CVE-2020-28493: Regular Expression Denial of Service (ReDoS) in Jinja2",
+                "text": "CVE-2020-28493: Regular Expression Denial of Service (ReDoS) in Jinja2"
+              }
+            },
+            {
+              "deprecatedIds": [
+                "CVE-2024-22195",
+                "PYSEC-2026-1473",
+                "GHSA-h5c8-rqwp-cp95"
+              ],
+              "fullDescription": {
+                "markdown": "The `xmlattr` filter in affected versions of Jinja accepts keys containing spaces. XML/HTML attributes cannot contain spaces, as each would then be interpreted as a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. Note that accepting keys as user input is not common or a particularly intended use case of the `xmlattr` filter, and an application doing so should already be verifying what keys are provided regardless of this fix.",
+                "text": "The `xmlattr` filter in affected versions of Jinja accepts keys containing spaces. XML/HTML attributes cannot contain spaces, as each would then be interpreted as a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. Note that accepting keys as user input is not common or a particularly intended use case of the `xmlattr` filter, and an application doing so should already be verifying what keys are provided regardless of this fix."
+              },
+              "help": {
+                "markdown": "**Your dependency is vulnerable to [CVE-2024-22195](https://osv.dev/CVE-2024-22195)**\n(Also published as: [PYSEC-2026-1473](https://osv.dev/PYSEC-2026-1473), [GHSA-h5c8-rqwp-cp95](https://osv.dev/GHSA-h5c8-rqwp-cp95), ).\n\n## [PYSEC-2026-1473](https://osv.dev/PYSEC-2026-1473)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing spaces. XML/HTML attributes cannot contain spaces, as each would then be interpreted as a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. Note that accepting keys as user input is not common or a particularly intended use case of the `xmlattr` filter, and an application doing so should already be verifying what keys are provided regardless of this fix.\n\n\u003c/details\u003e\n\n## [GHSA-h5c8-rqwp-cp95](https://osv.dev/GHSA-h5c8-rqwp-cp95)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing spaces. XML/HTML attributes cannot contain spaces, as each would then be interpreted as a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. Note that accepting keys as user input is not common or a particularly intended use case of the `xmlattr` filter, and an application doing so should already be verifying what keys are provided regardless of this fix.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-h5c8-rqwp-cp95 | jinja2 | 3.1.3 |\n| PYSEC-2026-1473 | jinja2 | 3.1.3 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2024-22195\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n",
+                "text": "**Your dependency is vulnerable to [CVE-2024-22195](https://osv.dev/CVE-2024-22195)**\n(Also published as: [PYSEC-2026-1473](https://osv.dev/PYSEC-2026-1473), [GHSA-h5c8-rqwp-cp95](https://osv.dev/GHSA-h5c8-rqwp-cp95), ).\n\n## [PYSEC-2026-1473](https://osv.dev/PYSEC-2026-1473)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing spaces. XML/HTML attributes cannot contain spaces, as each would then be interpreted as a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. Note that accepting keys as user input is not common or a particularly intended use case of the `xmlattr` filter, and an application doing so should already be verifying what keys are provided regardless of this fix.\n\n\u003c/details\u003e\n\n## [GHSA-h5c8-rqwp-cp95](https://osv.dev/GHSA-h5c8-rqwp-cp95)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing spaces. XML/HTML attributes cannot contain spaces, as each would then be interpreted as a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. Note that accepting keys as user input is not common or a particularly intended use case of the `xmlattr` filter, and an application doing so should already be verifying what keys are provided regardless of this fix.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-h5c8-rqwp-cp95 | jinja2 | 3.1.3 |\n| PYSEC-2026-1473 | jinja2 | 3.1.3 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2024-22195\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n"
+              },
+              "id": "CVE-2024-22195",
+              "name": "CVE-2024-22195",
+              "properties": {
+                "security-severity": "5.4"
+              },
+              "relationships": [],
+              "shortDescription": {
+                "markdown": "CVE-2024-22195: Jinja vulnerable to HTML attribute injection when passing user input as keys to xmlattr filter",
+                "text": "CVE-2024-22195: Jinja vulnerable to HTML attribute injection when passing user input as keys to xmlattr filter"
+              }
+            },
+            {
+              "deprecatedIds": [
+                "CVE-2024-34064",
+                "PYSEC-2026-1474",
+                "GHSA-h75v-3vvj-5mfj"
+              ],
+              "fullDescription": {
+                "markdown": "The `xmlattr` filter in affected versions of Jinja accepts keys containing non-attribute characters. XML/HTML attributes cannot contain spaces, `/`, `\u003e`, or `=`, as each would then be interpreted as starting a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. The fix for the previous GHSA-h5c8-rqwp-cp95 CVE-2024-22195 only addressed spaces but not other characters.\n\nAccepting keys as user input is now explicitly considered an unintended use case of the `xmlattr` filter, and code that does so without otherwise validating the input should be flagged as insecure, regardless of Jinja version. Accepting _values_ as user input continues to be safe.",
+                "text": "The `xmlattr` filter in affected versions of Jinja accepts keys containing non-attribute characters. XML/HTML attributes cannot contain spaces, `/`, `\u003e`, or `=`, as each would then be interpreted as starting a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. The fix for the previous GHSA-h5c8-rqwp-cp95 CVE-2024-22195 only addressed spaces but not other characters.\n\nAccepting keys as user input is now explicitly considered an unintended use case of the `xmlattr` filter, and code that does so without otherwise validating the input should be flagged as insecure, regardless of Jinja version. Accepting _values_ as user input continues to be safe."
+              },
+              "help": {
+                "markdown": "**Your dependency is vulnerable to [CVE-2024-34064](https://osv.dev/CVE-2024-34064)**\n(Also published as: [PYSEC-2026-1474](https://osv.dev/PYSEC-2026-1474), [GHSA-h75v-3vvj-5mfj](https://osv.dev/GHSA-h75v-3vvj-5mfj), ).\n\n## [PYSEC-2026-1474](https://osv.dev/PYSEC-2026-1474)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing non-attribute characters. XML/HTML attributes cannot contain spaces, `/`, `\u003e`, or `=`, as each would then be interpreted as starting a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. The fix for the previous GHSA-h5c8-rqwp-cp95 CVE-2024-22195 only addressed spaces but not other characters.\n\u003e \n\u003e Accepting keys as user input is now explicitly considered an unintended use case of the `xmlattr` filter, and code that does so without otherwise validating the input should be flagged as insecure, regardless of Jinja version. Accepting _values_ as user input continues to be safe.\n\n\u003c/details\u003e\n\n## [GHSA-h75v-3vvj-5mfj](https://osv.dev/GHSA-h75v-3vvj-5mfj)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing non-attribute characters. XML/HTML attributes cannot contain spaces, `/`, `\u003e`, or `=`, as each would then be interpreted as starting a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. The fix for the previous GHSA-h5c8-rqwp-cp95 CVE-2024-22195 only addressed spaces but not other characters.\n\u003e \n\u003e Accepting keys as user input is now explicitly considered an unintended use case of the `xmlattr` filter, and code that does so without otherwise validating the input should be flagged as insecure, regardless of Jinja version. Accepting _values_ as user input continues to be safe.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-h75v-3vvj-5mfj | jinja2 | 3.1.4 |\n| PYSEC-2026-1474 | jinja2 | 3.1.4 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2024-34064\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n",
+                "text": "**Your dependency is vulnerable to [CVE-2024-34064](https://osv.dev/CVE-2024-34064)**\n(Also published as: [PYSEC-2026-1474](https://osv.dev/PYSEC-2026-1474), [GHSA-h75v-3vvj-5mfj](https://osv.dev/GHSA-h75v-3vvj-5mfj), ).\n\n## [PYSEC-2026-1474](https://osv.dev/PYSEC-2026-1474)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing non-attribute characters. XML/HTML attributes cannot contain spaces, `/`, `\u003e`, or `=`, as each would then be interpreted as starting a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. The fix for the previous GHSA-h5c8-rqwp-cp95 CVE-2024-22195 only addressed spaces but not other characters.\n\u003e \n\u003e Accepting keys as user input is now explicitly considered an unintended use case of the `xmlattr` filter, and code that does so without otherwise validating the input should be flagged as insecure, regardless of Jinja version. Accepting _values_ as user input continues to be safe.\n\n\u003c/details\u003e\n\n## [GHSA-h75v-3vvj-5mfj](https://osv.dev/GHSA-h75v-3vvj-5mfj)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e The `xmlattr` filter in affected versions of Jinja accepts keys containing non-attribute characters. XML/HTML attributes cannot contain spaces, `/`, `\u003e`, or `=`, as each would then be interpreted as starting a separate attribute. If an application accepts keys (as opposed to only values) as user input, and renders these in pages that other users see as well, an attacker could use this to inject other attributes and perform XSS. The fix for the previous GHSA-h5c8-rqwp-cp95 CVE-2024-22195 only addressed spaces but not other characters.\n\u003e \n\u003e Accepting keys as user input is now explicitly considered an unintended use case of the `xmlattr` filter, and code that does so without otherwise validating the input should be flagged as insecure, regardless of Jinja version. Accepting _values_ as user input continues to be safe.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-h75v-3vvj-5mfj | jinja2 | 3.1.4 |\n| PYSEC-2026-1474 | jinja2 | 3.1.4 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2024-34064\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n"
+              },
+              "id": "CVE-2024-34064",
+              "name": "CVE-2024-34064",
+              "properties": {
+                "security-severity": "5.4"
+              },
+              "relationships": [],
+              "shortDescription": {
+                "markdown": "CVE-2024-34064: Jinja vulnerable to HTML attribute injection when passing user input as keys to xmlattr filter",
+                "text": "CVE-2024-34064: Jinja vulnerable to HTML attribute injection when passing user input as keys to xmlattr filter"
+              }
+            },
+            {
+              "deprecatedIds": [
+                "CVE-2024-56326",
+                "PYSEC-2026-1475",
+                "GHSA-q2x7-8rv6-6q7h"
+              ],
+              "fullDescription": {
+                "markdown": "An oversight in how the Jinja sandboxed environment detects calls to `str.format` allows an attacker that controls the content of a template to execute arbitrary Python code.\n\nTo exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\nJinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to store a reference to a malicious string's `format` method, then pass that to a filter that calls it. No such filters are built-in to Jinja, but could be present through custom filters in an application. After the fix, such indirect calls are also handled by the sandbox.",
+                "text": "An oversight in how the Jinja sandboxed environment detects calls to `str.format` allows an attacker that controls the content of a template to execute arbitrary Python code.\n\nTo exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\nJinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to store a reference to a malicious string's `format` method, then pass that to a filter that calls it. No such filters are built-in to Jinja, but could be present through custom filters in an application. After the fix, such indirect calls are also handled by the sandbox."
+              },
+              "help": {
+                "markdown": "**Your dependency is vulnerable to [CVE-2024-56326](https://osv.dev/CVE-2024-56326)**\n(Also published as: [PYSEC-2026-1475](https://osv.dev/PYSEC-2026-1475), [GHSA-q2x7-8rv6-6q7h](https://osv.dev/GHSA-q2x7-8rv6-6q7h), ).\n\n## [PYSEC-2026-1475](https://osv.dev/PYSEC-2026-1475)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment detects calls to `str.format` allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to store a reference to a malicious string's `format` method, then pass that to a filter that calls it. No such filters are built-in to Jinja, but could be present through custom filters in an application. After the fix, such indirect calls are also handled by the sandbox.\n\n\u003c/details\u003e\n\n## [GHSA-q2x7-8rv6-6q7h](https://osv.dev/GHSA-q2x7-8rv6-6q7h)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment detects calls to `str.format` allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to store a reference to a malicious string's `format` method, then pass that to a filter that calls it. No such filters are built-in to Jinja, but could be present through custom filters in an application. After the fix, such indirect calls are also handled by the sandbox.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-q2x7-8rv6-6q7h | jinja2 | 3.1.5 |\n| PYSEC-2026-1475 | jinja2 | 3.1.5 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2024-56326\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n",
+                "text": "**Your dependency is vulnerable to [CVE-2024-56326](https://osv.dev/CVE-2024-56326)**\n(Also published as: [PYSEC-2026-1475](https://osv.dev/PYSEC-2026-1475), [GHSA-q2x7-8rv6-6q7h](https://osv.dev/GHSA-q2x7-8rv6-6q7h), ).\n\n## [PYSEC-2026-1475](https://osv.dev/PYSEC-2026-1475)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment detects calls to `str.format` allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to store a reference to a malicious string's `format` method, then pass that to a filter that calls it. No such filters are built-in to Jinja, but could be present through custom filters in an application. After the fix, such indirect calls are also handled by the sandbox.\n\n\u003c/details\u003e\n\n## [GHSA-q2x7-8rv6-6q7h](https://osv.dev/GHSA-q2x7-8rv6-6q7h)\n\n\u003cdetails\u003e\n\u003csummary\u003eDetails\u003c/summary\u003e\n\n\u003e An oversight in how the Jinja sandboxed environment detects calls to `str.format` allows an attacker that controls the content of a template to execute arbitrary Python code.\n\u003e \n\u003e To exploit the vulnerability, an attacker needs to control the content of a template. Whether that is the case depends on the type of application using Jinja. This vulnerability impacts users of applications which execute untrusted templates.\n\u003e \n\u003e Jinja's sandbox does catch calls to `str.format` and ensures they don't escape the sandbox. However, it's possible to store a reference to a malicious string's `format` method, then pass that to a filter that calls it. No such filters are built-in to Jinja, but could be present through custom filters in an application. After the fix, such indirect calls are also handled by the sandbox.\n\n\u003c/details\u003e\n\n---\n\n### Affected Packages\n\n| Source | Package Name | Package Version |\n| --- | --- | --- |\n| lockfile:{WORK}/.qa-input/osv/requirements.txt | jinja2 | 2.10 |\n\n## Remediation\n\nTo fix these vulnerabilities, update the vulnerabilities past the listed fixed versions below.\n\n### Fixed Versions\n\n| Vulnerability ID | Package Name | Fixed Version |\n| --- | --- | --- |\n| GHSA-q2x7-8rv6-6q7h | jinja2 | 3.1.5 |\n| PYSEC-2026-1475 | jinja2 | 3.1.5 |\n\nIf you believe these vulnerabilities do not affect your code and wish to ignore them, add them to the ignore list in an\n`osv-scanner.toml` file located in the same directory as the lockfile containing the vulnerable dependency.\n\nSee the format and more options in our documentation here: https://google.github.io/osv-scanner/configuration/\n\nAdd or append these values to the following config files to ignore this vulnerability:\n\n`{WORK}/.qa-input/osv/osv-scanner.toml`\n\n```\n[[IgnoredVulns]]\nid = \"CVE-2024-56326\"\nreason = \"Your reason for ignoring this vulnerability\"\n```\n"
+              },
+              "id": "CVE-2024-56326",
+              "name": "CVE-2024-56326",
+              "properties": {
+                "security-severity": "7.8"
+              },
+              "relationships": [],
+              "shortDescription": {
+                "markdown": "CVE-2024-56326: Jinja has a sandbox breakout through indirect reference to format method",
+                "text": "CVE-2024-56326: Jinja has a sandbox breakout through indirect reference to format method"
+              }
+            }
+          ],
+          "supportedTaxonomies": [],
+          "taxa": [],
+          "version": "2.7.1"
+        },
+        "extensions": []
+      },
+      "translations": [],
+      "versionControlProvenance": [],
+      "webRequests": [],
+      "webResponses": []
+    }
+  ],
+  "properties": {}
+}

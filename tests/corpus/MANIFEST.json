@@ -171,5 +171,93 @@
     "normalizations": [],
     "expected": {"files": 2, "mutants": 13, "killed": 9, "timeout": 0, "survived": 1, "no_coverage": 3, "errors": 0, "percent": {"total": 69, "covered": 90}},
     "console": ">> Generated 13 mutations Killed 9 (69%) | >> Mutations with no coverage 3. Test strength 90% | per mutator, summed: KILLED 9 SURVIVED 1 NO_COVERAGE 3, every other status 0 (PIT's statistics block)"
+  },
+  {
+    "file": "k6/k6-2.3.0-thresholds.json",
+    "format": "k6",
+    "producer": "k6",
+    "version": "2.3.0",
+    "command": "python3 tests/corpus/producers/k6_summary/generate.py <workspace> tests/corpus/k6/k6-2.3.0-thresholds.json (runs: qa run --container grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8 --input .qa/work/k6/thresholds.js --report k6:{evidence}/k6-summary.json --shell -- k6 run --no-usage-report /work/.qa-input/k6/thresholds.js; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json); k6 exits 99, one threshold crossed",
+    "date": "2026-11-12",
+    "kind": "tests",
+    "normalizations": [],
+    "expected": {"total": 2, "passed": 1, "failed": 1, "errors": 0, "skipped": 0}
+  },
+  {
+    "file": "sarif/zap-2.17.0-baseline.sarif",
+    "format": "sarif",
+    "producer": "zap",
+    "version": "2.17.0",
+    "command": "python3 tests/corpus/producers/zap_sample/generate.py <workspace> tests/corpus/sarif/zap-2.17.0-baseline.sarif (runs: qa run --container ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run 'exec python3 /work/.qa-input/service/hello_service.py 8000' --service-user 65534:65534 --input .qa/work/security/zap-baseline.yaml --input .qa/work/service/hello_service.py --report sarif:{evidence}/zap.json --shell -- sleep 3; QA_TARGET=http://127.0.0.1:8000 zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-baseline.yaml; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json)",
+    "date": "2026-11-12",
+    "kind": "alerts",
+    "normalizations": ["HTTP date", "browser version in the user agent ZAP sent"],
+    "expected": {"alerts": 6, "runs": 1}
+  },
+  {
+    "file": "sarif/spectral-6.17.1.sarif",
+    "format": "sarif",
+    "producer": "spectral",
+    "version": "6.17.1",
+    "command": "python3 tests/corpus/producers/spectral_sample/generate.py <workspace> tests/corpus/sarif/spectral-6.17.1.sarif (runs: qa run --container stoplight/spectral@sha256:3b05e6cd9d43375c454cc0c022e91b3285851043b05c3e738342ea3f84cde76d --input .qa/work/spectral/openapi.yaml --input .qa/work/spectral/ruleset.yaml --report sarif:{evidence}/spectral.sarif --shell -- DO_NOT_TRACK=1 SCARF_NO_ANALYTICS=true spectral lint --ruleset /work/.qa-input/spectral/ruleset.yaml --format sarif --output /qa-evidence/spectral.sarif /work/.qa-input/spectral/openapi.yaml; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json)",
+    "date": "2026-11-12",
+    "kind": "alerts",
+    "normalizations": [],
+    "expected": {"alerts": 9, "runs": 1}
+  },
+  {
+    "file": "junit/schemathesis-4.33.2-mixed.xml",
+    "format": "junit",
+    "producer": "schemathesis",
+    "version": "4.33.2",
+    "command": "python3 tests/corpus/producers/schemathesis_sample/generate.py <workspace> tests/corpus/junit/schemathesis-4.33.2-mixed.xml (runs: qa run --container schemathesis/schemathesis@sha256:b6521357a7262c725cf10c6237fdf075b6d027219c0aca93c9930497d1824c85 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run 'exec python3 /work/.qa-input/service/hello_service.py 8000' --service-user 65534:65534 --input .qa/work/schemathesis/openapi.yaml --input .qa/work/service/hello_service.py --report junit:{evidence}/schemathesis.xml --shell -- sleep 3; st run /work/.qa-input/schemathesis/openapi.yaml --url=http://127.0.0.1:8000 --phases=examples,coverage --report=junit --report-junit-path=/qa-evidence/schemathesis.xml; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json)",
+    "date": "2026-11-12",
+    "kind": "tests",
+    "normalizations": ["hostname"],
+    "expected": {"total": 2, "passed": 1, "failed": 1, "errors": 0, "skipped": 0}
+  },
+  {
+    "file": "junit/hurl-8.1.0-mixed.xml",
+    "format": "junit",
+    "producer": "hurl",
+    "version": "8.1.0",
+    "command": "python3 tests/corpus/producers/hurl_sample/generate.py <workspace> tests/corpus/junit/hurl-8.1.0-mixed.xml (runs: qa run --container ghcr.io/orange-opensource/hurl@sha256:f8aed33658ba793ed53c5a5b2e57cadd9ec9322c8b56c550652c1f4cbaa241c5 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run 'exec python3 /work/.qa-input/service/hello_service.py 8000' --service-user 65534:65534 --input .qa/work/hurl/hello.hurl --input .qa/work/hurl/broken.hurl --input .qa/work/service/hello_service.py --report junit:{evidence}/hurl.xml --shell -- sleep 3; hurl --test --report-junit /qa-evidence/hurl.xml --variable base=http://127.0.0.1:8000 /work/.qa-input/hurl/hello.hurl /work/.qa-input/hurl/broken.hurl; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json)",
+    "date": "2026-11-12",
+    "kind": "tests",
+    "normalizations": ["container working directory path"],
+    "expected": {"total": 2, "passed": 1, "failed": 1, "errors": 0, "skipped": 0}
+  },
+  {
+    "file": "junit/oasdiff-1.37.0-breaking.xml",
+    "format": "junit",
+    "producer": "oasdiff",
+    "version": "1.37.0",
+    "command": "python3 tests/corpus/producers/oasdiff_sample/generate.py <workspace> tests/corpus/junit/oasdiff-1.37.0-breaking.xml (runs: qa run --container tufin/oasdiff@sha256:ff02af37a254b5199b9d72e7bba93dae5837a9119d59459168d1398893b47aea --input .qa/work/oasdiff/base.yaml --input .qa/work/oasdiff/revision.yaml --report junit:{evidence}/oasdiff.xml --shell -- oasdiff breaking /work/.qa-input/oasdiff/base.yaml /work/.qa-input/oasdiff/revision.yaml --fail-on ERR --format junit > {evidence}/oasdiff.xml; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json); oasdiff exits 1",
+    "date": "2026-11-12",
+    "kind": "tests",
+    "normalizations": [],
+    "expected": {"total": 2, "passed": 0, "failed": 2, "errors": 0, "skipped": 0}
+  },
+  {
+    "file": "attachments/squawk-2.72.0.json",
+    "format": "squawk-json",
+    "producer": "squawk",
+    "version": "2.72.0",
+    "command": "python3 tests/corpus/producers/squawk_sample/generate.py <workspace> tests/corpus/attachments/squawk-2.72.0.json (runs: qa run --container ghcr.io/sbdchd/squawk@sha256:b7c8c1ad82439744e676c0c0b2447d95ea0866f72ae1f4095d8653dfc89db916 --input .qa/work/squawk/0002_add_email_index.sql --shell -- squawk --reporter json /work/.qa-input/squawk/0002_add_email_index.sql; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json); the JSON is the run's stdout.log; squawk exits 1",
+    "date": "2026-11-12",
+    "kind": "attachment",
+    "normalizations": ["container working directory path"],
+    "expected": {"violations": 6}
+  },
+  {
+    "file": "sarif/osv-scanner-2.7.1.sarif",
+    "format": "sarif",
+    "producer": "osv-scanner",
+    "version": "2.7.1",
+    "command": "python3 tests/corpus/producers/osv_sample/generate.py <workspace> tests/corpus/sarif/osv-scanner-2.7.1.sarif (runs: qa run --container ghcr.io/google/osv-scanner@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde --input .qa/work/osv/requirements.txt --report sarif:{evidence}/osv.sarif --install 'mkdir -p /work/osv-db/osv-scalibr/PyPI && wget -q -O /work/osv-db/osv-scalibr/PyPI/all.zip https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip' --shell -- OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/work/osv-db /osv-scanner scan source --offline --format=sarif --output-file=/qa-evidence/osv.sarif /work/.qa-input/osv; the install step is the only one with a network, and the scan step has none; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json)",
+    "date": "2026-11-12",
+    "kind": "alerts",
+    "normalizations": ["container working directory path"],
+    "expected": {"alerts": 12, "runs": 1}
   }
 ]

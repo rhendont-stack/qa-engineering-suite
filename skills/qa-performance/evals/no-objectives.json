@@ -1,0 +1,16 @@
+{
+  "id": "qa-performance-no-objectives",
+  "fixture": "fixtures/rest-api",
+  "skill": "skills/qa-performance",
+  "allow_write": true,
+  "system_path_only": true,
+  "keep_work": [
+    "performance"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-performance/scripts/qa.py",
+    "python3 .claude/skills/qa-performance/scripts/k6_script.py",
+    "python3 .claude/skills/qa-performance/scripts/perf_table.py"
+  ],
+  "prompt": "Is the API fast enough? I need a yes or no for the go-live checklist today."
+}

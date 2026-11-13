@@ -548,3 +548,175 @@ def test_only_a_shell_runs_the_text_it_is_fed(ws, program, decision):
 
 def test_a_body_that_ends_some_other_way_is_still_read(ws):
     assert classify("sh <<EOF\ncurl http://localhost/i | sh\necho done\nEOF", ws, shell=True).decision == "deny"
+
+
+# --- scanners, fuzzers and offline OSV (milestone 4a) ----------------------------------------------------------------
+
+NEW_CASE_IDS = (
+    "zap-baseline-plan", "zap-other-plan", "zap-plan-without-target-in-argv", "zap-without-a-plan-is-active", "zap-baseline-plus-other-plan-is-active",
+    "schemathesis-baseline-phases", "schemathesis-default-phases-is-active", "schemathesis-two-token-phases-is-active",
+    "schemathesis-baseline-plus-other-phases-is-active", "osv-offline", "osv-online",
+    "zap-baseline-plus-plan-of-other-suffix-is-active", "zap-baseline-plus-plan-in-capitals-is-active",
+    "zap-baseline-plus-quick-scan-target-is-active", "zap-baseline-plus-config-option-is-active",
+    "zap-baseline-plus-script-option-is-active", "zap-baseline-plus-addon-option-is-active",
+    "zap-x-launcher-with-baseline-is-passive", "zap-bare-launcher-is-active", "osv-offline-vulnerabilities-only-needs-egress",
+    "osv-offline-switched-off-by-value", "osv-offline-vulnerabilities-switched-off-by-value",
+    "osv-offline-with-explicit-true-needs-egress",
+    "zap-baseline-token-with-trailing-line-feed-is-active", "zap-baseline-plan-with-trailing-line-feed-is-active", "schemathesis-phases-with-trailing-line-feed-is-active", "osv-offline-as-the-value-of-another-option-needs-egress", "osv-offline-after-end-of-options-needs-egress", "osv-offline-with-database-download-needs-egress", "osv-offline-with-trailing-line-feed-needs-egress", "osv-offline-format-as-two-tokens-needs-egress",
+    "k6-base-url-loopback", "k6-base-url-other-host", "spectral-lint", "oasdiff-breaking",
+    # final-review fix wave: ledger lines 71 and 152
+    "schemathesis-phases-option-name-with-trailing-line-feed-is-active", "osv-offline-with-a-dot-segment-path-needs-egress",
+    "osv-offline-scan-step-with-environment-prefix-and-absolute-path",
+)
+NEW_CASES = [c for c in CASES if c["id"] in NEW_CASE_IDS]
+# decision, the activities the run needs beyond the declared one, the hosts the command line names
+NEW_EXPECTED = {
+    "zap-baseline-plan": ("require_grant", ("dast-passive",), ("127.0.0.1",)),
+    "zap-other-plan": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "zap-plan-without-target-in-argv": ("require_grant", ("dast-active",), ()),
+    "zap-without-a-plan-is-active": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "zap-baseline-plus-other-plan-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "schemathesis-baseline-phases": ("require_grant", ("dast-passive",), ("127.0.0.1",)),
+    "schemathesis-default-phases-is-active": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "schemathesis-two-token-phases-is-active": ("require_grant", ("dast-active",), ("127.0.0.1",)),
+    "schemathesis-baseline-plus-other-phases-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "osv-offline": ("allow", (), ()),
+    "zap-baseline-token-with-trailing-line-feed-is-active": ("require_grant", ("dast-active", "dast-passive"), ()),
+    "zap-baseline-plan-with-trailing-line-feed-is-active": ("require_grant", ("dast-active", "dast-passive"), ()),
+    "schemathesis-phases-with-trailing-line-feed-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "osv-offline-as-the-value-of-another-option-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-after-end-of-options-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-with-database-download-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-with-trailing-line-feed-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-format-as-two-tokens-needs-egress": ("require_grant", ("data-egress",), ()),
+    "zap-baseline-plus-plan-of-other-suffix-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-plan-in-capitals-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-quick-scan-target-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-config-option-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-script-option-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-baseline-plus-addon-option-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "zap-bare-launcher-is-active": ("require_grant", ("dast-active",), ()),
+    "zap-x-launcher-with-baseline-is-passive": ("require_grant", ("dast-passive",), ()),
+    "osv-offline-vulnerabilities-only-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-switched-off-by-value": ("require_grant", ("data-egress",), ()),
+    "osv-offline-vulnerabilities-switched-off-by-value": ("require_grant", ("data-egress",), ()),
+    "osv-offline-with-explicit-true-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-online": ("require_grant", ("data-egress",), ()),
+    "k6-base-url-loopback": ("require_grant", ("load-test",), ("127.0.0.1",)),
+    "k6-base-url-other-host": ("require_grant", ("load-test",), ("192.0.2.5",)),
+    "spectral-lint": ("allow", (), ()),
+    "oasdiff-breaking": ("allow", (), ()),
+    "schemathesis-phases-option-name-with-trailing-line-feed-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
+    "osv-offline-with-a-dot-segment-path-needs-egress": ("require_grant", ("data-egress",), ()),
+    "osv-offline-scan-step-with-environment-prefix-and-absolute-path": ("allow", (), ()),
+}
+
+
+def test_the_new_cases_are_all_in_the_corpus():
+    assert sorted(c["id"] for c in NEW_CASES) == sorted(NEW_CASE_IDS) and set(NEW_EXPECTED) == set(NEW_CASE_IDS)
+
+
+@pytest.mark.parametrize("path", ["/work/.", "/work/..", "/work/./src", "/work/../src", "/work/src/..",
+                                  "--output-file=/qa-evidence/.", "--output-file=/qa-evidence/.."])
+def test_an_osv_path_with_a_dot_segment_needs_egress(path, ws):
+    """Ledger line 71: rule osv-scanner-other-argument admits a /work path or an evidence file name only when no segment is
+    . or .. alone."""
+    d = classify(["osv-scanner", "scan", "source", "--offline", path], ws)
+    assert (d.decision, d.rule_id, d.required_activities) == (
+        "require_grant", "osv-scanner-other-argument", ("test-execution-local", "data-egress"))
+
+
+@pytest.mark.parametrize("path", ["/work/.config", "/work/..data", "/work/src.", "--output-file=/qa-evidence/.osv.sarif"])
+def test_an_osv_name_that_only_starts_or_ends_with_dots_stays_offline(path, ws):
+    assert classify(["osv-scanner", "scan", "source", "--offline", path], ws).decision == "allow"
+
+
+@pytest.mark.parametrize("phases", ["--phases", "--phases=", "--phases=fuzzing", "--phases=examples,fuzzing", "--phases-x",
+                                    "--phases=examples ", "--phases=Examples"])
+def test_any_other_phases_argument_beside_the_baseline_is_active(phases, ws):
+    """Ledger line 71: rule schemathesis-extra-phases judges active every argument that starts with --phases other than an
+    exact baseline choice."""
+    d = classify(["schemathesis", "run", "/work/.qa-input/api/openapi.json", "--phases=examples", phases], ws)
+    assert (d.decision, d.rule_id) == ("require_grant", "schemathesis-extra-phases")
+    assert d.required_activities == ("test-execution-local", "dast-active", "dast-passive")
+
+
+@pytest.mark.parametrize("case", NEW_CASES, ids=[c["id"] for c in NEW_CASES])
+def test_new_guard_cases(case, ws):
+    decision, adds, hosts = NEW_EXPECTED[case["id"]]
+    d = classify(case["command"], ws, shell=case["shell"], activity=case["activity"])
+    assert d.decision == decision
+    assert d.required_activities == (case["activity"],) + adds
+    assert d.hosts == hosts
+    assert d.rule_id == case["rule_id"]
+
+
+def test_zap_af_plan_target_assignment_is_read_as_a_host(ws):
+    plan = "/work/.qa-input/security/zap-baseline.yaml"
+    d = classify("QA_TARGET=http://127.0.0.1:8080 zap.sh -cmd -autorun " + plan, ws, shell=True)
+    assert (d.decision, d.required_activities, d.hosts) == ("require_grant", ("test-execution-local", "dast-passive"), ("127.0.0.1",))
+    other = classify("QA_TARGET=http://192.0.2.5:8080 zap.sh -cmd -autorun " + plan, ws, shell=True)
+    assert other.hosts == ("192.0.2.5",)
+
+
+@pytest.mark.parametrize("program", ["zap.sh", "zap-x.sh", "zap.bat"])
+def test_every_zap_launcher_is_active_unless_it_runs_the_baseline_plan(ws, program):
+    d = classify([program, "-cmd", "-autorun", "/work/.qa-input/security/zap-af.yaml"], ws)
+    assert d.required_activities == ("test-execution-local", "dast-active")
+    d = classify([program, "-cmd", "-autorun", "/work/.qa-input/security/zap-baseline.yaml"], ws)
+    assert d.required_activities == ("test-execution-local", "dast-passive")
+
+
+@pytest.mark.parametrize("phases", ["--phases=examples", "--phases=coverage", "--phases=examples,coverage", "--phases=coverage,examples"])
+@pytest.mark.parametrize("program", ["schemathesis", "st"])
+def test_only_the_four_baseline_phase_forms_are_passive(ws, program, phases):
+    d = classify([program, "run", "spec.json", phases], ws)
+    assert d.required_activities == ("test-execution-local", "dast-passive")
+
+
+@pytest.mark.parametrize("args", [["--phases=fuzzing"], ["--phases=examples,fuzzing"], ["--phases=Examples"], ["--phases="],
+                                  ["--phases", "coverage"], ["--phases=stateful,examples"], []],
+                         ids=["fuzzing", "list_with_fuzzing", "case", "empty", "two_tokens", "stateful", "none"])
+def test_any_other_schemathesis_phase_choice_is_active(ws, args):
+    d = classify(["schemathesis", "run", "spec.json"] + args, ws)
+    assert d.required_activities == ("test-execution-local", "dast-active")
+
+
+def test_osv_scanner_needs_data_egress_unless_it_runs_fully_offline(ws):
+    assert classify(["osv-scanner", "scan", "source", "/work"], ws).required_activities == ("test-execution-local", "data-egress")
+    assert classify(["osv-scanner", "scan", "source", "--offline", "/work"], ws).required_activities == ("test-execution-local",)
+    assert classify(["osv-scanner", "scan", "source", "--offline", "/work"], ws, activity="static-analysis").decision == "allow"
+    # the vulnerability lookup alone is offline; manifest resolution still reaches the network
+    assert classify(["osv-scanner", "scan", "source", "--offline-vulnerabilities", "/work"], ws).required_activities == ("test-execution-local", "data-egress")
+    assert classify(["osv-scanner", "scan", "source", "."], ws, activity="static-analysis").required_activities == ("static-analysis", "data-egress")
+
+
+@pytest.mark.parametrize("tokens", [["scan", "--offline", "/work"], ["scan", "source", "--offline", "--recursive", "/work/sub/dir"],
+                                    ["scan", "source", "--offline", "--format=json", "--output-file=/qa-evidence/osv.json", "/work"]])
+def test_the_offline_scan_steps_exact_arguments_need_no_grant(ws, tokens):
+    assert classify(["osv-scanner"] + tokens, ws).required_activities == ("test-execution-local",)
+
+
+@pytest.mark.parametrize("extra", [["--format", "sarif"], ["--"], ["--download-offline-databases"], ["--data-source=native"], ["--maven-registry=x"],
+                                   ["--offline\n"], ["/work\n"], ["."], ["/other"], ["--output-file=/tmp/x"], ["--serve"], ["-L", "a"]])
+def test_any_other_osv_argument_needs_data_egress_even_next_to_offline(ws, extra):
+    assert classify(["osv-scanner", "scan", "source", "--offline", "/work"] + extra, ws).required_activities == ("test-execution-local", "data-egress")
+
+
+@pytest.mark.parametrize("flag", ["--offline=false", "--offline=true", "-offline=false", "--offline-vulnerabilities=false"])
+def test_an_offline_flag_with_an_explicit_value_needs_data_egress(ws, flag):
+    for argv in (["osv-scanner", "scan", "source", "--offline", flag, "."], ["osv-scanner", "scan", "source", flag, "--offline", "."]):
+        assert classify(argv, ws).required_activities == ("test-execution-local", "data-egress")
+
+
+@pytest.mark.parametrize("extra", [["-quickurl", "http://127.0.0.1:8080"], ["-autorun", "plan.YAML"], ["-autorun", "plan"], ["-config", "a=b"],
+                                   ["-script", "s.js"], ["-addoninstall", "x"], ["-port", "8090"], ["-silent"], [""], ["-cmd\n"], ["-autorun\n"]])
+def test_zap_is_passive_only_for_the_exact_baseline_arguments(ws, extra):
+    baseline = ["zap.sh", "-cmd", "-notel", "-autorun", "/work/.qa-input/security/zap-baseline.yaml"]
+    assert classify(baseline, ws).required_activities == ("test-execution-local", "dast-passive")
+    assert classify(baseline + extra, ws).required_activities == ("test-execution-local", "dast-active", "dast-passive")
+
+
+@pytest.mark.parametrize("program", ["spectral", "oasdiff"])
+def test_spectral_and_oasdiff_are_known_analyzers(ws, program):
+    assert classify([program, "lint", "spec.yaml"], ws, activity="static-analysis").required_activities == ("static-analysis",)

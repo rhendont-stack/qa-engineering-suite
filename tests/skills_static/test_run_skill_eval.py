@@ -1,6 +1,7 @@
 """Tests for tools/run_skill_eval.py, driven by a fake ``claude`` executable (no real agent, no network)."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -195,7 +196,9 @@ def world(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     exe = bin_dir / "claude"
-    exe.write_text(FAKE.replace("FAKE_SOURCE_PLACEHOLDER", FAKE_SOURCE))
+    text = FAKE.replace("FAKE_SOURCE_PLACEHOLDER", FAKE_SOURCE).replace("#!/usr/bin/env python3", "#!" + sys.executable, 1)   # runs with a system-only PATH too
+    assert text.startswith("#!" + sys.executable + "\n")
+    exe.write_text(text)
     exe.chmod(0o755)
 
     fixture = tmp_path / "fixture"
@@ -532,6 +535,41 @@ def test_runtime_venv_goes_first_on_path_and_into_allow_read_only(world, monkeyp
     assert settings["sandbox"]["filesystem"]["allowRead"] == [os.path.realpath(call["cwd"]), real]
     assert real not in settings["sandbox"]["filesystem"]["denyRead"]
     assert os.path.realpath(str(repo)) in settings["sandbox"]["filesystem"]["denyRead"]      # the repository stays denied
+
+
+def test_base_tools_hold_no_raw_git():
+    spec = importlib.util.spec_from_file_location("run_skill_eval_for_tools", str(HARNESS))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert not [t for t in module.BASE_TOOLS if t.startswith("Bash(git ")]
+
+
+def _case_with(world, **fields):
+    spec = json.loads(world.case.read_text())
+    spec.update(fields)
+    world.case.write_text(json.dumps(spec))
+
+
+def test_system_path_only_sets_the_system_path(world):
+    _case_with(world, system_path_only=True)
+    assert run(world).returncode == 0
+    assert calls(world)[0]["env"]["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def test_system_path_only_keeps_the_runtime_venv_first(world, monkeypatch):
+    repo = _harness_copy(world, monkeypatch)
+    (repo / ".venv-x" / "bin").mkdir(parents=True)
+    _case_with(world, system_path_only=True, runtime_venv=".venv-x")
+    assert run(world).returncode == 0
+    real = os.path.realpath(str(repo / ".venv-x"))
+    assert calls(world)[0]["env"]["PATH"] == os.path.join(real, "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None, []])
+def test_system_path_only_must_be_a_boolean(world, value):
+    _case_with(world, system_path_only=value)
+    r = run(world)
+    assert r.returncode == 2 and calls(world) == [] and not world.ledger.exists()
 
 
 @pytest.mark.parametrize("path", ["/usr", "..", "../elsewhere", "tools", ""])
@@ -1733,3 +1771,23 @@ def test_qa_state_keeps_the_patches_under_work_and_nothing_else_of_it(world):
     saved = world.out / "runs" / records(world)[0]["run_id"] / "qa-state"
     files = sorted(str(p.relative_to(saved)) for p in saved.rglob("*") if p.is_file() or p.is_symlink())
     assert files == ["work/patches/sub/two.diff", "work/patches/tc-001.diff"]
+
+
+def test_qa_state_keeps_the_work_directories_a_case_names_and_nothing_else_of_work(world):
+    edits = {".qa/work/api/inventory.json": "{}\n", ".qa/work/api/checks/test_x.py": "key @KEY@\n", ".qa/work/other/x.txt": "o",
+             ".qa/work/wt-abc/app.py": "x\n", ".qa/work/scratch.txt": "w", ".qa/work/patches/p.diff": "p\n"}
+    _case_with(world, keep_work=["api"])
+    r = run(world, env={"FAKE_EDITS": edits, "FAKE_LINKS": {".qa/work/api/link.json": "/etc/hosts"}})
+    assert r.returncode == 0, r.stderr
+    saved = world.out / "runs" / records(world)[0]["run_id"] / "qa-state"
+    files = sorted(str(p.relative_to(saved)) for p in saved.rglob("*") if p.is_file() or p.is_symlink())
+    assert files == ["work/api/checks/test_x.py", "work/api/inventory.json", "work/patches/p.diff"]
+    kept = (saved / "work" / "api" / "checks" / "test_x.py").read_text()
+    assert SECRET not in kept and "[REDACTED:ANTHROPIC_API_KEY]" in kept
+
+
+@pytest.mark.parametrize("value", [[], "api", [""], ["."], [".."], ["a/b"], [".hidden"], ["wt abc"], [1], ["x" * 65]])
+def test_keep_work_takes_only_plain_directory_names(world, value):
+    _case_with(world, keep_work=value)
+    r = run(world)
+    assert r.returncode == 2 and "keep_work" in r.stderr and not records(world)

@@ -371,7 +371,7 @@
       "id": "unlisted-analyzer",
       "effect": "require_grant:test-execution-local",
       "reason": "Static analysis covers the known analyzers and read-only tools; any other program may run the project's code and also needs test-execution-local (§12.2, §12.7).",
-      "match": {"declared_activity": ["static-analysis"], "unless_program": ["semgrep", "opengrep", "bandit", "gosec", "gitleaks", "betterleaks", "osv-scanner", "grype", "syft", "trivy", "hadolint", "conftest", "actionlint", "zizmor", "ruff", "shellcheck", "squawk", "git", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "file", "stat", "sha256sum", "shasum", "jq", "echo", "true", "pwd"]}
+      "match": {"declared_activity": ["static-analysis"], "unless_program": ["semgrep", "opengrep", "bandit", "gosec", "gitleaks", "betterleaks", "osv-scanner", "grype", "syft", "trivy", "hadolint", "conftest", "actionlint", "zizmor", "ruff", "shellcheck", "squawk", "spectral", "oasdiff", "git", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "file", "stat", "sha256sum", "shasum", "jq", "echo", "true", "pwd"]}
     },
     {
       "id": "load-test",
@@ -396,6 +396,42 @@
       "effect": "require_grant:dast-passive",
       "reason": "Passive scans need a dast-passive grant per target (§12.2).",
       "match": {"program": ["zap-baseline.py"]}
+    },
+    {
+      "id": "zap-af-other-argument",
+      "effect": "require_grant:dast-active",
+      "reason": "Only the exact arguments of the suite's baseline ZAP invocation run passively; any other argument (another plan, a quick-scan target, a configuration, script or add-on option) may attack or load other behaviour, so it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "args_regex": "^(?!(-cmd|-notel|-autorun|/work/\\.qa-input/security/zap-baseline\\.yaml)\\Z)"}
+    },
+    {
+      "id": "zap-af-baseline",
+      "effect": "require_grant:dast-passive",
+      "reason": "The suite's baseline Automation Framework plan runs the spider and passive checks only; it needs a dast-passive grant per target (§12.2).",
+      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "args_any": ["/work/.qa-input/security/zap-baseline.yaml"]}
+    },
+    {
+      "id": "zap-af",
+      "effect": "require_grant:dast-active",
+      "reason": "Any ZAP command line that does not run the baseline plan may attack; it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["zap.sh", "zap-x.sh", "zap.bat"], "unless_args": ["/work/.qa-input/security/zap-baseline.yaml"]}
+    },
+    {
+      "id": "schemathesis-extra-phases",
+      "effect": "require_grant:dast-active",
+      "reason": "A Schemathesis command line with any argument that starts with --phases other than an exact choice of the examples and coverage phases (a phase choice beyond them, the option name alone or with anything after it) may fuzz; it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["schemathesis", "st"], "args_regex": "^--phases(?!=(examples|coverage|examples,coverage|coverage,examples)\\Z)"}
+    },
+    {
+      "id": "schemathesis-baseline",
+      "effect": "require_grant:dast-passive",
+      "reason": "Schemathesis restricted to its examples and coverage phases sends the schema's own examples and no attack payloads; it needs a dast-passive grant per target (§12.2).",
+      "match": {"program": ["schemathesis", "st"], "args_any": ["--phases=examples", "--phases=coverage", "--phases=examples,coverage", "--phases=coverage,examples"]}
+    },
+    {
+      "id": "schemathesis-active",
+      "effect": "require_grant:dast-active",
+      "reason": "Schemathesis without an explicit baseline phase choice runs every phase, fuzzing included; it needs a dast-active grant per target (§12.2, §12.3).",
+      "match": {"program": ["schemathesis", "st"], "unless_args": ["--phases=examples", "--phases=coverage", "--phases=examples,coverage", "--phases=coverage,examples"]}
     },
     {
       "id": "migration",
@@ -518,7 +554,19 @@
       "id": "egress-tools",
       "effect": "require_grant:data-egress",
       "reason": "These tools send project data to a third-party service; they need a data-egress grant (§12.2).",
-      "match": {"program": ["pip-audit", "snyk", "scorecard", "osv-scanner"]}
+      "match": {"program": ["pip-audit", "snyk", "scorecard"]}
+    },
+    {
+      "id": "osv-scanner-offline",
+      "effect": "require_grant:data-egress",
+      "reason": "OSV-Scanner sends the dependency list to a third-party service unless --offline disables every feature that needs the network; --offline-vulnerabilities alone still resolves transitive dependencies online, so it needs a data-egress grant (§12.2).",
+      "match": {"program": ["osv-scanner"], "unless_args": ["--offline"]}
+    },
+    {
+      "id": "osv-scanner-other-argument",
+      "effect": "require_grant:data-egress",
+      "reason": "Only the exact arguments of the suite's offline scan step run without data-egress; any other argument (a value given as a separate word, an end-of-options marker, a database download, a registry or data-source option, an offline flag with a value, a path with a . or .. segment) can reach the network, hide the offline flag or leave the paths the step names, so it needs a data-egress grant (§12.2).",
+      "match": {"program": ["osv-scanner"], "args_regex": "^(?!(scan|source|--offline|--recursive|--format=(sarif|json)|--output-file=/qa-evidence/(?!\\.\\.?\\Z)[A-Za-z0-9._-]+|/work(/(?!\\.\\.?(?:/|\\Z))[A-Za-z0-9._-]+)*)\\Z)"}
     },
     {
       "id": "network-download",

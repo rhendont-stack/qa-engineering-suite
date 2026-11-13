@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 import tarfile
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -121,11 +123,11 @@ def spawn_of(fake_engine, picks):
 
 def test_sequence_and_network_modes(fake_engine, spec):
     container.run(fake_engine.engine, spec)
-    assert fake_engine.networks() == ["none", "none", "none"]          # copy in, test, copy out; no install
-    assert [call[:2] for call in fake_engine.calls[:8]] == [
-        ["version", "--format"], ["volume", "create"], ["volume", "create"], ["run", "--rm"], ["create", "-i"],
+    assert fake_engine.networks() == ["none", "none", "none", "none"]  # copy in, prepare, test, copy out; no install
+    assert [call[:2] for call in fake_engine.calls[:9]] == [
+        ["version", "--format"], ["volume", "create"], ["volume", "create"], ["run", "--rm"], ["run", "--rm"], ["create", "-i"],
         ["start", "-a"], ["inspect", NAME], ["run", "--rm"]]
-    assert fake_engine.calls[5] == ["start", "-a", "-i", NAME]
+    assert fake_engine.calls[6] == ["start", "-a", "-i", NAME]
 
 
 def test_outcome_carries_what_was_observed(fake_engine, spec):
@@ -144,6 +146,57 @@ def test_copy_in_sends_the_archive_on_stdin_and_owns_nothing_from_the_host(fake_
     assert call[-5:] == [IMAGE, "-x", "--no-same-owner", "-C", "/work"] and "--entrypoint=tar" in call and "-i" in call
 
 
+def is_prepare(args):
+    return args[0] == "run" and "--entrypoint=chmod" in args
+
+
+def test_file_steps_run_as_root_and_the_tests_as_the_image_user(fake_engine, spec_install):
+    """An image may name another user for its tool (k6, ZAP, Schemathesis, squawk do): a new volume belongs to root, so
+    only a root step can unpack into it or read every file back. The tests and the install keep the image's own user."""
+    container.run(fake_engine.engine, spec_install)
+    for picks in (is_copy_in, is_prepare, is_copy_out):
+        call = next(call for call in fake_engine.calls if picks(call))
+        assert "--user=0" in call, call
+    for picks in (is_install, is_create):
+        call = next(call for call in fake_engine.calls if picks(call))
+        assert not any(arg.startswith("--user=") for arg in call), call
+
+
+# Measured on the live engine across every catalog image (task-4 fix round 1): unpacking a project that holds a read-only
+# directory needs DAC_OVERRIDE; reading back a file the tool wrote 0600 as its own user needs DAC_READ_SEARCH; chmod on a
+# volume root that root owns, and unpacking the suite's own control archive, need nothing.
+HELPER_CAPS = {"copy_in": ["--cap-add=DAC_OVERRIDE"], "prepare": [], "control_in": [], "copy_out": ["--cap-add=DAC_READ_SEARCH"]}
+
+
+def test_the_root_file_steps_drop_every_capability_but_the_one_each_needs(fake_engine):
+    run_with(fake_engine, user="1000:1000")
+    for step, picks in (("copy_in", is_copy_in), ("prepare", is_prepare), ("control_in", is_ctl_in), ("copy_out", is_copy_out)):
+        call = next(call for call in fake_engine.calls if picks(call))
+        assert "--cap-drop=ALL" in call and "--security-opt=no-new-privileges" in call, (step, call)
+        assert [arg for arg in call if arg.startswith("--cap-add")] == HELPER_CAPS[step], (step, call)
+        assert not any(arg.startswith("--privileged") for arg in call), (step, call)
+
+
+def test_volumes_open_to_the_image_user_after_copy_in_and_before_anything_runs(fake_engine, spec_install):
+    container.run(fake_engine.engine, spec_install)
+    call = next(call for call in fake_engine.calls if is_prepare(call))
+    assert call[-4:] == [IMAGE, "0777", "/work", "/qa-evidence"] and "--network=none" in call and "--rm" in call
+    assert "--volume=%s:/work" % WORK in call and "--volume=%s:/qa-evidence" % EVIDENCE in call
+    assert "--name=" + NAME + "-prep" in call and spawn_of(fake_engine, is_prepare)["stdin_path"] is None
+    first = {name: next(i for i, call in enumerate(fake_engine.calls) if picks(call))
+             for name, picks in (("copy_in", is_copy_in), ("prepare", is_prepare), ("install", is_install), ("create", is_create))}
+    assert first["copy_in"] < first["prepare"] < first["install"] < first["create"]
+
+
+def test_a_failed_prepare_step_stops_the_run_and_cleans_up(fake_engine, spec):
+    fake_engine.when(is_prepare, exit_code=1)
+    with pytest.raises(QaError) as failed:
+        container.run(fake_engine.engine, spec)
+    assert failed.value.code == "container_step_failed" and failed.value.details["step"] == "prepare"
+    assert not any(is_create(call) for call in fake_engine.calls)
+    assert [call[-1] for call in fake_engine.calls if is_cleanup(call)] == [NAME + "-in", NAME + "-prep", WORK, EVIDENCE]
+
+
 def test_copy_out_reads_only_the_evidence_volume(fake_engine, spec):
     container.run(fake_engine.engine, spec)
     call = next(call for call in fake_engine.calls if is_copy_out(call))
@@ -153,7 +206,7 @@ def test_copy_out_reads_only_the_evidence_volume(fake_engine, spec):
 
 def test_install_is_the_only_step_with_a_network(fake_engine, spec_install):
     done = container.run(fake_engine.engine, spec_install)
-    assert fake_engine.networks() == ["none", "bridge", "none", "none"]
+    assert fake_engine.networks() == ["none", "none", "bridge", "none", "none"]
     assert (done.install_ran, done.install_failed) == (True, False)
     assert not any("--network=bridge" in call and "--volume=%s:/qa-evidence" % EVIDENCE in call for call in fake_engine.calls)
 
@@ -174,10 +227,10 @@ def test_timed_out_install_counts_as_failed(fake_engine, spec_install):
 def test_every_container_is_named_labelled_pinned_and_has_an_explicit_entrypoint(fake_engine, spec_install):
     container.run(fake_engine.engine, spec_install)
     calls = started(fake_engine)
-    assert len(calls) == 4
+    assert len(calls) == 5
     for call in calls:
         assert "--pull=never" in call and "--label=qa.execution=" + EXECUTION in call
-        assert [arg for arg in call if arg.startswith("--entrypoint=")] in (["--entrypoint=tar"], ["--entrypoint=sh"])
+        assert [arg for arg in call if arg.startswith("--entrypoint=")] in (["--entrypoint=tar"], ["--entrypoint=sh"], ["--entrypoint=chmod"])
         assert any(arg.startswith("--name=" + NAME) for arg in call)
     volumes = [call for call in fake_engine.calls if call[:2] == ["volume", "create"]]
     assert volumes == [["volume", "create", "--label=qa.execution=" + EXECUTION, WORK],
@@ -678,3 +731,302 @@ def test_an_unreadable_file_is_refused_by_name(tmp_path, monkeypatch):
     with pytest.raises(QaError) as refused:
         container.project_archive(root, archive, 1 << 20)
     assert refused.value.code == "project_unreadable" and refused.value.details["name"] == "a.txt" and not archive.exists()
+
+
+# --------------------------------------------------------------------------- a fixture service beside the tests
+
+SVC, CTL = NAME + "-svc", NAME + "-ctl"
+SVC_ID = "c" * 64
+SERVICE_IMAGE = "python@sha256:" + "d" * 64
+SERVICE_IMAGE_ID = "sha256:" + "e" * 64
+SERVICE_SCRIPT = "exec python -m http.server --bind 127.0.0.1 8080"
+PASSING = b'<testsuite><testcase classname="c" name="t"/></testsuite>'
+
+
+def service_inspected(network="none", running=True, code=0, ident=SVC_ID):
+    return json.dumps([{"Id": ident, "Image": SERVICE_IMAGE_ID, "HostConfig": {"NetworkMode": network},
+                        "State": {"Status": "running" if running else "exited", "Running": running, "ExitCode": code}}]).encode()
+
+
+def is_service(args):
+    return args[:2] == ["run", "-d"]
+
+
+def is_ctl_in(args):
+    return args[0] == "run" and "--name=" + NAME + "-ctl-in" in args
+
+
+def is_service_inspect(args):
+    return args == ["inspect", SVC]
+
+
+def is_logs(args):
+    return args[:1] == ["logs"]
+
+
+def service_daemon(fake_engine, service_mode="none", test_mode="container:" + SVC_ID, test_exit=0, junit=PASSING):
+    fake_engine.when(is_start, exit_code=test_exit)
+    fake_engine.when(is_inspect, stdout=inspected(network=test_mode, code=test_exit))
+    fake_engine.when(is_service_inspect, stdout=service_inspected(network=service_mode))
+    fake_engine.when(is_logs, stdout=b"serving\n", stderr=b"GET / 200\n")
+    fake_engine.when(is_copy_out, stdout=tar_of([(".", tarfile.DIRTYPE, None), ("./junit.xml", tarfile.REGTYPE, junit)]))
+    return fake_engine
+
+
+def service_spec(tmp_path, user=None, **over):
+    return make_spec(tmp_path, service=container.ServiceSpec(image=SERVICE_IMAGE, script=SERVICE_SCRIPT, user=user), **over)
+
+
+def run_with(fake_engine, service_mode="none", test_mode="container:" + SVC_ID, test_exit=0, junit=PASSING, user=None, **over):
+    """One run with a service, against a daemon that reports the two network modes given."""
+    service_daemon(fake_engine, service_mode=service_mode, test_mode=test_mode, test_exit=test_exit, junit=junit)
+    return run_service(fake_engine, user=user, **over)
+
+
+def run_service(fake_engine, **over):
+    """One run with a service, against whatever the daemon was told to answer."""
+    with tempfile.TemporaryDirectory() as scratch:
+        return container.run(fake_engine.engine, service_spec(Path(scratch), **over))
+
+
+def test_service_and_tool_share_only_loopback(fake_engine):
+    out = run_with(fake_engine)
+    # copy in, the service script in, the service, the tests, copy out
+    assert fake_engine.networks() == ["none", "none", "none", "none", "container:" + SVC, "none"]
+    service = next(call for call in fake_engine.calls if is_service(call))
+    assert "--network=none" in service and "--entrypoint=sh" in service and "-i" not in service
+    assert set(CONFINED) <= set(service) and service[-2:] == [SERVICE_IMAGE, "/qa-ctl/service.sh"]
+    assert [arg for arg in service if arg.startswith("--volume=")] == ["--volume=%s:/work:ro" % WORK, "--volume=%s:/qa-ctl:ro" % CTL]
+    assert "--name=" + SVC in service and "--pull=never" in service and not any(arg.startswith("--user") for arg in service)
+    tests = next(call for call in fake_engine.calls if is_create(call))
+    assert "--network=container:" + SVC in tests and "--network=none" not in tests
+    assert (out.network_mode, out.anomalies) == ("none", ())
+    assert out.service == {"image": SERVICE_IMAGE, "image_id": SERVICE_IMAGE_ID, "network_mode": "none", "running_at_end": True,
+                           "exit_code": None}
+
+
+def test_the_service_script_travels_on_stdin_only(fake_engine):
+    run_with(fake_engine)
+    assert not any("http.server" in arg for call in fake_engine.calls for arg in call)
+    call = next(call for call in fake_engine.calls if is_ctl_in(call))
+    assert "--volume=%s:/qa-ctl" % CTL in call and "--network=none" in call and "--entrypoint=tar" in call
+    assert call[-5:] == [IMAGE, "-x", "--no-same-owner", "-C", "/qa-ctl"]
+    with tarfile.open(fileobj=io.BytesIO(spawn_of(fake_engine, is_ctl_in)["stdin_bytes"])) as tar:
+        member = tar.getmember("service.sh")
+        assert tar.getnames() == ["service.sh"] and member.isreg() and member.mode == 0o644 and (member.uid, member.uname) == (0, "")
+        assert tar.extractfile(member).read() == SERVICE_SCRIPT.encode() + b"\n"
+
+
+def test_the_steps_come_in_order(fake_engine):
+    run_with(fake_engine, install_script="pip install x")
+    kinds = []
+    for call in fake_engine.calls:
+        kind = ("ctl_in" if is_ctl_in(call) else "copy_in" if is_copy_in(call) else "prepare" if is_prepare(call) else
+                "install" if is_install(call) else
+                "service" if is_service(call) else "create" if is_create(call) else "start" if is_start(call) else
+                "service_inspect" if is_service_inspect(call) else "logs" if is_logs(call) else "copy_out" if is_copy_out(call) else None)
+        if kind is not None:
+            kinds.append(kind)
+    assert kinds == ["copy_in", "prepare", "ctl_in", "install", "service", "create", "start", "service_inspect", "logs", "copy_out"]
+    volumes = [call[-1] for call in fake_engine.calls if call[:2] == ["volume", "create"]]
+    assert volumes == [WORK, EVIDENCE, CTL]
+
+
+def test_service_with_a_network_makes_the_run_not_isolated(fake_engine):
+    out = run_with(fake_engine, service_mode="bridge", test_exit=0, junit=PASSING)
+    assert out.network_mode != "none" and "network_not_isolated" in out.anomalies   # execution then: inconclusive
+    assert out.service["network_mode"] == "bridge"
+
+
+@pytest.mark.parametrize("test_mode", ["container:" + "f" * 64, "container:" + SVC, "bridge", "host", "none"],
+                         ids=["another_container", "a_name_not_an_id", "bridge", "host", "did_not_join"])
+def test_joining_another_container_is_not_isolated(fake_engine, test_mode):
+    out = run_with(fake_engine, test_mode=test_mode)
+    assert (out.network_mode, out.anomalies) == (test_mode, ("network_not_isolated",))
+
+
+@pytest.mark.parametrize("answer", [dict(exit_code=1), dict(stdout=b"[]"), dict(stdout=service_inspected(ident="")),
+                                    dict(stdout=json.dumps([{"State": {}}]).encode())],
+                         ids=["inspect_failed", "inspect_lists_nothing", "empty_id", "no_id_no_mode"])
+def test_a_service_the_daemon_will_not_describe_is_not_isolated(fake_engine, answer):
+    service_daemon(fake_engine)
+    fake_engine.when(is_service_inspect, **answer)
+    out = run_service(fake_engine)
+    assert out.network_mode != "none" and out.anomalies == ("network_not_isolated",)
+    assert out.service["image"] == SERVICE_IMAGE
+
+
+def test_a_service_that_stopped_says_how(fake_engine):
+    service_daemon(fake_engine)
+    fake_engine.when(is_service_inspect, stdout=service_inspected(running=False, code=3))
+    out = run_service(fake_engine)
+    assert (out.service["running_at_end"], out.service["exit_code"]) == (False, 3)
+    assert (out.network_mode, out.anomalies) == ("none", ())
+
+
+def test_the_service_log_comes_back_within_the_cap(fake_engine):
+    out = run_with(fake_engine, max_bytes=4242)
+    assert out.service_log == b"serving\nGET / 200\n"
+    spawn = spawn_of(fake_engine, is_logs)
+    assert fake_engine.calls[fake_engine.spawns.index(spawn)] == ["logs", SVC] and spawn["max_bytes"] == 4242
+
+
+def test_a_run_without_a_service_has_none(fake_engine, spec):
+    done = container.run(fake_engine.engine, spec)
+    assert (done.service, done.service_log) == (None, b"")
+    assert not any(is_service(call) or is_ctl_in(call) or is_logs(call) for call in fake_engine.calls)
+    assert [call[-1] for call in fake_engine.calls if call[:2] == ["volume", "create"]] == [WORK, EVIDENCE]
+
+
+def test_the_service_user_is_passed_only_to_the_service(fake_engine):
+    run_with(fake_engine, user="1000:1000")
+    service = next(call for call in fake_engine.calls if is_service(call))
+    assert "--user=1000:1000" in service
+    others = [arg for call in fake_engine.calls if not is_service(call) for arg in call if arg.startswith("--user")]
+    assert others == ["--user=0"] * 4  # copy in, prepare, control in, copy out: the file steps run as root
+
+
+@pytest.mark.parametrize("over, field", [
+    (dict(image="python:3-slim"), "service.image"), (dict(image="--privileged@sha256:" + "a" * 64), "service.image"),
+    (dict(user="root"), "service.user"), (dict(user="1000:"), "service.user"), (dict(user="-1"), "service.user"),
+    (dict(user="1:2:3"), "service.user"), (dict(user="12345678901"), "service.user"), (dict(user=""), "service.user"),
+    (dict(user="0 --privileged"), "service.user"), (dict(script=None), "service.script"),
+], ids=["tag_only", "flag_shaped", "a_name", "empty_group", "negative", "three_parts", "eleven_digits", "empty", "with_a_flag",
+        "no_script"])
+def test_a_service_spec_that_could_change_a_command_starts_nothing(fake_engine, tmp_path, over, field):
+    fields = dict(image=SERVICE_IMAGE, script=SERVICE_SCRIPT, user=None)
+    fields.update(over)
+    with pytest.raises(QaError) as refused:
+        container.run(fake_engine.engine, make_spec(tmp_path, service=container.ServiceSpec(**fields)))
+    assert refused.value.code == "container_spec_invalid" and refused.value.details["field"] == field
+    assert fake_engine.calls == []
+
+
+def test_a_service_image_the_engine_lacks_is_named(fake_engine):
+    service_daemon(fake_engine)
+    fake_engine.when(is_service, exit_code=125, stderr=b"docker: Unable to find image 'x' locally\n")
+    with pytest.raises(QaError) as failed:
+        run_service(fake_engine)
+    assert failed.value.code == "container_image_missing" and failed.value.details["image"] == SERVICE_IMAGE
+    assert not any(is_create(call) for call in fake_engine.calls)
+
+
+def test_a_service_that_cannot_start_is_a_step_failure(fake_engine):
+    service_daemon(fake_engine)
+    fake_engine.when(is_service, exit_code=1, stderr=b"daemon busy\n")
+    with pytest.raises(QaError) as failed:
+        run_service(fake_engine)
+    assert failed.value.code == "container_step_failed" and failed.value.details["step"] == "service_start"
+    targets = [call[-1] for call in fake_engine.calls if is_cleanup(call)]
+    assert SVC in targets and CTL in targets
+
+
+def test_a_service_gone_before_the_tests_start_is_a_step_failure(fake_engine):
+    service_daemon(fake_engine)
+    fake_engine.when(is_service_inspect, stdout=service_inspected(running=False, code=1))
+    fake_engine.when(is_start, exit_code=125, stderr=b"Error response from daemon: cannot join network of a non running container\n")
+    fake_engine.when(lambda args: args == ["inspect", NAME], stdout=inspected(status="created"))
+    with pytest.raises(QaError) as failed:
+        run_service(fake_engine)
+    assert failed.value.code == "container_step_failed" and failed.value.details["step"] == "start"
+    assert not any(is_copy_out(call) for call in fake_engine.calls)
+    targets = removed(fake_engine)
+    assert SVC in targets and CTL in targets and NAME in targets and WORK in targets
+
+
+def removed(fake_engine):
+    return [call[-1] for call in fake_engine.calls if is_cleanup(call)]
+
+
+@pytest.mark.parametrize("over", [dict(), dict(slow=True)], ids=["after_the_tests", "after_a_timeout"])
+def test_every_service_object_is_removed_by_exact_name(fake_engine, over):
+    service_daemon(fake_engine)
+    if over:
+        fake_engine.when(is_start, exit_code=None, timed_out=True)
+    out = run_service(fake_engine)
+    assert out.run.timed_out is bool(over) and out.cleanup_failed == ()
+    targets = removed(fake_engine)
+    assert sorted(targets) == sorted([NAME + "-in", NAME + "-prep", NAME + "-ctl-in", SVC, NAME, NAME + "-out", WORK, EVIDENCE, CTL])
+    assert targets.index(SVC) < targets.index(CTL) and targets.index(SVC) < targets.index(WORK)  # a volume in use stays
+    assert ["rm", "-f", SVC] in fake_engine.calls and ["volume", "rm", "-f", CTL] in fake_engine.calls
+    assert not any(w in ("prune", "system", "ps", "ls", "stop") for call in fake_engine.calls for w in call)
+    assert all(call[-1].startswith(NAME) for call in fake_engine.calls if call[0] in ("kill", "rm", "logs", "inspect"))
+
+
+def test_a_service_object_that_stays_is_reported(fake_engine):
+    service_daemon(fake_engine)
+    fake_engine.when(lambda args: args == ["rm", "-f", SVC], exit_code=1, stderr=b"daemon busy")
+    out = run_service(fake_engine)
+    assert SVC in out.cleanup_failed
+
+
+def test_a_lost_connection_while_reading_the_service_keeps_the_test_result(fake_engine):
+    service_daemon(fake_engine)
+    fake_engine.when(is_logs, exit_code=255)
+    fake_engine.when(is_service_inspect, exit_code=255)
+    lose_the_connection(fake_engine)
+    out = run_service(fake_engine)
+    assert out.run.exit_code == 0 and out.anomalies == ("network_not_isolated",) and out.service_log == b""
+
+
+# --------------------------------------------------------------------------- inputs in the archive
+
+def test_inputs_are_packed_under_qa_input(tmp_path):
+    root = tmp_path / "plain"
+    root.mkdir()
+    (root / "a.txt").write_text("a")
+    source = tmp_path / "plan.yaml"
+    source.write_bytes(b"plan: 1\n")
+    archive = tmp_path / "out.tar"
+    container.project_archive(root, archive, 1 << 20, inputs=[("security/plan.yaml", source)])
+    with tarfile.open(str(archive)) as tar:
+        member = tar.getmember(".qa-input/security/plan.yaml")
+        assert tar.extractfile(member).read() == b"plan: 1\n" and member.mode == 0o644 and (member.uid, member.uname) == (0, "")
+        directories = {m.name: m.mode for m in tar.getmembers() if m.isdir()}
+    assert directories == {".qa-input": 0o755, ".qa-input/security": 0o755}
+    assert names_in(archive) == [".qa-input", ".qa-input/security", ".qa-input/security/plan.yaml", "a.txt"]
+
+
+def test_a_project_entry_named_qa_input_stays_out(tmp_path):
+    root = tmp_path / "plain"
+    (root / ".qa-input").mkdir(parents=True)
+    (root / ".qa-input" / "planted.yaml").write_text("not an input")
+    (root / ".QA-Input").mkdir(exist_ok=True)
+    (root / "a.txt").write_text("a")
+    archive = tmp_path / "out.tar"
+    container.project_archive(root, archive, 1 << 20)
+    assert names_in(archive) == ["a.txt"]
+
+
+@pytest.mark.parametrize("name", ["../x", "/etc/x", "a/../../x", "./x", "a//b", "", ".", "a/"])
+def test_an_input_name_that_leaves_qa_input_is_refused(tmp_path, name):
+    root = tmp_path / "plain"
+    root.mkdir()
+    source = tmp_path / "f"
+    source.write_bytes(b"x")
+    archive = tmp_path / "out.tar"
+    with pytest.raises(QaError) as refused:
+        container.project_archive(root, archive, 1 << 20, inputs=[(name, source)])
+    assert refused.value.code == "project_unreadable" and not archive.exists()
+
+
+def test_an_input_source_that_is_a_link_is_refused(tmp_path):
+    root = tmp_path / "plain"
+    root.mkdir()
+    target = tmp_path / "secret"
+    target.write_bytes(b"SECRET-OUTSIDE")
+    (tmp_path / "link").symlink_to(target)
+    archive = tmp_path / "out.tar"
+    with pytest.raises(QaError) as refused:
+        container.project_archive(root, archive, 1 << 20, inputs=[("f", tmp_path / "link")])
+    assert refused.value.code == "project_unreadable" and not archive.exists()
+
+
+def test_inputs_count_against_the_archive_cap(tmp_path):
+    root = tmp_path / "plain"
+    root.mkdir()
+    source = tmp_path / "big"
+    source.write_bytes(b"x" * (1 << 15))
+    with pytest.raises(QaError) as refused:
+        container.project_archive(root, tmp_path / "out.tar", 1 << 14, inputs=[("big", source)])
+    assert refused.value.code == "project_too_large"

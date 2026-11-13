@@ -44,11 +44,20 @@ Use the same command and scope at both commits; `compare` refuses runs that are 
 
 These run only through the kernel, in a container, never directly:
 
-`python3 .claude/skills/qa-regression-guard/scripts/qa.py --role verifier --skill qa-regression-guard run --container <image>@sha256:<digest> -- oasdiff breaking <base spec> <head spec> --fail-on ERR`
+For an OpenAPI contract the suite pins oasdiff by digest (`oasdiff` in `scripts/_kernel/policies/container-images.json`). Write the base version of the spec with the helper, which reads it from the base commit and writes only that one file under `.qa/work/` (the kernel's scratch area, outside the project tree):
 
-- The image is pinned by digest and must already be on the machine: the kernel never pulls one. The suite's pinned images are listed in `scripts/_kernel/policies/container-images.json`; an oasdiff image is not among them, so the user supplies its digest and pulls it themselves. The kernel starts the command through `sh` in the image, so the image needs a shell.
-- The container has no network and receives an archive of the project root: tracked and untracked files, without `.git` and `.qa`, capped in size (`project_too_large` above the cap). Both spec versions must therefore be files in the project tree; the base version cannot come from git history inside the container, and this skill never writes one into the project.
+`python3 .claude/skills/qa-regression-guard/scripts/git_read.py show --rev <base> --path <spec> --out .qa/work/contract/base.yaml`
+
+Keep the head version in the project tree, then run from the project root, with `<spec>` the head spec's path:
+
+```qa-leg contract-diff grant=none report=junit
+python3 .claude/skills/qa-regression-guard/scripts/qa.py --role verifier --skill qa-regression-guard run --container tufin/oasdiff@sha256:ff02af37a254b5199b9d72e7bba93dae5837a9119d59459168d1398893b47aea --timeout 300 --input .qa/work/contract/base.yaml --allow-empty --report 'junit:{evidence}/oasdiff.xml' --shell -- 'oasdiff breaking .qa-input/contract/base.yaml <spec> --fail-on ERR --format junit > {evidence}/oasdiff.xml'
+```
+
+- The image is pinned by digest and must already be on the engine: the kernel never pulls one. The container has no network, and `--input` places the base spec at `/work/.qa-input/contract/base.yaml`.
+- The container receives an archive of the project root: tracked and untracked files, without `.git` and `.qa`, capped in size (`project_too_large` above the cap). The head spec is therefore a file in the project tree; the base version cannot come from git history inside the container, which is why it travels as `--input`.
 - A container run cannot start inside a suite worktree (`container_in_worktree`).
+- The kernel reads the JUnit file: breaking changes make a `failed` run, one test case per finding; no change is one passing case. `--allow-empty` keeps a spec pair the tool lists nothing for from being inconclusive.
 - Exit code 1 with breaking changes listed is a `failed` run: report the breaking changes as findings (`functional`, the contract path as `component.path`, the run's EXE as evidence).
 
-Fallback when no image is available or the base spec is not in the tree: read the contract's diff with `python3 .claude/skills/qa-regression-guard/scripts/git_read.py diff --base <base> --head <head> --path <spec>`, list every removed or renamed path, field, parameter or enum value and every field that became required, and say in the answer that the comparison was by reading, not by a tool. A breaking change found by reading is a `suspected` finding.
+Fallback when no image is available or the helper cannot write the base spec: read the contract's diff with `python3 .claude/skills/qa-regression-guard/scripts/git_read.py diff --base <base> --head <head> --path <spec>`, list every removed or renamed path, field, parameter or enum value and every field that became required, and say in the answer that the comparison was by reading, not by a tool. A breaking change found by reading is a `suspected` finding.

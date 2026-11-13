@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "defs.schema.json",
+  "title": "Shared definitions",
+  "description": "Identifiers, hashes and closed vocabularies referenced by the other schemas.",
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "authority_mac": {"type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$"},
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "ulid": {"type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"},
+    "exe_id": {"type": "string", "pattern": "^EXE-[0-9A-HJKMNP-TV-Z]{26}$"},
+    "res_id": {"type": "string", "pattern": "^RES-[0-9A-HJKMNP-TV-Z]{26}$"},
+    "evt_id": {"type": "string", "pattern": "^EVT-[0-9A-HJKMNP-TV-Z]{26}$"},
+    "session_id": {"type": "string", "pattern": "^S-[0-9A-HJKMNP-TV-Z]{26}$"},
+    "fnd_id": {"type": "string", "pattern": "^FND-[0-9]{3,}$"},
+    "req_id": {"type": "string", "pattern": "^REQ-[0-9]{3,}$"},
+    "ac_id": {"type": "string", "pattern": "^AC-[0-9]{3,}\\.[0-9]+$"},
+    "asm_id": {"type": "string", "pattern": "^ASM-[0-9]{3,}$"},
+    "fix_id": {"type": "string", "pattern": "^FIX-[0-9]{3,}$"},
+    "rvl_id": {"type": "string", "pattern": "^RVL-[0-9]{3,}$"},
+    "rsk_id": {"type": "string", "pattern": "^RSK-[0-9]{3,}$"},
+    "tc_id": {"type": "string", "pattern": "^TC-[0-9]{3,}$"},
+    "auth_id": {"type": "string", "pattern": "^AUTH-[0-9]{3,}$"},
+    "gate_id": {"type": "string", "pattern": "^GATE-[0-9]{3,}$"},
+    "rpt_id": {"type": "string", "pattern": "^RPT-[0-9]{3,}$"},
+    "ev_id": {"type": "string", "pattern": "^EV-[0-9a-f]{12}$"},
+    "status": {"enum": ["passed", "failed", "blocked", "not_run", "inconclusive"]},
+    "strength": {"enum": ["claimed", "attested", "exit_code", "structured"]},
+    "independence": {"enum": ["I0", "I1", "I2", "I3"]},
+    "reason": {
+      "enum": [
+        "policy_denied", "not_authorized", "config_drift",
+        "tool_missing", "not_executable", "dependency_unavailable",
+        "timeout", "report_missing", "report_invalid", "no_tests_collected", "network_not_isolated",
+        "assertion", "error", "all_skipped", "exit_code_mismatch",
+        "nonzero_exit", "environment_error", "skipped"
+      ]
+    },
+    "role": {
+      "enum": ["coordinator", "auditor", "builder", "verifier", "evaluator", "user", "unspecified"]
+    },
+    "activity": {
+      "enum": [
+        "static-analysis", "test-execution-local", "write-tests",
+        "install-tools", "install-dependencies", "network-download", "data-egress",
+        "credential-use", "db-ephemeral", "db-readonly", "db-write",
+        "dast-passive", "dast-active", "load-test", "device-control",
+        "git-history-scan", "deploy"
+      ]
+    },
+    "env_class": {"enum": ["local", "ci", "ephemeral", "shared-test", "staging", "production"]},
+    "severity": {"enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"]},
+    "priority": {"enum": ["P0", "P1", "P2", "P3", "none"]},
+    "category": {
+      "enum": [
+        "functional", "security", "performance", "reliability", "data-integrity",
+        "accessibility", "usability", "compatibility", "maintainability",
+        "test-quality", "requirements", "pipeline"
+      ]
+    },
+    "verification": {
+      "enum": ["confirmed", "probable", "suspected", "not_reproducible", "false_positive"]
+    },
+    "finding_state": {
+      "enum": [
+        "open", "fix_submitted", "verified_fixed", "reopened",
+        "accepted_risk", "wont_fix", "duplicate"
+      ]
+    },
+    "anomaly": {
+      "enum": [
+        "exit_code_mismatch", "no_tests_collected", "retried_in_framework",
+        "partial", "untested_tool_version", "network_not_isolated", "load_limit_exceeded"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "properties": {
+        "role": {"$ref": "#/$defs/role"},
+        "skill": {"type": ["string", "null"]},
+        "session": {"$ref": "#/$defs/session_id"}
+      },
+      "required": ["role", "skill", "session"],
+      "additionalProperties": false
+    }
+  }
+}

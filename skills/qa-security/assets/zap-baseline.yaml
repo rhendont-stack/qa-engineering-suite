@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# The qa-security baseline plan for the ZAP Automation Framework: the spider and the passive checks only, no activeScan job.
+# The target is ${QA_TARGET}, which the run sets on its command line to http://127.0.0.1:<port>, the service it started.
+# scripts/run_inputs.py writes it to .qa/work/security/zap-baseline.yaml before every run; never edit that copy.
+env:
+  contexts:
+    - name: target
+      urls:
+        - ${QA_TARGET}
+  parameters:
+    failOnError: true
+    progressToStdout: true
+jobs:
+  - type: spider
+    parameters:
+      context: target
+      maxDuration: 2
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 2
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: /qa-evidence
+      reportFile: zap

@@ -153,6 +153,6 @@ def test_fixtures_hold_no_answer_key_or_skill_md(repo_root):
     assert keys == []
 
 
-def test_the_fixtures_that_hold_a_generator_are_the_two_the_harness_generates():
+def test_the_fixtures_that_hold_a_generator_are_the_three_the_harness_generates():
     generators = sorted(path.parent.name for path in FIXTURES.glob("*/generate.py"))
-    assert generators == ["injection-bait", "regression-repo"]
+    assert generators == ["injection-bait", "regression-repo", "vuln-lab"]

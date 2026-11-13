@@ -1,6 +1,6 @@
 # QA Engineering Suite
 
-> **Status: pre-release, not ready for use.** The evidence kernel and nine skills exist. Seven of the 16 skills have not been built, there is no install path, and no version has been released.
+> **Status: pre-release, not ready for use.** The evidence kernel and 13 skills exist. Three of the 16 skills have not been built, there is no install path, and no version has been released.
 
 An open-source suite of [Agent Skills](https://agentskills.io) meant to let an AI agent act as an independent QA team. Its rule is simple: a result counts only when reproducible evidence backs it. A test that did not run is never reported as passing.
 
@@ -13,11 +13,13 @@ An open-source suite of [Agent Skills](https://agentskills.io) meant to let an A
 | Test suite and repository checks | `tests/`, `tools/` | Built |
 | Spine skills: `qa-orchestrator`, `qa-test-execution`, `qa-codebase-intelligence`, `qa-reporting`, and three Claude Code subagents | `skills/`, `agents/` | Built, evaluated on a pilot basis; see the [milestone 2 report](docs/reports/milestone-2.md) |
 | Analysis and change skills: `qa-requirements`, `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard`, `qa-mutation` | `skills/` | Built, evaluated on a pilot basis; see the [milestone 3 report](docs/reports/milestone-3.md) |
+| Domain skills: `qa-api-testing`, `qa-database`, `qa-security`, `qa-performance` | `skills/` | Built, evaluated on a pilot basis with the tools out of the evaluated agent's reach; the tools themselves measured by deterministic legs in containers; see the [milestone 4a report](docs/reports/milestone-4a.md) |
+| Fixtures F2 (an orders API), F3 (database migrations) and F6 (a training lab, loopback only, run only in containers), with answer keys | `fixtures/`, `benchmark/` | Built |
 | Container runs (`qa run --container`) | `shared/kernel/qa/container.py` | Built, tested against a remote engine |
-| The other 7 skills | none yet | Not started |
+| The other 3 skills: `qa-frontend`, `qa-release`, `qa-mobile` | none yet | Not started |
 | Packaging and host manifests | none yet | Not started |
 
-The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports, and records LCOV, Cobertura and JaCoCo coverage and mutation-testing reports as measurements that never decide a status. It also records requirements, acceptance criteria, risks and test cases with the links between them, computes a traceability matrix with its gaps, records fixes and revalidates them (FAIL_TO_PASS and PASS_TO_PASS), runs a change in a suite worktree, records the files the suite writes, tracks findings, evaluates release gates, renders reports and checks the claims those reports make.
+The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports and k6 summaries, and records LCOV, Cobertura and JaCoCo coverage and mutation-testing reports as measurements that never decide a status. It also records requirements, acceptance criteria, risks and test cases with the links between them, computes a traceability matrix with its gaps, records fixes and revalidates them (FAIL_TO_PASS and PASS_TO_PASS), runs a change in a suite worktree, records the files the suite writes, tracks findings, evaluates release gates, renders reports and checks the claims those reports make.
 
 ## Verification so far
 
@@ -55,6 +57,17 @@ Milestone 3 adds the following. Its run IDs, evidence IDs, grader changes and li
 | Kernel tests on Linux x86_64 in containers through the kernel, 3.9 and 3.15 | First legs failed on one grader test that lacked a `git` guard in images without git; after a test-only guard both re-runs passed (4094 passed, 896 skipped, 0 failed; 868 of the skips need `git`, which the images lack). These legs ran before the final review fix wave and were not re-run; the kernel evidence after the wave is the remote full suite on Python 3.9 and 3.15 |
 | Kernel tests on macOS arm64 for milestone 3 | Not run locally. The macOS CI job at the final commit concluded `success` on 3.9 and 3.15 (5068 pass, 26 skip, 0 fail each) |
 
+Milestone 4a adds the following. Its run IDs, evidence IDs, grader changes and limitations are in the [milestone 4a report](docs/reports/milestone-4a.md).
+
+| Check | Result |
+|---|---|
+| Deterministic legs on F2, F3 and F6, in containers with network `none` on a remote engine | F2: Spectral, two Schemathesis runs, Hurl, a ZAP active scan and two k6 runs (p95 21.192 ms and 20.747 ms, both thresholds held); recall 7 of 9 over the five tools. F3: squawk (converted to SARIF) and SQLite and PostgreSQL migration roundtrips; recall 2 of 2 for squawk and the plan, the two legs the exit driver scored; 4 of 7 with the SQLite roundtrip scored afterwards by file only (an upper bound), 2 of 7 under the recall grader's rules as written. F6: Gitleaks, Semgrep, a Unicode scan and two ZAP plans against the lab as the run's own loopback service; recall 10 of 10. No OSV-Scanner leg ran |
+| One evaluated whole-suite run per fixture | F3 and F6 held every hard criterion; F2 missed one, `no_unbacked_pass_rate`, on a proposed load objective that the grader read as a pass rate (a suspected grader false positive). No external host contacted, no host run of the lab, every tool leg the agents started recorded as unable to start and none claimed |
+| Evaluations of the four new skills, three counted runs per scenario | `qa-api-testing` 7 of 9, `qa-database` 9 of 9, `qa-security` 8 of 9, `qa-performance` 9 of 9 |
+| Kernel mutation score, `report/check`, one container run | 69.95 over 396 mutants (277 killed, 119 survived); the stored report parsed after milestone 3's redaction fix |
+| Kernel tests on Linux x86_64 in containers through the kernel, 3.9 and 3.15 | First legs failed 4 tests each, all test-side (a corpus trace check that read the container's `/work` path as a machine path, and a grader test without a `git` guard); after a test-only fix both re-runs passed (6082 tests: 4977 pass, 1105 skip, 0 fail; 1043 of the skips need `git`, which the images lack) |
+| Kernel tests on macOS arm64 for milestone 4a | Not run locally; left to the macOS CI job |
+
 GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
 
 ## Try the kernel
@@ -80,7 +93,8 @@ A new project starts as `untrusted`. In that state `qa run` records a command on
 | 1 | Kernel foundations | Done |
 | 2 | `qa-orchestrator`, `qa-test-execution`, `qa-codebase-intelligence`, `qa-reporting`; container runs | Built; exit evidence has open items, see the milestone 2 report |
 | 3 | `qa-requirements`, `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard`, `qa-mutation` | Built; exit evidence has open items, see the milestone 3 report |
-| 4 | `qa-api-testing`, `qa-database`, `qa-security`, `qa-frontend`, `qa-performance`, `qa-release`, `qa-mobile` | Planned |
+| 4a | `qa-api-testing`, `qa-database`, `qa-security`, `qa-performance`; k6 ingestion; fixtures F2, F3 and F6 | Built; exit evidence has open items, see the milestone 4a report |
+| 4b | `qa-frontend`, `qa-release`, `qa-mobile`; the `audit` and `release` templates | Planned |
 | 5 | Packaging, per-skill evaluations, pilot benchmark | Planned |
 | 6 | Full benchmark, internal audit, documentation, v0.1.0 release candidate | Planned |
 
@@ -90,9 +104,12 @@ A skill that fabricates a claim, violates a safety rule, misreports a status or 
 
 - **The command guard is defense in depth, not a security boundary.** It cannot see commands inside scripts or opaque programs. The [milestone 1 report](docs/reports/milestone-1.md) lists the classes it does not cover.
 - **The kernel does not sandbox a host run.** Only `qa run --container` isolates the program under test, and only as far as the container engine does.
-- **Mutation testing of the kernel is partial.** One mutmut run in a Linux container measured six core modules: canonical 95.79, compare 81.34, gate 84.64, ledger 94.54, status 94.57 and trace 79.42 (4145 killed and 8 timed out of 4890 mutants, 84.93 over the six). `report/check` is not measured: its stored mutation report was cut by the secret redaction rule and no longer parsed. That defect is fixed (JSON reports are now redacted per value), but the leg has not been re-run. Tests that start the kernel in a subprocess run the unmutated copy, so the surviving counts are an upper bound. See the milestone 3 report.
+- **Mutation testing of the kernel is partial.** One mutmut run in a Linux container measured six core modules: canonical 95.79, compare 81.34, gate 84.64, ledger 94.54, status 94.57 and trace 79.42 (4145 killed and 8 timed out of 4890 mutants, 84.93 over the six). A second run, after the redaction fix that had left milestone 3's `report/check` report unreadable, measured `report/check` at 69.95 (277 killed of 396 mutants, 119 survived), the lowest of the seven. Other kernel modules are not measured. Tests that start the kernel in a subprocess run the unmutated copy, so the surviving counts are an upper bound. See the milestone 3 and 4a reports.
 - **The orchestrator's delegation is not yet reliable in every run.** Milestone 3 writes every launcher call literally and dispatches subagents in the foreground. Its fix-verification exit run stopped when the agent, still inside a suite worktree, wrote calls in a relative form the evaluation's allow-list did not cover; after the final review fixes, the skills say to return to the project root after a worktree `cd`, and before the fixes the review scenario held every hard criterion in 2 of 3 runs on the earlier final text, and on the final texts the review and fix-verification scenarios each held every hard criterion in 3 of 3 runs, plus one exit re-run. One `qa-regression-guard` run still stayed in a worktree and had a call refused. Skills that write their own input files run in the orchestrator's own context, because the subagents cannot write files; most of those delegation rows have no evaluated run. See the milestone 3 report.
-- **Evaluation results are small and in-sample.** Three runs per scenario, with descriptions tuned on the same prompts; the milestone 3 exit runs are one run each, and the fix-verification scenario has one re-run.
+- **Evaluation results are small and in-sample.** Three runs per scenario, with descriptions tuned on the same prompts; the milestone 3 and 4a exit runs are one run each, and the fix-verification scenario has one re-run.
+- **Evaluated agents cannot reach the container engine.** The evaluations of the four domain skills measure static work, the checks the skills write, refusals and honesty with the tools absent. The tools themselves are measured only by the deterministic legs. See the milestone 4a report.
+- **The command guard reads ZAP Automation Framework plans by their path, not their content.** A plan edited at the baseline plan's path reads as passive. `qa-security` writes its plans from committed assets, and the kernel does not yet hash a run's inputs.
+- **Fixture F6 is a deliberately vulnerable training lab.** It starts only on a loopback address and answers only loopback Host names; the suite runs it only inside a container, as a run's own service with network `none`. Do not run it on a host.
 - **Coverage XML with a DOCTYPE** must be in an ASCII-compatible encoding, and a literal `&` in its comments or CDATA is refused.
 - **Evidence IDs in the report** resolve against local ledgers that are kept out of git, so a fresh clone cannot resolve them. An extra `--ledger` that verifies proves only that its hash chain is internally consistent, not where it came from.
 - **An evidence bundle carries the configured engine string.** `qa config set container.engine` records the value in the ledger, and `qa report bundle` ships the ledger, so an `ssh <alias> docker` engine puts that host alias in every bundle. Use an alias you are willing to share before you export one.

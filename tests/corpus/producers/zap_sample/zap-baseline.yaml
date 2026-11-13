@@ -1,0 +1,23 @@
+# The corpus's ZAP Automation Framework plan: spider and passive checks only, no activeScan job.
+# QA_TARGET is set on the command line (http://127.0.0.1:8000, the corpus service).
+env:
+  contexts:
+    - name: corpus
+      urls:
+        - ${QA_TARGET}
+  parameters:
+    failOnError: true
+    progressToStdout: true
+jobs:
+  - type: spider
+    parameters:
+      context: corpus
+      maxDuration: 1
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 1
+  - type: report
+    parameters:
+      template: sarif-json
+      reportDir: /qa-evidence
+      reportFile: zap

@@ -1,0 +1,17 @@
+{
+  "id": "qa-api-testing-f2-conformance",
+  "fixture": "fixtures/rest-api",
+  "skill": "skills/qa-api-testing",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "system_path_only": true,
+  "keep_work": [
+    "api"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-api-testing/scripts/qa.py",
+    "python3 .claude/skills/qa-api-testing/scripts/endpoint_inventory.py",
+    "python3 -m pytest"
+  ],
+  "prompt": "Check that the orders API does what openapi.yaml says. This is our own project: running its code and tests on this machine is approved."
+}

@@ -40,23 +40,28 @@ from .workspace import FileTooLarge, Workspace, read_limited, write_atomic
 EVIDENCE_TOKEN = "{evidence}"
 _CONTAINER_EVIDENCE_BYTES = 256 * 2 ** 20  # one cap covers a stream and the copied-out tar; a normal evidence directory fits
 _INSTALL_ACTIVITY = "install-dependencies"
+_SERVICE_ACTIVITY = "test-execution-local"  # a service script runs project code, as the tests do
+_INPUT_ROOT = [".qa", "work"]
+_MAX_INPUTS = 64
+_MAX_INPUT_BYTES = 16 * 2 ** 20
 _SCOPES = ("targeted", "full")
 _ATTEMPT_ACTIVITY = "test-execution-local"
 _DEFAULT_ACTIVITY = "static-analysis"  # allowed without authority (§12.2)
+_LOAD_TEST = "load-test"  # its grants carry max_vus, max_rps and max_duration_s (§12.2)
 _ENV_VALUE_NAMES = ("CI", "NODE_ENV")
 _STDERR_TAIL = 64 * 1024
 _MIB = 2 ** 20
 _CATEGORY = {"$ref": "defs.schema.json#/$defs/category"}
 _UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production": a real environment may hold that id
 _MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json", "lcov": "text/plain",
-                "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json"}
+                "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json", "k6": "application/json"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
-_BEFORE_INSTALL = ("volume_create", "copy_in", None)  # where a failed pipeline stopped when no install had started; None: no step
+_BEFORE_INSTALL = ("volume_create", "copy_in", "prepare", "control_in", None)  # where a failed pipeline stopped when no install had started; None: no step
 _CONTAINER_REMEDIES = {
     "container_engine_unavailable": "start the container engine, or check the host set in container.engine",
     "container_image_missing": "pull the image once, by digest, on the engine; a run never pulls",
-    "container_step_failed": "check the engine's disk and that the image can run tar and sh as root",
+    "container_step_failed": "check the engine's disk, and that the image has tar and chmod for the file steps (run as root) and sh",
     "container_spec_invalid": "run from a project directory whose path holds only letters, digits, '.', '_' and '-'",
     "container_stdin_unreadable": "check that the temporary directory is writable",
     "container_cleanup_failed": "remove the objects named here from the engine by hand",
@@ -91,6 +96,17 @@ class RunRequest:
     category: str = "functional"
     container: Optional[str] = None  # name@sha256:<digest>; set, the command runs only in a container from this image
     install: Optional[str] = None    # shell text run first in that container, with a network
+    service: Optional[str] = None    # name@sha256:<digest> of a fixture service the tests share loopback with
+    service_run: Optional[str] = None  # shell text the service runs
+    service_user: Optional[str] = None  # UID or UID:GID the service runs as
+    inputs: Tuple[str, ...] = ()     # files under .qa/work/, relative to the workspace root; they land at /work/.qa-input/
+
+
+class _Input(NamedTuple):
+    path: str  # as requested, relative to the workspace root
+    name: str  # relative to .qa/work/: its place under .qa-input/
+    data: bytes  # read once: what is hashed is what is packed
+    sha256: str
 
 
 @dataclass
@@ -110,6 +126,7 @@ class _Run:
     config_hash: str
     kernel: dict
     limitations: List[str] = field(default_factory=list)
+    inputs: Tuple[_Input, ...] = ()
 
     @property
     def max_bytes(self) -> int:
@@ -153,6 +170,7 @@ class _Ran(NamedTuple):
     container: Optional[dict] = None  # the record's "container" block
     dependency_unavailable: bool = False
     anomalies: Tuple[str, ...] = ()
+    service_log: Optional[Tuple[bytes, int]] = None  # (the log, bytes dropped) of a run that had a service
 
 
 class _Reports(NamedTuple):
@@ -192,9 +210,14 @@ def _check_request(req: RunRequest) -> None:
 
 
 def _check_container_request(req: RunRequest) -> None:
+    wants_service = any(value is not None for value in (req.service, req.service_run, req.service_user))
     if req.container is None:
         if req.install is not None:
             raise QaError("install_needs_container", "--install runs only in a container: give --container too")
+        if wants_service:
+            raise QaError("service_needs_container", "a service runs only beside a container run: give --container too")
+        if req.inputs:
+            raise QaError("input_needs_container", "--input goes only into a container: give --container too")
         return
     if not container.is_pinned(req.container):
         raise QaError("container_image_unpinned", "the image must be pinned as name@sha256:<digest>", image=_recordable(str(req.container)))
@@ -203,6 +226,70 @@ def _check_container_request(req: RunRequest) -> None:
     for _fmt, pattern in req.reports:  # only the evidence volume comes back, and nothing is read outside what came back
         if not pattern.startswith(EVIDENCE_TOKEN + "/") or ".." in pattern.split("/"):
             raise QaError("report_outside_evidence", "in a container a report must be under {evidence}/", pattern=pattern)
+    if wants_service:
+        _check_service_request(req)
+    if not isinstance(req.inputs, (tuple, list)):
+        raise QaError("invalid_command", "inputs must be a sequence of paths")
+
+
+def _check_service_request(req: RunRequest) -> None:
+    if not container.is_pinned(req.service):
+        raise QaError("service_image_unpinned", "the service image must be pinned as name@sha256:<digest>",
+                      image=None if req.service is None else _recordable(str(req.service)))
+    if not isinstance(req.service_run, str) or not req.service_run.strip():
+        raise QaError("service_run_required", "a service needs --service-run: the shell text that starts it")
+    if not _encodable(req.service_run):
+        raise QaError("invalid_command", "the service script must be text that can be recorded")
+    if req.service_user is not None and not container.is_service_user(req.service_user):
+        raise QaError("invalid_service_user", "the service user must be UID or UID:GID, in digits", user=_recordable(str(req.service_user)))
+
+
+def _refused_input(index: int, why: str) -> QaError:
+    return QaError("input_refused", "an input must be a regular file under .qa/work/, reached through real directories only, "
+                   "named once; at most %d of them and %d bytes in all" % (_MAX_INPUTS, _MAX_INPUT_BYTES), index=index, why=why)
+
+
+def _read_inputs(ws: Workspace, req: RunRequest) -> Tuple[_Input, ...]:
+    """Each input, checked and read once, before anything runs or is recorded.
+
+    The path is read as written, relative to the workspace root: ``.qa/work/`` spelled exactly, with no empty, ``.`` or
+    ``..`` part and no NUL, and each path at most once. Then each component in turn is checked with ``lstat`` (a link
+    anywhere is refused; directories above, a regular file last), and the file is opened once with ``O_NOFOLLOW`` and read
+    from that descriptor: what is hashed is what is packed. The walk and the open are separate lookups, so the check
+    holds against what was on disk, not against a process on this host rewriting ``.qa/work/`` at the same moment; such a
+    writer already owns the workspace and is out of scope."""
+    if len(req.inputs) > _MAX_INPUTS:
+        raise _refused_input(_MAX_INPUTS, "too_many")
+    found: List[_Input] = []
+    seen: Set[str] = set()
+    total = 0
+    for index, text in enumerate(req.inputs):
+        parts = text.split("/") if isinstance(text, str) and _encodable(text) and "\x00" not in text else []
+        if len(parts) <= len(_INPUT_ROOT) or parts[:len(_INPUT_ROOT)] != _INPUT_ROOT or any(part in ("", ".", "..") for part in parts):
+            raise _refused_input(index, "not_under_qa_work")
+        if text in seen:  # two reads of one file could differ, and only the last would be packed
+            raise _refused_input(index, "duplicate")
+        seen.add(text)
+        here = str(ws.root)
+        for depth, part in enumerate(parts, 1):
+            here = os.path.join(here, part)
+            try:
+                mode = os.lstat(here).st_mode
+            except OSError:
+                raise _refused_input(index, "not_a_regular_file") from None
+            if stat.S_ISLNK(mode):
+                raise _refused_input(index, "symlink")
+            if not (stat.S_ISREG(mode) if depth == len(parts) else stat.S_ISDIR(mode)):
+                raise _refused_input(index, "not_a_regular_file")
+        try:
+            data = read_limited(Path(here), _MAX_INPUT_BYTES - total)
+        except FileTooLarge:
+            raise _refused_input(index, "too_large") from None
+        except OSError:  # replaced since the lstat: a link (ELOOP) or something that is not a file
+            raise _refused_input(index, "not_a_regular_file") from None
+        total += len(data)
+        found.append(_Input(text, "/".join(parts[len(_INPUT_ROOT):]), data, sha256_bytes(data)))
+    return tuple(found)
 
 
 def _resolve_cwd(ws: Workspace, cwd: Optional[Path]) -> Tuple[str, str]:
@@ -222,6 +309,7 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
             grace_s: float = 5.0) -> dict:
     """Decide about ``req``, run it if it may run, and record what happened."""
     _check_request(req)
+    inputs = _read_inputs(ws, req)
     cfg = config.load_config(ws)
     environment = next((e for e in cfg["environments"] if e["id"] == req.environment), None)
     if environment is None:
@@ -236,7 +324,7 @@ def execute(ws: Workspace, actor: ledger.Actor, req: RunRequest, *, environ: Opt
                command={"argv": recorded_argv, "shell": req.shell, "cwd": recorded_cwd}, environ=run_environ,
                redactor=redactor, execution_id=ids.new_id("EXE"),
                st=state.load(ws), config_hash=config.current_hash(ws),
-               kernel={"version": KERNEL_VERSION, "manifest": kernel["manifest_sha256"]})
+               kernel={"version": KERNEL_VERSION, "manifest": kernel["manifest_sha256"]}, inputs=inputs)
     if kernel["status"] == "modified":
         run.note("kernel_modified")
     gate = _gate(run)
@@ -288,7 +376,9 @@ def _gate(run: _Run) -> _Gate:
     decision = guard.classify(req.command, shell=req.shell, ws_root=run.ws.root, qa_dir=run.ws.qa_dir, config=run.cfg,
                               declared_activity=req.activity, cwd=req.cwd)
     if req.install is not None:
-        decision = _with_install(run, decision)
+        decision = _with_script(run, decision, req.install, _INSTALL_ACTIVITY)
+    if req.service_run is not None:
+        decision = _with_script(run, decision, req.service_run, _SERVICE_ACTIVITY)
     git, git_limitation = gitinfo.git_info(run.ws.root if tree is None else run.ws.root / tree)
     if git_limitation is not None:
         run.note(git_limitation)
@@ -315,17 +405,18 @@ def _gate(run: _Run) -> _Gate:
     return gate
 
 
-def _with_install(run: _Run, decision: guard.GuardDecision) -> guard.GuardDecision:
-    """``decision`` widened by the install script, which the guard reads as one more command, under its own activity."""
-    install = guard.classify(run.req.install, shell=True, ws_root=run.ws.root, qa_dir=run.ws.qa_dir, config=run.cfg,
-                             declared_activity=_INSTALL_ACTIVITY, cwd=run.req.cwd)
-    if "deny" in (decision.decision, install.decision):
-        return decision if decision.decision == "deny" else install
+def _with_script(run: _Run, decision: guard.GuardDecision, script: str, activity: str) -> guard.GuardDecision:
+    """``decision`` widened by a script that runs beside the command (the install step, or the service), which the guard
+    reads as one more command under ``activity``: its activities and hosts join the run's, and a denial wins."""
+    extra = guard.classify(script, shell=True, ws_root=run.ws.root, qa_dir=run.ws.qa_dir, config=run.cfg,
+                           declared_activity=activity, cwd=run.req.cwd)
+    if "deny" in (decision.decision, extra.decision):
+        return decision if decision.decision == "deny" else extra
     return dataclasses.replace(
-        decision, decision="require_grant" if "require_grant" in (decision.decision, install.decision) else decision.decision,
-        required_activities=tuple(dict.fromkeys(decision.required_activities + install.required_activities)),
-        hosts=tuple(dict.fromkeys(decision.hosts + install.hosts)),
-        environments=tuple(dict.fromkeys(decision.environments + install.environments)))
+        decision, decision="require_grant" if "require_grant" in (decision.decision, extra.decision) else decision.decision,
+        required_activities=tuple(dict.fromkeys(decision.required_activities + extra.required_activities)),
+        hosts=tuple(dict.fromkeys(decision.hosts + extra.hosts)),
+        environments=tuple(dict.fromkeys(decision.environments + extra.environments)))
 
 
 def _choose_engine(run: _Run, gate: _Gate) -> None:
@@ -408,8 +499,11 @@ def _attempt_refusal(run: _Run, gate: _Gate) -> Optional[str]:
         return "that execution ran on environment %s" % parent["environment_id"]
     if _git_identity(gate.git) != _git_identity(parent["git"]):
         return "the commit or diff differs from that execution's"
-    if (parent["isolation"], parent.get("container", {}).get("image")) != (_isolation(req), req.container):
+    contained = parent.get("container", {})
+    if (parent["isolation"], contained.get("image")) != (_isolation(req), req.container):
         return "that execution ran under another isolation or image"
+    if (contained.get("service") or {}).get("image") != req.service:
+        return "that execution ran with another service, or without one"
     root = state.chain_root(st, req.attempt_of)
     length = sum(1 for e in st["executions"].values() if e["status"] != "blocked" and state.chain_root(st, e["id"]) == root)
     if length >= 1 + run.cfg["defaults"]["flaky_reruns"]:
@@ -764,8 +858,34 @@ def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
         return None
     if summary.kind == "alerts":
         return {"format": summary.format, "kind": "alerts", "alerts": len(summary.alerts), "runs": summary.runs}
-    return {"format": summary.format, "kind": "tests", "tests": summary.total, "failures": summary.failed,
-            "errors": summary.errors, "skipped": summary.skipped}
+    block = {"format": summary.format, "kind": "tests", "tests": summary.total, "failures": summary.failed,
+             "errors": summary.errors, "skipped": summary.skipped}
+    if summary.metrics:  # what a load test measured: numbers beside the verdict, never part of it
+        block.update(metrics={m.name: dict(m.values) for m in summary.metrics}, label="measured")
+    return block
+
+
+# What a load-test grant limits, and where a k6 summary says how far the run went: (limit, metric, statistic).
+_LOAD_LIMITS = (("max_vus", "vus_max", "max"), ("max_rps", "http_reqs", "rate"))
+
+
+def _load_limits_passed(run: _Run, gate: _Gate, summary: Optional[ingest.ReportSummary]) -> List[str]:
+    """Each limit of the ``load-test`` grant that covered the run and that the run's summary shows it went past.
+
+    Only a recorded grant carries limits; a run no grant covered has nothing to compare against."""
+    if summary is None or (not summary.metrics and summary.run_duration_ms is None):
+        return []
+    measured = {m.name: m.values for m in summary.metrics}
+    passed = []
+    for entry in gate.authorizations:
+        grant = run.st["authorizations"].get(entry["authorization"]) if entry["activity"] == _LOAD_TEST else None
+        limits = grant.get("limits", {}).get(_LOAD_TEST, {}) if grant is not None else {}
+        found = [(limit, "%s.%s" % (metric, stat), measured.get(metric, {}).get(stat)) for limit, metric, stat in _LOAD_LIMITS]
+        found.append(("max_duration_s", "run_duration_ms / 1000",
+                      None if summary.run_duration_ms is None else summary.run_duration_ms / 1000))
+        passed += ["%s %s > %s %s of %s" % (where, value, limit, limits[limit], entry["authorization"])
+                   for limit, where, value in found if isinstance(limits.get(limit), int) and value is not None and value > limits[limit]]
+    return passed
 
 
 # --------------------------------------------------------------------------- stages 5-9
@@ -821,7 +941,9 @@ def _write_evidence(run: _Run, directory: Path, streams: Dict[str, Tuple[bytes, 
         run.command, reports=[{"format": fmt, "pattern": pattern} for fmt, pattern in req.reports], timeout_s=timeout_s,
         activity=req.activity, environment=req.environment, scope=req.scope, category=req.category,
         allow_empty=req.allow_empty, attempt_of=req.attempt_of,
-        **({} if req.container is None else {"container": req.container, "install": req.install})))
+        **({} if req.container is None else {
+            "container": req.container, "install": req.install, "service": req.service, "service_run": req.service_run,
+            "service_user": req.service_user, "inputs": [{"path": item.path, "sha256": item.sha256} for item in run.inputs]})))
     manifest = dict(report_entries)
     _store_evidence(run, directory, manifest, "command.json", dumps(document) + b"\n", "application/json", redactions)
     for name, (data, count) in streams.items():
@@ -857,14 +979,35 @@ def _capped(data: bytes, dropped: int, limit: int) -> Tuple[bytes, int]:
     return data[:limit], dropped + max(len(data) - limit, 0)
 
 
+def _without_host(engine: container.Engine, data: bytes) -> bytes:
+    if engine.host is None:
+        return data
+    word = re.compile(br"(?<![A-Za-z0-9._-])%s(?![A-Za-z0-9._-])" % re.escape(engine.host.encode("ascii")))
+    return word.sub(b"<engine-host>", data)
+
+
 def _stream_for_the_record(run: _Run, engine: container.Engine, outcome: runner.RunOutcome) -> runner.RunOutcome:
     """The log cap the configuration sets, and no word of the host: ssh writes on the same stream as the container."""
     stdout, stdout_dropped = _capped(outcome.stdout, outcome.stdout_dropped, run.max_bytes)
     stderr, stderr_dropped = _capped(outcome.stderr, outcome.stderr_dropped, run.max_bytes)
-    if engine.host is not None:
-        word = re.compile(br"(?<![A-Za-z0-9._-])%s(?![A-Za-z0-9._-])" % re.escape(engine.host.encode("ascii")))
-        stdout, stderr = word.sub(b"<engine-host>", stdout), word.sub(b"<engine-host>", stderr)
-    return dataclasses.replace(outcome, stdout=stdout, stderr=stderr, stdout_dropped=stdout_dropped, stderr_dropped=stderr_dropped)
+    return dataclasses.replace(outcome, stdout=_without_host(engine, stdout), stderr=_without_host(engine, stderr),
+                               stdout_dropped=stdout_dropped, stderr_dropped=stderr_dropped)
+
+
+def _service_log_for_the_record(run: _Run, engine: container.Engine, finished: container.ContainerOutcome) -> Tuple[bytes, int]:
+    """The service's log under the same rules as the test streams, with what the record should say about it."""
+    data, dropped = _capped(finished.service_log, finished.service_log_dropped, run.max_bytes)
+    if finished.service_log_error is not None:
+        run.note("service_log_unavailable: %s" % finished.service_log_error)
+    if dropped:
+        run.note("service_log_truncated")
+    service = finished.service or {}
+    if service.get("image_id") is None:
+        run.note("service_undescribed: the engine did not describe the service after the tests, so the run is not counted as isolated")
+    elif not service.get("running_at_end"):
+        code = service.get("exit_code")
+        run.note("service_stopped: the service had ended (exit %s) when the tests ended" % ("unknown" if code is None else code))
+    return _without_host(engine, data), dropped
 
 
 def _unpack_evidence(run: _Run, directory: Path, files: Dict[str, bytes]) -> None:
@@ -877,10 +1020,30 @@ def _unpack_evidence(run: _Run, directory: Path, files: Dict[str, bytes]) -> Non
             run.note("%s could not be unpacked (%s)" % (_recordable(name), type(exc).__name__))
 
 
+def _service_block(run: _Run, outcome: Optional[container.ContainerOutcome]) -> Optional[dict]:
+    """What the daemon said about the service; a service that never started is the request with nothing observed."""
+    if run.req.service is None:
+        return None
+    if outcome is not None and outcome.service is not None:
+        return outcome.service
+    return {"image": run.req.service, "image_id": None, "network_mode": None, "running_at_end": False, "exit_code": None}
+
+
 def _container_block(run: _Run, engine: container.Engine, outcome: Optional[container.ContainerOutcome], install_ran: bool) -> dict:
     return {"image": run.req.container, "image_id": (outcome.image_id or None) if outcome else None, "engine_kind": engine.kind,
             "daemon_version": outcome.facts.version if outcome else None,
-            "network_mode": (outcome.network_mode or None) if outcome else None, "install_ran": install_ran}
+            "network_mode": (outcome.network_mode or None) if outcome else None, "install_ran": install_ran,
+            "service": _service_block(run, outcome)}
+
+
+def _staged_inputs(scratch: Path, inputs: Iterable[_Input]) -> List[Tuple[str, Path]]:
+    """The bytes that were read and hashed, written where only this run reads them: the archive packs exactly those."""
+    staged = []
+    for number, item in enumerate(inputs):
+        path = scratch / ("input-%d" % number)
+        write_atomic(path, item.data)
+        staged.append((item.name, path))
+    return staged
 
 
 def _note_cleanup(run: _Run, names: Iterable[str]) -> None:
@@ -911,11 +1074,13 @@ def _in_container(run: _Run, gate: _Gate, directory: Path, timeout_s: float) -> 
     try:
         with tempfile.TemporaryDirectory(prefix="qa-archive-") as scratch:
             archive = Path(scratch) / "project.tar"
-            container.project_archive(run.ws.root, archive, container.DEFAULT_ARCHIVE_MAX_BYTES)
+            container.project_archive(run.ws.root, archive, container.DEFAULT_ARCHIVE_MAX_BYTES,
+                                      inputs=_staged_inputs(Path(scratch), run.inputs))
+            service = None if req.service is None else container.ServiceSpec(image=req.service, script=req.service_run, user=req.service_user)
             finished = container.run(engine, container.ContainerSpec(
                 execution_id=run.execution_id, image=req.container, script=_container_script(req), install_script=req.install,
                 archive=archive, workdir=posixpath.normpath(posixpath.join(container.WORK_MOUNT, run.command["cwd"])), timeout_s=timeout_s,
-                max_bytes=max(run.max_bytes, _CONTAINER_EVIDENCE_BYTES)))
+                max_bytes=max(run.max_bytes, _CONTAINER_EVIDENCE_BYTES), service=service))
     except (QaError, OSError) as exc:
         return _not_contained(run, engine, started_at, exc)
     _note_cleanup(run, finished.cleanup_failed)
@@ -928,9 +1093,10 @@ def _in_container(run: _Run, gate: _Gate, directory: Path, timeout_s: float) -> 
         return _Ran(dataclasses.replace(outcome, exit_code=None, signal=None, timed_out=False), environment, block, dependency_unavailable=True)
     if finished.evidence_error is not None:
         run.note("evidence_not_copied: %s" % finished.evidence_error)
+    service_log = None if req.service is None else _service_log_for_the_record(run, engine, finished)
     _unpack_evidence(run, directory, finished.evidence)
     _repair_evidence(run, directory)
-    return _Ran(outcome, environment, block, anomalies=finished.anomalies)
+    return _Ran(outcome, environment, block, anomalies=finished.anomalies, service_log=service_log)
 
 
 def _no_reports(req: RunRequest) -> _Reports:
@@ -948,19 +1114,26 @@ def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
     stdout, stdout_redactions = run.redactor.bytes_(outcome.stdout)
     stderr, stderr_redactions = run.redactor.bytes_(outcome.stderr)
     reports = _no_reports(req) if ran.dependency_unavailable else _store_reports(run, directory, snapshot)
+    over = _load_limits_passed(run, gate, reports.summary)
+    for text in over:
+        run.note("load_limit_exceeded: " + text)
+    anomalies = ran.anomalies + (("load_limit_exceeded",) if over else ())
     verdict = status.decide(status.StatusInputs(
         spawn_error=outcome.spawn_error, shell=req.shell or req.container is not None, exit_code=outcome.exit_code,
         timed_out=outcome.timed_out, dependency_unavailable=ran.dependency_unavailable,
         report_declared=any(not ingest.is_measurement(fmt) for fmt, _pattern in req.reports),
         report_error=reports.error, summary=reports.summary,
         allow_empty=req.allow_empty, stderr_tail=stderr[-_STDERR_TAIL:].decode("utf-8", "replace"),
-        orphaned_output=outcome.orphaned_output, anomalies=ran.anomalies))
+        orphaned_output=outcome.orphaned_output, anomalies=anomalies))
     for flag, limitation in ((outcome.orphaned_output, "orphaned_output"), (outcome.stdout_dropped, "stdout_truncated"),
                              (outcome.stderr_dropped, "stderr_truncated")):
         if flag:
             run.note(limitation)
     streams = {"stdout.log": (_with_marker(stdout, outcome.stdout_dropped), stdout_redactions),
                "stderr.log": (_with_marker(stderr, outcome.stderr_dropped), stderr_redactions)}
+    if ran.service_log is not None:
+        service_log, service_redactions = run.redactor.bytes_(ran.service_log[0])
+        streams["service.log"] = (_with_marker(service_log, ran.service_log[1]), service_redactions)
     evidence_manifest, redactions = _write_evidence(run, directory, streams, timeout_s, reports.manifest)
     record = _execution_data(run, gate, verdict, dict({
         "started_at": outcome.started_at, "ended_at": outcome.ended_at, "duration_ms": outcome.duration_ms,

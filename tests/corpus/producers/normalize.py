@@ -2,10 +2,9 @@
 
 Usage: normalize.py <file> [<file> ...]
 
-Rewrites each file in place, replacing the hostname, timestamps, absolute
-paths, container paths, coverage report epochs and session ids, Surefire system property values and the user name
-with fixed tokens. Run it on every corpus file after
-the producer has written it.
+Rewrites each file in place, replacing the hostname, timestamps (ISO 8601 and HTTP dates), browser versions in user
+agents, absolute paths, container paths, coverage report epochs and session ids, Surefire system property values and
+the user name with fixed tokens. Run it on every corpus file after the producer has written it.
 """
 from __future__ import annotations
 
@@ -20,6 +19,12 @@ from typing import List, Optional, Tuple
 ROOT = Path(__file__).resolve().parents[3]
 
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?")
+# A four-part browser version in a user agent a scanner sent (ZAP sends Chrome's, four dotted numbers) has the shape
+# of an IPv4 address, which tools/check_repo.py refuses in tests/.
+BROWSER_VERSION = re.compile(r"\b(Chrome|Chromium|Edg|Firefox|Safari)(\\?/)\d+\.\d+\.\d+\.\d+\b")
+# HTTP's own date form, as a scanner copies a response's Date header into its report.
+HTTP_DATE = re.compile(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} "
+                       r"\d{2}:\d{2}:\d{2} GMT\b")
 # Every producer makes its temporary directory with tempfile.mkdtemp(prefix="qa-<producer>-").
 TEMP_DIR = re.compile(r"(?:/private)?/(?:var/folders/[^/\s\"]+/[^/\s\"]+/T|tmp)/qa-[a-z0-9-]+-[A-Za-z0-9_]+")
 HOSTNAME_ATTR = re.compile(r'hostname="[^"]*"')
@@ -53,11 +58,17 @@ def name_pattern(name: str) -> Optional["re.Pattern[str]"]:
 
 
 def sensitive_patterns() -> List[Tuple[str, "re.Pattern[str]", str]]:
-    """(label, pattern, replacement token) for this machine, most specific first."""
+    """(label, pattern, replacement token) for this machine, most specific first.
+
+    A checkout whose root is itself one of ``CONTAINER_PATHS`` (the kernel's container runs the project at ``/work``) has no
+    root-directory pattern: that path names no machine, ``normalize_text`` already writes it as ``{WORK}``, and the manifest
+    quotes it in the container commands that produced the corpus.
+    """
     host = socket.gethostname()
     home = str(Path.home())
+    root = None if CONTAINER_PATHS.fullmatch(str(ROOT)) else re.compile(re.escape(str(ROOT)) + r"(?![\w.-])")
     candidates = [
-        ("root directory", re.compile(re.escape(str(ROOT)) + r"(?![\w.-])"), "{ROOT}"),
+        ("root directory", root, "{ROOT}"),
         ("home directory", home_pattern(home), "{HOME}"),
         ("host name", name_pattern(host), "HOST"),
         ("host name", name_pattern(host.split(".")[0]), "HOST"),
@@ -75,6 +86,8 @@ def normalize_text(text: str) -> str:
     text = SESSION_ID.sub(r"\1SESSION\2", text)
     text = TEMP_DIR.sub("{TMP}", text)
     text = TIMESTAMP.sub("1970-01-01T00:00:00.000+00:00", text)
+    text = HTTP_DATE.sub("Thu, 01 Jan 1970 00:00:00 GMT", text)
+    text = BROWSER_VERSION.sub(r"\1\2VERSION", text)
     for _label, pattern, token in sensitive_patterns():
         text = pattern.sub(token, text)
     return text

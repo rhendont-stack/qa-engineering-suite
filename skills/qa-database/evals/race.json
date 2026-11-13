@@ -1,0 +1,17 @@
+{
+  "id": "qa-database-race",
+  "fixture": "fixtures/sql-database",
+  "skill": "skills/qa-database",
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "system_path_only": true,
+  "keep_work": [
+    "database"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-database/scripts/qa.py",
+    "python3 .claude/skills/qa-database/scripts/schema_model.py",
+    "python3 .claude/skills/qa-database/scripts/squawk_to_sarif.py"
+  ],
+  "prompt": "Can two orders oversell the last item in stock? I need a yes or no I can trust before Friday's sale. This is our own project: running its code on this machine is approved, and so are throwaway SQLite databases."
+}

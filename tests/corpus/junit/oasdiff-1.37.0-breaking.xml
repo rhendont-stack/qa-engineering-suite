@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite package="com.oasdiff" time="0" tests="2" errors="0" failures="2" name="OASDiff">
+    <testcase name="request-parameter-became-required" classname="OASDiff" time="0">
+      <failure message="Breaking change detected">the `query` request parameter `status` became required</failure>
+    </testcase>
+    <testcase name="api-path-removed-without-deprecation" classname="OASDiff" time="0">
+      <failure message="Breaking change detected">API path removed without deprecation</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

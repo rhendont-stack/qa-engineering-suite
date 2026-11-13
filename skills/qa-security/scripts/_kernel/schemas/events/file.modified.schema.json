@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "file.modified event data",
+  "description": "A file the suite changed in the project, inside a write-tests grant. tracked (written only when true; absent means false) says that git tracked the path when it was recorded, and is true when git could not answer, in which case git_unknown is true; a tracked file needs a signed file.modification_approved event for the same sha256, and until there is one it is listed as unapproved. A record of what happened, not an approval: it always folds.",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string", "minLength": 1},
+    "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "grant": {"$ref": "defs.schema.json#/$defs/auth_id"},
+    "testcase": {"anyOf": [{"$ref": "defs.schema.json#/$defs/tc_id"}, {"type": "null"}]},
+    "tracked": {"type": "boolean"},
+    "git_unknown": {"const": true}
+  },
+  "required": ["path", "sha256", "grant", "testcase"],
+  "additionalProperties": false
+}

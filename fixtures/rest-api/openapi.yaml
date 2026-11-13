@@ -1,0 +1,495 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Orders API",
+    "version": "1.0.0",
+    "description": "A small API for placing and reading orders."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8080"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Readiness probe",
+        "responses": {
+          "200": {
+            "description": "The service is ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/token": {
+      "post": {
+        "operationId": "createToken",
+        "summary": "Exchange a user name and password for a bearer token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user",
+                  "password"
+                ],
+                "properties": {
+                  "user": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "token"
+                  ],
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a JSON object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The user or the password is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders": {
+      "get": {
+        "operationId": "listOrders",
+        "summary": "The caller's orders",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's orders.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Order"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createOrder",
+        "summary": "Place an order",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewOrder"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The order was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a JSON object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is missing or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{id}": {
+      "get": {
+        "operationId": "getOrder",
+        "summary": "Read one of the caller's orders",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The caller has no such order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setOrderQuantity",
+        "summary": "Set the quantity of one of the caller's orders; repeating the call changes nothing more",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "quantity"
+                ],
+                "properties": {
+                  "quantity": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The order after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a JSON object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The caller has no such order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The quantity is out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteOrder",
+        "summary": "Delete one of the caller's orders",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The order is gone."
+          },
+          "401": {
+            "description": "No valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The caller has no such order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "NewOrder": {
+        "type": "object",
+        "required": [
+          "item",
+          "quantity",
+          "unit_price_cents"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "minLength": 1
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "unit_price_cents": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
+          }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "required": [
+          "id",
+          "owner",
+          "item",
+          "quantity",
+          "unit_price_cents",
+          "total_cents",
+          "revision"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "unit_price_cents": {
+            "type": "integer"
+          },
+          "total_cents": {
+            "type": "integer"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "customer_total_cents": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

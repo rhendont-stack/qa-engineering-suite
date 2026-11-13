@@ -1,0 +1,206 @@
+{
+  "fixture": "vuln-lab",
+  "version": 1,
+  "note": "Locations are an operation (METHOD /path) or the file, with the file and the lines that hold the cause, in the copy that generate.py writes (lab/settings.py exists only there). Classes are named by CWE only. detectable_by names static-review, in-process-check where a test in tests/integration/test_fixture_f6.py shows the class, and a tool only after an observed run of its pinned image on F6. F6-05's advisory (CVE-2018-18074) and osv-scanner in its detectable_by come from an observed offline run of the pinned OSV-Scanner image (2.7.1) over this requirements.txt, which reported five advisories for requests 2.19.1; the key names one of them. gitleaks on F6-04 comes from an observed run of the pinned Gitleaks image (v8.30.1) over a generated copy, which reported only that line (rule stripe-access-token). F6-05 is file_level: a tool that reports the manifest without a line still locates it. semgrep comes from an observed run of the pinned Semgrep image (1.185.0) with the suite's own rules (skills/qa-security/assets/semgrep-rules/) over a generated copy, whose results located each entry tagged with it by file, line and CWE. zap comes from observed runs of the pinned ZAP image (2.17.0) against the lab started as the run's service on 127.0.0.1: the baseline plan located F6-08 and F6-11, and the active plan also F6-01, F6-02 and F6-03, each by endpoint and CWE; a ZAP alert without a CWE that reached an entry by its endpoint alone (F6-09) does not tag it. The legs in tests/integration/test_fixture_f6.py (test_f6_gitleaks_leg, test_f6_semgrep_leg, test_f6_zap_baseline_leg and test_f6_zap_active_leg) repeat those runs and assert that what each locates equals these tags.",
+  "issues": [
+    {
+      "id": "F6-01",
+      "location": "GET /products",
+      "file": "lab/catalog.py",
+      "lines": [
+        21,
+        22
+      ],
+      "match": "WHERE category = '%s'",
+      "category": "security",
+      "severity_anchor": "SEC-C1",
+      "class": "CWE-89 SQL injection: the query text is built from a request parameter",
+      "detectable_by": [
+        "static-review",
+        "semgrep",
+        "zap"
+      ]
+    },
+    {
+      "id": "F6-02",
+      "location": "GET /hello",
+      "file": "lab/app.py",
+      "lines": [
+        62,
+        63
+      ],
+      "match": "page(\"hello.html\", name=query.get(\"name\"",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-79 reflected cross-site scripting: a request parameter is placed in HTML without escaping",
+      "detectable_by": [
+        "static-review",
+        "semgrep",
+        "zap"
+      ]
+    },
+    {
+      "id": "F6-03",
+      "location": "GET /notes",
+      "file": "lab/app.py",
+      "lines": [
+        72,
+        76
+      ],
+      "match": "os.path.join(NOTES, query.get(\"name\"",
+      "category": "security",
+      "severity_anchor": "SEC-C1",
+      "class": "CWE-22 path traversal: a file name from a request parameter is not confined to its directory",
+      "detectable_by": [
+        "static-review",
+        "semgrep",
+        "zap"
+      ]
+    },
+    {
+      "id": "F6-04",
+      "location": "lab/settings.py",
+      "file": "lab/settings.py",
+      "lines": [
+        4,
+        4
+      ],
+      "match": "SECRET_KEY = \"",
+      "category": "security",
+      "severity_anchor": "SEC-H1",
+      "class": "CWE-798 hard-coded credential: the token signing key is written in source (generated at copy time)",
+      "detectable_by": [
+        "gitleaks",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F6-05",
+      "location": "requirements.txt",
+      "file": "requirements.txt",
+      "lines": [
+        1,
+        1
+      ],
+      "match": "requests==2.19.1",
+      "category": "security",
+      "severity_anchor": "SEC-L1",
+      "class": "CWE-1395 dependency on a vulnerable third-party component: a pinned version with a published advisory, in a manifest the lab never installs",
+      "detectable_by": [
+        "static-review",
+        "osv-scanner"
+      ],
+      "advisory": "CVE-2018-18074",
+      "file_level": true
+    },
+    {
+      "id": "F6-06",
+      "location": "lab/settings.py",
+      "file": "lab/settings.py",
+      "lines": [
+        3,
+        3
+      ],
+      "match": "DEBUG = True",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-489 active debug code: an error response carries the traceback",
+      "detectable_by": [
+        "static-review",
+        "in-process-check",
+        "semgrep"
+      ]
+    },
+    {
+      "id": "F6-07",
+      "location": "GET /",
+      "file": "lab/app.py",
+      "lines": [
+        41,
+        44
+      ],
+      "match": "headers[\"Access-Control-Allow-Origin\"] = origin",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-942 permissive cross-origin policy: any requesting origin is allowed, with credentials",
+      "detectable_by": [
+        "static-review",
+        "in-process-check",
+        "semgrep"
+      ]
+    },
+    {
+      "id": "F6-08",
+      "location": "GET /session",
+      "file": "lab/app.py",
+      "lines": [
+        81,
+        81
+      ],
+      "match": "cookie = \"%s=%s; Path=/; SameSite=Lax\"",
+      "category": "security",
+      "severity_anchor": "SEC-L1",
+      "class": "CWE-1004 session cookie without the HttpOnly attribute",
+      "detectable_by": [
+        "static-review",
+        "in-process-check",
+        "semgrep",
+        "zap"
+      ]
+    },
+    {
+      "id": "F6-09",
+      "location": "GET /session",
+      "file": "lab/app.py",
+      "lines": [
+        81,
+        81
+      ],
+      "match": "cookie = \"%s=%s; Path=/; SameSite=Lax\"",
+      "category": "security",
+      "severity_anchor": "SEC-L1",
+      "class": "CWE-614 session cookie without the Secure attribute",
+      "detectable_by": [
+        "static-review",
+        "in-process-check",
+        "semgrep"
+      ]
+    },
+    {
+      "id": "F6-10",
+      "location": "GET /account",
+      "file": "lab/tokens.py",
+      "lines": [
+        45,
+        48
+      ],
+      "match": "if header.get(\"alg\") == \"HS256\":",
+      "category": "security",
+      "severity_anchor": "SEC-C1",
+      "class": "CWE-347 improper verification of a cryptographic signature: the check depends on the algorithm the token itself names",
+      "detectable_by": [
+        "static-review",
+        "semgrep"
+      ]
+    },
+    {
+      "id": "F6-11",
+      "location": "GET /",
+      "file": "lab/app.py",
+      "lines": [
+        40,
+        40
+      ],
+      "match": "headers = {\"Content-Type\": content_type}",
+      "category": "security",
+      "severity_anchor": "SEC-L1",
+      "class": "CWE-693 protection mechanism failure: no Content-Security-Policy, X-Content-Type-Options or X-Frame-Options header on any response",
+      "detectable_by": [
+        "static-review",
+        "in-process-check",
+        "zap"
+      ]
+    }
+  ]
+}

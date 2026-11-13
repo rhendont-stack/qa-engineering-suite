@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "bundle.ingested event data",
+  "description": "An evidence bundle imported from another environment, stored under .qa/imports/<id>/. Everything here is data about that bundle: its executions are never local executions, and its ledger's grants and approvals are not read, only counted in ignored.",
+  "type": "object",
+  "properties": {
+    "id": {"type": "string", "pattern": "^BUNDLE-[0-9]{3,}$"},
+    "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "manifest_sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "source": {
+      "type": "object",
+      "properties": {
+        "kernel_version": {"type": "string"},
+        "state_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+        "heads": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {"seq": {"type": "integer", "minimum": 1}, "hash": {"$ref": "defs.schema.json#/$defs/sha256"}},
+            "required": ["seq", "hash"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["kernel_version", "state_hash", "heads"],
+      "additionalProperties": false
+    },
+    "files": {"type": "integer", "minimum": 0},
+    "violations": {"type": "integer", "minimum": 0},
+    "ignored": {
+      "type": "object",
+      "properties": {"authorizations": {"type": "integer", "minimum": 0}},
+      "required": ["authorizations"],
+      "additionalProperties": false
+    },
+    "executions": {
+      "type": "object",
+      "propertyNames": {"$ref": "defs.schema.json#/$defs/exe_id"},
+      "additionalProperties": {"$ref": "#/$defs/imported_execution"}
+    }
+  },
+  "required": ["id", "sha256", "manifest_sha256", "source", "files", "violations", "ignored", "executions"],
+  "additionalProperties": false,
+  "$defs": {
+    "imported_execution": {
+      "type": "object",
+      "properties": {
+        "status": {"$ref": "defs.schema.json#/$defs/status"},
+        "reason": {"anyOf": [{"$ref": "defs.schema.json#/$defs/reason"}, {"type": "null"}]},
+        "strength": {"anyOf": [{"$ref": "defs.schema.json#/$defs/strength"}, {"type": "null"}]},
+        "exit_code": {"type": ["integer", "null"]},
+        "argv": {"type": "array", "items": {"type": "string"}},
+        "activity": {"$ref": "defs.schema.json#/$defs/activity"},
+        "scope": {"enum": ["targeted", "full"]},
+        "commit": {"type": ["string", "null"]},
+        "tests": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "status": {"$ref": "defs.schema.json#/$defs/status"},
+              "flaky": {"type": "boolean"},
+              "duration_ms": {"type": ["integer", "null"]}
+            },
+            "required": ["status", "flaky", "duration_ms"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["status", "reason", "strength", "exit_code", "argv", "activity", "scope", "commit", "tests"],
+      "additionalProperties": false
+    }
+  }
+}

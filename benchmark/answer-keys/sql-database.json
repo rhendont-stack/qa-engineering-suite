@@ -1,0 +1,144 @@
+{
+  "fixture": "sql-database",
+  "version": 1,
+  "note": "Locations are the file with the lines that hold the cause. Test ids are classname::name as the kernel records them from the JUnit report. The three smoke tests pass: none of the seven problems is reached by them. F3-07 lives in the PostgreSQL variant only and shows in a PostgreSQL plan, never in a SQLite one.",
+  "suites": {
+    "python": {
+      "run_status": "passed",
+      "tests": {
+        "tests.test_smoke::test_migrations_build_the_schema": "passed",
+        "tests.test_smoke::test_a_customer_and_a_product_are_stored": "passed",
+        "tests.test_smoke::test_an_order_takes_its_items_from_stock_and_is_listed": "passed"
+      }
+    }
+  },
+  "issues": [
+    {
+      "id": "F3-01",
+      "location": "migrations/0003_create_orders.up.sql",
+      "file": "migrations/0003_create_orders.up.sql",
+      "lines": [
+        1,
+        6
+      ],
+      "match": "customer_id INTEGER NOT NULL",
+      "category": "data-integrity",
+      "severity_anchor": "FUNC-H2",
+      "class": "missing foreign key, orphan rows possible",
+      "detectable_by": [
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F3-02",
+      "location": "migrations/0001_create_customers.up.sql",
+      "file": "migrations/0001_create_customers.up.sql",
+      "lines": [
+        1,
+        6
+      ],
+      "match": "email TEXT NOT NULL",
+      "category": "data-integrity",
+      "severity_anchor": "FUNC-H2",
+      "class": "missing uniqueness constraint on an identity field",
+      "detectable_by": [
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F3-03",
+      "location": "migrations/0004_split_customer_name.up.sql",
+      "file": "migrations/0004_split_customer_name.up.sql",
+      "lines": [
+        1,
+        3
+      ],
+      "match": "DROP COLUMN name",
+      "category": "data-integrity",
+      "severity_anchor": "FUNC-C2",
+      "class": "column removed without moving its data",
+      "detectable_by": [
+        "squawk",
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F3-04",
+      "location": "migrations/0005_create_audit_log.up.sql",
+      "file": "migrations/0005_create_audit_log.up.sql",
+      "lines": [
+        1,
+        6
+      ],
+      "match": "CREATE TABLE audit_log",
+      "category": "reliability",
+      "severity_anchor": "FUNC-M1",
+      "class": "migration without a down step",
+      "detectable_by": [
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F3-05",
+      "location": "shop_db/store.py",
+      "file": "shop_db/store.py",
+      "lines": [
+        71,
+        79
+      ],
+      "match": "FROM order_items WHERE order_id = ?",
+      "category": "performance",
+      "severity_anchor": "PERF-M2",
+      "class": "N+1 access pattern, one query per parent row",
+      "detectable_by": [
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F3-06",
+      "location": "shop_db/store.py",
+      "file": "shop_db/store.py",
+      "lines": [
+        45,
+        53
+      ],
+      "match": "current - quantity",
+      "category": "data-integrity",
+      "severity_anchor": "FUNC-H2",
+      "class": "lost update on a stock decrement, read and write not atomic",
+      "detectable_by": [
+        "static-review",
+        "in-process-check"
+      ]
+    },
+    {
+      "id": "F3-07",
+      "location": "postgres/migrations/0003_create_orders.up.sql",
+      "file": "postgres/migrations/0003_create_orders.up.sql",
+      "lines": [
+        10,
+        16
+      ],
+      "match": "order_id BIGINT NOT NULL REFERENCES orders (id)",
+      "category": "performance",
+      "severity_anchor": "PERF-M1",
+      "class": "missing index on a join and lookup column, visible only in a PostgreSQL plan",
+      "detectable_by": [
+        "postgres",
+        "static-review"
+      ]
+    }
+  ],
+  "known_extras": [
+    {
+      "file": "postgres/migrations/0003_create_orders.up.sql",
+      "class": "missing (order_id, line_no) uniqueness on the PostgreSQL order_items table",
+      "note": "SQLite has it as the composite primary key. Adding it in PostgreSQL would index order_id and remove F3-07, so it stays; a finding of it is not a false positive."
+    }
+  ]
+}

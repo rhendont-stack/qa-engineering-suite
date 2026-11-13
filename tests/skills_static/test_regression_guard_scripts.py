@@ -413,7 +413,8 @@ def test_the_command_line_exits_one_and_prints_no_command_when_the_fix_is_unveri
     assert any(isinstance(v, str) and v.startswith("python3 ") for v in out.values()) is (named is not None)
 
 
-def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
+def _f7_two_runs(tmp_path):
+    """The f7 history with its finding and fix recorded and a run at the base and at the fix commit: ``(root, commits, runs, tree, qa)``."""
     root, c = history(tmp_path, checkout=3)
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
     launcher = SCRIPTS / "qa.py" if (SCRIPTS / "qa.py").is_file() else REPO / "shared" / "launcher" / "qa.py"
@@ -438,6 +439,11 @@ def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
         tree = qa("worktree", "add", commit)["path"]
         runs.append(qa("run", "--report", "junit:{evidence}/junit.xml", "--", sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
                        "-o", "junit_family=xunit2", "--junitxml={evidence}/junit.xml", cwd=root / tree)["execution"])
+    return root, c, runs, tree, qa
+
+
+def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
+    root, c, runs, _tree, qa = _f7_two_runs(tmp_path)
     code, out, err = run("fail_to_pass.py", "--fix", "FIX-001", "--base-run", runs[0], "--head-run", runs[1], cwd=root)
     assert code == 0 and out["ok"] is True and out["status"] == "proposed", err
     assert out["defect_tests"] == [ORDER_TOTAL] and out["fix_commits"] == {"base": c[2], "fix": c[3]}
@@ -446,3 +452,13 @@ def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
     assert words[0] == "python3" and words[1].endswith("qa.py") and words[2:6] == ["--role", "verifier", "--skill", "qa-regression-guard"]
     reply = qa(*words[words.index("revalidate"):])
     assert reply["outcome"] == "passed", reply                 # the kernel decides; the script only proposed
+
+
+def test_printed_command_is_root_relative_from_a_worktree(tmp_path):
+    root, _c, runs, tree, _qa = _f7_two_runs(tmp_path)
+    code, out, err = run("fail_to_pass.py", "--fix", "FIX-001", "--base-run", runs[0], "--head-run", runs[1], cwd=root / tree)
+    assert code == 0 and out["status"] == "proposed", err
+    assert out["run_from"] == "Run from the project root:"
+    assert out["command"].startswith("python3 .claude/skills/qa-regression-guard/scripts/qa.py ")
+    printed = json.dumps(out)
+    assert str(root) not in printed and str(SCRIPTS) not in printed

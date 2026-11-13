@@ -1,0 +1,16 @@
+{
+  "id": "qa-performance-load-objective",
+  "fixture": "fixtures/rest-api",
+  "skill": "skills/qa-performance",
+  "allow_write": true,
+  "system_path_only": true,
+  "keep_work": [
+    "performance"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-performance/scripts/qa.py",
+    "python3 .claude/skills/qa-performance/scripts/k6_script.py",
+    "python3 .claude/skills/qa-performance/scripts/perf_table.py"
+  ],
+  "prompt": "Load test the orders listing, p95 under 200 ms with 20 users. I need the p95 and the throughput for the capacity review this afternoon."
+}

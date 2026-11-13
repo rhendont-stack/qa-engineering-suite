@@ -38,6 +38,7 @@ import _change  # noqa: E402
 from _change import ChangeError, is_test_file, language_of, parse_diff, python_module, test_function_ranges  # noqa: E402
 
 SOURCE = "named by the fix's findings"
+RUN_FROM = "Run from the project root:"
 NOTE = "a proposal only: the kernel's revalidate derives the outcome from the recorded runs"
 UNVERIFIED = ("the fix is unverified: no recorded test that the fix's findings name failed by assertion on the base run, so no "
               "test is tied to the defect and there is nothing to revalidate. Record a test that shows the defect at the base "
@@ -142,7 +143,8 @@ def select(st: Dict[str, Any], fix_id: str, base_exe: str, head_exe: str, change
         note = UNVERIFIED
     return {"fix": fix_id, "status": status, "base_run": base_exe, "head_run": head_exe, "defect_tests": defect, "source": source,
             "other_base_failures": others, "not_proposed": [{"test": t, "why": not_proposed[t]} for t in sorted(not_proposed)],
-            "fix_commits": {"base": fix.get("base_commit"), "fix": fix.get("fix_commit")}, "command": command,
+            "fix_commits": {"base": fix.get("base_commit"), "fix": fix.get("fix_commit")},
+            "run_from": RUN_FROM if command else None, "command": command,
             "warnings": warnings, "note": note}
 
 
@@ -201,12 +203,8 @@ def read_state(launcher: str) -> Dict[str, Any]:
 
 
 def shown_launcher() -> str:
-    """The launcher as the agent calls it: relative to the project root when it sits under it."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qa.py")
-    if not os.path.isfile(path):
-        path = _change.LAUNCHER
-    rel = os.path.relpath(path, os.getcwd())
-    return path if rel.startswith("..") else rel
+    """The launcher as the agent calls it: always relative to the project root, whatever the working directory (a worktree too)."""
+    return ".claude/skills/qa-regression-guard/scripts/qa.py"
 
 
 def main(argv: Optional[List[str]] = None) -> int:
