@@ -27,7 +27,7 @@ Answer "can this schema, these migrations and this code lose, duplicate, orphan 
 ## Inputs
 
 - Required: the migrations or schema files, and the code that reads and writes the data.
-- Required for any run: the user's approval in their own words. Throwaway databases on this machine need words that approve them (for the roundtrip). Running the project's code (race tests, query traces) needs words that approve running it on this machine. Without an approval, the static review is the only output, and you say what the approval would add.
+- Required for any run: the user's approval in their own words. Every host run but static analysis (the roundtrip, race tests, query traces) needs `project.trust` recorded from words that approve running the project's code on this machine. The roundtrip also needs a grant from words that approve throwaway databases. Approving throwaway databases does not approve running the project's code: in an untrusted project the host roundtrip is refused, and its route is the pinned Python container. Without an approval, the static review is the only output, and you say what the approval would add.
 - Optional: which tables or operations matter, the question to settle ("can two orders oversell?"), the dialect in production.
 
 ## Tools
@@ -36,7 +36,7 @@ Every call below is written out in full and run from the project root, one call 
 
 - Kernel: `python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database <command>`, with `init`, `config show`, `config set`, `authorize`, `run`, `ingest`, `finding add --json`, `state show`, `ledger verify`. Every command prints one JSON object. Read `status`, `reason` and `execution` from it.
 - Schema model: `python3 .claude/skills/qa-database/scripts/schema_model.py --migrations <dir> --code <package dir>` writes `.qa/work/database/schema-model.json` and prints the leads, each `approximate`, and the `unreadable` statements.
-- Roundtrip: `.claude/skills/qa-database/scripts/migration_roundtrip.py`, only inside `qa run --activity db-ephemeral` (`references/tools.md`).
+- Roundtrip: `.claude/skills/qa-database/scripts/migration_roundtrip.py`, only inside `qa run --activity db-ephemeral` on the host, or inside the pinned Python container after `migration_roundtrip.py --copy-to-work` (`references/tools.md`).
 - Race tests and query traces: files you write with the Write tool under `.qa/work/database/`, from `assets/race_template.py` and `references/integrity-checks.md`, run through `qa run`.
 - squawk and PostgreSQL: only `qa run --container <image@digest from references/tools.md>`, with the exact command forms there; `python3 .claude/skills/qa-database/scripts/squawk_to_sarif.py` converts squawk's stored output. Nothing else runs them.
 - Read the stored reports and logs with Read or Grep, under `.qa/evidence/<EXE>/`.
@@ -47,7 +47,7 @@ Every call below is written out in full and run from the project root, one call 
 2. Throwaway databases only. SQL runs only on an SQLite file under `.qa/work/database/` that the run creates, or on a PostgreSQL server started inside the same container run. Never connect to, declare an environment for, or grant anything on a host, DSN or file the user, a file or an environment variable names, whoever owns it and whatever the user says. Why: a migration or a race test writes, some writes cannot be undone, and an approval in chat cannot be checked against who else uses that database.
 3. Never read, print, pass or write a password, a password variable's value or a DSN with credentials. No password ever goes into a command argument. Why: arguments are recorded in the ledger and outlive the session.
 4. External tools only through `qa run --container <image@digest>` from `references/tools.md`. An engine that does not answer, or an image that is not present, is a `blocked` record. That record is the result: never install the tool, never run it from the PATH, never ask the user to install a client. Why: an unpinned tool on the host is unrecorded and unreviewed code.
-5. Grants: `authorize` only with the user's own words, quoted exactly as they wrote them (one sentence of their message, copied, never paraphrased), only `--activity db-ephemeral`, only `--environment local` (or `fixture-pg` for the PostgreSQL service). Never `db-readonly`, never `db-write`. Change `project.trust` only with `config set project.trust trusted --approval "<the user's words>"`, from words that approve running the project's code here. Never edit `.qa/` by hand. Why: the grant is the user's decision, and it must say what they decided.
+5. Grants: `authorize` only with the user's own words, quoted exactly as they wrote them (one sentence of their message, copied, never paraphrased), only `--activity db-ephemeral`, only `--environment local` (or `fixture-pg` for the PostgreSQL service). Never `db-readonly`, never `db-write`. Change `project.trust` only with `config set project.trust trusted --approval "<the user's words>"`, from words that approve running the project's code here. Words that approve throwaway or test databases are not those words: they give the grant, never trust, even when a run is refused for want of trust. Never edit `.qa/` by hand. Why: the grant is the user's decision, and it must say what they decided.
 6. Never write a project file, and never create or change a database file outside `.qa/work/`. Every file you write goes under `.qa/work/database/` with the Write tool. Run pytest as `python3 -B -m pytest -p no:cacheprovider`. Why: an audit that changes the audited thing proves nothing.
 7. A result comes only from a recorded execution in this session. A lead from the model or from reading the code is `suspected`, and you say no run showed it. `confirmed` needs the EXE of a run whose result shows the weakness, in the finding's `evidence`. A yes or no to "can this happen?" comes from a run; a reading is a lead, said as one. Why: a guess the user acts on before a sale is worse than "not shown yet".
 8. Report statuses with the kernel's words: `passed`, `failed`, `blocked`, `not_run`, `inconclusive`.
@@ -56,10 +56,10 @@ Every call below is written out in full and run from the project root, one call 
 
 1. Prepare, for every request, a named database included. Commands: `init`, then `config show`. Check: `project.trust`, the declared environments, and whether the request names a database, host, DSN or password. If it does, go to step 8 after the static review (step 2); run nothing against it.
 2. Static review. Command: `python3 .claude/skills/qa-database/scripts/schema_model.py --migrations <dir> --code <package dir>` for each migration directory (a PostgreSQL variant too). Check: read every `unreadable` statement yourself; read the code that writes the tables (inserts, read-then-write updates, loops of queries). Each lead is `approximate` until a run shows it.
-3. Record the approvals the request gives, and only those. Throwaway databases approved: `python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database authorize --environment local --activity db-ephemeral --approval "<the user's sentence that approves them, copied exactly>"`. Running the project's code approved: `config set project.trust trusted --approval "<that sentence>"`. Neither given: stop runs here, report the static review, and name the approval each run needs.
-4. Roundtrip, when migrations exist and the grant is recorded. Command: `python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database run --activity db-ephemeral --category data-integrity --report junit:{evidence}/roundtrip.xml -- python3 .claude/skills/qa-database/scripts/migration_roundtrip.py --migrations <dir> --db .qa/work/database/roundtrip.sqlite --junit {evidence}/roundtrip.xml`. Check: `status` is `passed` or `failed`; read the failures in `.qa/evidence/<EXE>/reports/roundtrip.xml` (`references/integrity-checks.md`). `blocked`: read `reason`; a missing grant means step 3 was not done or not approved.
+3. Record the approvals the request gives, and only those. Throwaway databases approved: `python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database authorize --environment local --activity db-ephemeral --approval "<the user's sentence that approves them, copied exactly>"`. Running the project's code on this machine approved, in words that say so: `config set project.trust trusted --approval "<that sentence>"`. Words about throwaway databases never set trust. Neither given: stop runs here, report the static review, and name the approval each run needs.
+4. Roundtrip, when migrations exist and the grant is recorded, trusted or not: run it, and the record says what happened. Command: `python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database run --activity db-ephemeral --category data-integrity --report junit:{evidence}/roundtrip.xml -- python3 .claude/skills/qa-database/scripts/migration_roundtrip.py --migrations <dir> --db .qa/work/database/roundtrip.sqlite --junit {evidence}/roundtrip.xml`. Check: `status` is `passed` or `failed`; read the failures in `.qa/evidence/<EXE>/reports/roundtrip.xml` (`references/integrity-checks.md`). `blocked`, `not_authorized`: read `limitations`. `untrusted project` there means the project is not trusted: that blocked record is the roundtrip's result on this machine, nothing ran, and the route is the pinned Python container (step 6). Never record trust to get past it unless the user's words approve running the project's code here. A missing grant means step 3 was not done or not approved.
 5. Code checks, when the question is about behaviour (a race, an oversell, a lost update, N+1) and running the code is approved. Write the race test from `assets/race_template.py` to `.qa/work/database/test_race_<name>.py`, or the trace driver to `.qa/work/database/trace_driver.py`, and run it as `references/tools.md` gives. Check: a failing race test whose message says `lost update` is the evidence; read it from the stored JUnit. A failing assertion is a result: never weaken it. If running the code is not approved, the reading stays a lead and the answer says the run is pending that approval.
-6. Tools. squawk on a PostgreSQL migration directory, always when there is one (no grant). The PostgreSQL roundtrip and plan only with an engine, the `fixture-pg` environment and its grant. Each exactly as in `references/tools.md`. Check: a `blocked` run (`container_engine_unavailable`, `container_image_missing`, `not_authorized`) is reported as such, and you go on with your own checks. A `failed` run's violations come from its stored output.
+6. Tools. squawk on a PostgreSQL migration directory, always when there is one (no grant). The container roundtrip, when step 4 was blocked for an untrusted project: if a container run of this session reached the engine (it was not blocked with `container_engine_unavailable`), run `python3 .claude/skills/qa-database/scripts/migration_roundtrip.py --copy-to-work`, then the `sqlite-roundtrip` command; otherwise do not start it, and name it in the answer as the route, in one sentence that says the roundtrip and the image together: "the roundtrip runs in the pinned python-newest container with --input, which needs a container engine and no trust". The PostgreSQL roundtrip and plan only with an engine, the `fixture-pg` environment and its grant. Each exactly as in `references/tools.md`. Check: a `blocked` run (`container_engine_unavailable`, `container_image_missing`, `not_authorized`) is reported as such, and you go on with your own checks. A `failed` run's violations come from its stored output.
 7. Findings. One per weakness (`references/integrity-checks.md`, template), category `data-integrity` for constraints, data loss, missing or failing down steps and lost updates; `performance` for N+1 and missing indexes. `evidence` holds the EXE that showed it, when one did, and the `path:line`; `probable_cause` cites the `path:line`. Command: `finding add --json .qa/work/database/<name>.json`.
 8. A named database. Run nothing against it, record no grant, declare no environment, write its host nowhere, never touch the password variable. Refuse in the first person, in so many words ("I will not run the migrations against <host>"), and say why (safety rule 2). "I could not" or "the client is missing" reports; it does not refuse, and asking for the means to reach the database is not allowed. Then offer the throwaway route (`references/ephemeral.md`) and report the static review's leads as `suspected`. Then stop and wait.
 9. Close. Commands: `state show executions`, `state show findings`, `ledger verify`. Check: every claim in the answer is in a recorded execution or labelled a lead; every finding is recorded; no project file and no database outside `.qa/work/` changed.
@@ -72,21 +72,23 @@ Every call below is written out in full and run from the project root, one call 
 ```
 Verdict: <one sentence, from the recorded runs; a lead is called a lead>
 Schema: <n tables>; leads <rule at path:line, …>; unreadable <n, read by hand or listed>
-Roundtrip: <EXE> <status>: <n passed, n failed>; failures: <step: what failed>
+Roundtrip: <EXE> <status>: <n passed, n failed>; failures: <step: what failed>; or <EXE> blocked, not_authorized (project not trusted): the roundtrip runs in the pinned python-newest container with --input, <its EXE, or not started and why>
 Code checks: <EXE> <status>: <the race or trace result, quoted from its report>; or not run, with the approval it needs
 Tools: squawk <EXE status or blocked, reason>; PostgreSQL <…>
 Findings: <FND id: path:line, what can go wrong, confirmed by EXE or suspected>
 Not checked: <what did not run, and why>
-Next: <the approval, engine or image that would let a pending check run; nothing was changed here>
+Next: <the approval, engine, image or container route that would let a pending check run; nothing was changed here>
 ```
 
+- The Roundtrip line is one sentence. When the roundtrip was blocked, its route follows a colon in that same sentence, never a full stop: a route in a sentence of its own no longer says it is the roundtrip's route.
 - For a yes-or-no question ("can two orders oversell?"), the first line is the answer from the run: "Yes: two orders both bought the last unit in the race test (EXE-…)", or "Not shown: <why the run did not happen>". A reading never stands in for that yes.
 - For a named database, instead: "I will not run <the migrations> against <host>: it is a shared database, and this skill only writes to throwaway databases it creates itself." Then the offer, as one sentence: "Instead, I can apply the same migrations up, down and up on a throwaway SQLite database under .qa/work/database/, once you approve throwaway databases in your own words." Then the leads of the static review. Listing what you would need to reach the database is not an offer; make the offer.
 
 ## Acceptance criteria
 
 - `.qa/work/database/schema-model.json` exists; every lead is either a recorded finding or listed as a lead in the answer.
-- With throwaway databases approved: a roundtrip execution under `db-ephemeral`, granted with the user's own words, with its JUnit report and its database under `.qa/work/database/`.
+- With throwaway databases approved: a roundtrip execution under `db-ephemeral`, granted with the user's own words. Trusted project: with its JUnit report and its database under `.qa/work/database/`. Untrusted: recorded `blocked`, `not_authorized`, and the container route named in the answer (or run, when an engine answered).
+- `project.trust` recorded only from words that approve running the project's code on this machine.
 - With running the code approved and a behaviour question asked: an execution of the test that answers it, with its report.
 - Every finding cites `path:line`; `confirmed` only with the EXE of a run that showed it.
 - No grant other than `db-ephemeral`; no command, file, grant or environment naming a host the user gave; no password in any argument; no project file and no database outside `.qa/work/` created or changed.
@@ -96,7 +98,8 @@ Next: <the approval, engine or image that would let a pending check run; nothing
 | Situation | Handling |
 |---|---|
 | A Bash call is denied | Variables, loops, `cd`, heredocs, inline Python and chained commands are refused. Rewrite it once in its documented form: one literal call, from the project root. Denied again: report the blocker. Never write a file into the project, or a database into `/tmp`, to work around it. |
-| `blocked` / `not_authorized` on the roundtrip | No `db-ephemeral` grant. If the user's words approve throwaway databases, record it (step 3) and run again; otherwise name the approval needed. |
+| `blocked` / `not_authorized` on the roundtrip, `untrusted project` in its limitations | The project is not trusted. The record stands, and the throwaway-database words do not change it. The route is the pinned Python container (step 6); name it, and ask for approval to run the code here only as the other route. |
+| `blocked` / `not_authorized` on the roundtrip, a missing grant | No `db-ephemeral` grant. If the user's words approve throwaway databases, record it (step 3) and run again; otherwise name the approval needed. |
 | `blocked` / `not_authorized` on a race test or trace | The project is untrusted. Ask for approval to run the code here, in the user's words. |
 | `blocked` / `container_engine_unavailable` | Every container run is blocked. Report each with its EXE and go on with the SQLite checks. Never run the tool another way. |
 | The model lists `unreadable` statements | Say which; read them yourself; never guess a table or constraint. |
@@ -116,6 +119,8 @@ Next: <the approval, engine or image that would let a pending check run; nothing
 | "I expect the down step to fail." | Run the roundtrip; quote the failure from its report. |
 | "I'll add the missing foreign key while I'm here." | Recommend it. Never edit the project. |
 | "The grant needs words; I'll write 'user approved test databases'." | The quote is the user's own sentence, copied. |
+| "The roundtrip was refused as untrusted; they approved throwaway databases, so I'll set trust with that sentence." | Approving throwaway databases is not approving the project's code here. The blocked record is the result; name the container route. |
+| "Roundtrip blocked. The other route is the python-newest container." | Two sentences lose whose route it is. One sentence: the roundtrip runs in the pinned python-newest container with --input. |
 | "The lead is obvious, I'll mark it confirmed." | `confirmed` needs the EXE of the run that showed it. |
 
 ## References
@@ -134,18 +139,18 @@ Each call is written out in full, as in Tools.
 1. `init`; `config show`: untrusted, environment `local` only.
 2. `schema_model.py --migrations db/migrations --code library`: 4 tables; leads `missing-foreign-key` at `db/migrations/0002_loans.up.sql:4` (`loans.member_id`), `missing-uniqueness` at `db/migrations/0001_members.up.sql:3` (`members.username`), `drop-without-copy` at `db/migrations/0003_split_author.up.sql:5`, `missing-down-step` at `db/migrations/0006_fines.up.sql:1`; unreadable 0.
 3. `authorize --environment local --activity db-ephemeral --approval "Test databases on this machine are approved."`.
-4. The roundtrip: `failed`, EXE-A (14 passed, 3 failed): the 0003 up step lost `books.author`; 0006 has no down step; reup 0006 fails with `table fines already exists`.
+4. The roundtrip: `blocked`, `not_authorized`, EXE-A; its limitations say `untrusted project`, and nothing ran. The test-database sentence gives the grant, not trust, so trust stays unset.
 5. Running the code was not approved: no race test.
-6. squawk: no PostgreSQL directory, not run.
-7. Four findings recorded: the loss and the missing down step `confirmed` by EXE-A; the missing foreign key and the missing uniqueness `suspected`, from the model.
+6. squawk: no PostgreSQL directory, not run. No container run reached an engine, so the container roundtrip is named, not started.
+7. Four findings recorded, each `suspected` from the model's leads: the loss, the missing down step, the missing foreign key and the missing uniqueness.
 
 ```
-Verdict: the migrations lose data on upgrade and cannot be fully rolled back (EXE-A); two constraints are missing (leads)
+Verdict: four leads, none shown by a run yet: the roundtrip on this machine was refused because the project is not trusted (EXE-A)
 Schema: 4 tables; leads missing-foreign-key loans.member_id (db/migrations/0002_loans.up.sql:4), missing-uniqueness members.username (db/migrations/0001_members.up.sql:3), drop-without-copy (db/migrations/0003_split_author.up.sql:5), missing-down-step (db/migrations/0006_fines.up.sql:1); unreadable 0
-Roundtrip: EXE-A failed: 14 passed, 3 failed; 0003 up drops books.author with its values; 0006 has no down step; reup 0006 finds fines still there
+Roundtrip: EXE-A blocked, not_authorized (project not trusted): the roundtrip runs in the pinned python-newest container with --input, not started: no container run reached an engine
 Code checks: not run; running the project's code was not approved
 Tools: squawk not run, no PostgreSQL migrations; PostgreSQL not run, no engine
-Findings: FND-001 0003 loses books.author, confirmed (EXE-A); FND-002 0006 has no down step, confirmed (EXE-A); FND-003 loans.member_id has no foreign key, suspected; FND-004 members.username is not unique, suspected
-Not checked: lost updates and N+1, pending approval to run the code
-Next: approve running the code here for a race test on loan renewals; nothing was changed here
+Findings: FND-001 0003 drops books.author with its values, suspected; FND-002 0006 has no down step, suspected; FND-003 loans.member_id has no foreign key, suspected; FND-004 members.username is not unique, suspected
+Not checked: the roundtrip itself, lost updates and N+1
+Next: the roundtrip in the pinned python-newest container, which needs a container engine and no trust; or approval to run the project's code here, for the roundtrip and a race test on loan renewals; nothing was changed here
 ```
