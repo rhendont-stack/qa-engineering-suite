@@ -66,6 +66,6 @@ python3 .claude/skills/qa-performance/scripts/qa.py --role verifier --skill qa-p
 | `failed` | k6 ran and a threshold was crossed (or the service did not answer) | The crossed objective and the numbers, from `perf_table.py`, with the EXE |
 | `passed` | k6 ran and every threshold held | The numbers, from `perf_table.py`, with the EXE and their labels |
 | `inconclusive`, `timeout` | The run passed the leg's `--timeout 300`; no summary | That it ran out of time, with the EXE; no number. A shorter workload next |
-| anomaly `load_limit_exceeded` | The run went past a limit of its grant | Say so first, with the limit; the run's numbers stand, and the next run stays within the grant |
+| anomaly `load_limit_exceeded` | The run went past a limit of its grant | Say so first, with the limit; a run that would have passed is `inconclusive` instead, which `perf_table.py` reports as not measured, with no number; the next run stays within the grant |
 
 A blocked run measured nothing. What you read in the code (a loop over every order, a missing page size) is a lead, labelled `estimated` where it carries a number, and never a percentile.

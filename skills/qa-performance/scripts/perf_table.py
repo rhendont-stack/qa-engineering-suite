@@ -4,7 +4,9 @@ Usage: python3 perf_table.py --execution EXE-<id>
 
 Run from the project root. The execution is read through the skill's own kernel (``qa.py state show executions``), never
 from a file someone could have written. Only a run whose status is ``passed`` or ``failed`` measured anything; for any other
-status the table says so (``"measured": false`` and why) and holds no number.
+status the table says so (``"measured": false`` and why) and holds no number. ``load_limit_exceeded`` lists each load limit
+the kernel found the run went past, shown by the run's own k6 report or by a summary attached with ``qa ingest k6 --from``;
+either way a run that would have passed is ``inconclusive`` and measured nothing.
 
 The numbers come from the k6 report the run stored (the execution's ``report.metrics``, which the kernel read from the
 summary) or, for a run with none, from a k6 summary attached to it later with ``qa ingest k6 FILE --from EXE`` whose
@@ -188,6 +190,20 @@ def rows_of(metrics: Dict[str, Dict[str, Any]], label: str, execution: str) -> L
     return rows
 
 
+def load_limit_lines(record: Dict[str, Any]) -> List[str]:
+    """Each load limit the kernel found the run went past: from the run's own k6 report (the execution's ``limitations``) and
+    from each k6 summary attached later with ``qa ingest k6 --from`` (that entry's ``limitations``), in that order, once each.
+    The kernel applies the same status rule either way, so the table marks the run the same way."""
+    sources = [record.get("limitations")] + [item.get("limitations") for item in record.get("ingested") or []
+                                             if isinstance(item, dict) and item.get("format") == "k6"]
+    lines: List[str] = []
+    for notes in sources:
+        for note in notes if isinstance(notes, list) else ():
+            if isinstance(note, str) and note.startswith("load_limit_exceeded") and note not in lines:
+                lines.append(note)
+    return lines
+
+
 def table(root: Path, execution: str) -> Dict[str, Any]:
     found = executions(root)
     record = found.get(execution)
@@ -195,8 +211,7 @@ def table(root: Path, execution: str) -> Dict[str, Any]:
         raise Refused("%s is not a recorded execution of this workspace" % execution)
     status, reason = record.get("status"), record.get("reason")
     out: Dict[str, Any] = {"ok": True, "execution": execution, "status": status, "reason": reason,
-                           "anomalies": record.get("anomalies") or [],
-                           "load_limit_exceeded": [n for n in record.get("limitations") or [] if isinstance(n, str) and n.startswith("load_limit_exceeded")]}
+                           "anomalies": record.get("anomalies") or [], "load_limit_exceeded": load_limit_lines(record)}
     if status not in ("passed", "failed"):
         out.update(measured=False, why="a %s run measured nothing%s" % (status, (": " + str(reason)) if reason else ""), rows=[])
         return out

@@ -316,6 +316,56 @@ def test_a_structured_ingest_of_the_run_s_own_report_is_read_beside_it(qa_on_fix
     assert out["thresholds"] == [{"metric": "http_req_duration", "threshold": "p(95)<200", "ok": False}]
 
 
+def load_test_grant_of_4_users(fixture):
+    code, granted = fixture.cli("authorize", "--environment", "local", "--activity", "load-test", "--limit", "load-test.max_vus=4",
+                                "--limit", "load-test.max_rps=100", "--limit", "load-test.max_duration_s=60",
+                                "--approval", "a load test of this copy with at most 4 users is approved")
+    assert code == 0, granted
+    return "load_limit_exceeded: vus_max.max 5 > max_vus 4 of %s" % granted["id"]  # summary() holds vus_max.max 5
+
+
+def k6_stand_in(tmp_path, body):
+    """A program named k6, so the guard asks for the load-test grant and the grant joins the run's authorizations."""
+    k6 = tmp_path / "k6"
+    k6.write_text("#!/bin/sh\n" + body + "\n")
+    k6.chmod(0o755)
+    return str(k6)
+
+
+def test_a_limit_the_run_s_own_k6_report_shows_it_went_past_is_listed(qa_on_fixture, tmp_path):
+    fixture = qa_on_fixture("rest-api")
+    line = load_test_grant_of_4_users(fixture)
+    (fixture.root / "summary.json").write_text(json.dumps(summary()))
+    code, ran = fixture.cli("run", "--category", "performance", "--report", "k6:{evidence}/k6-summary.json", "--",
+                            k6_stand_in(tmp_path, 'cp "$2" "$3"'), "run", "summary.json", "{evidence}/k6-summary.json")
+    assert (ran["status"], ran["reason"]) == ("inconclusive", "load_limit_exceeded"), ran
+    record = fixture.cli("state", "show", "executions")[1]["state"][ran["execution"]]
+    assert line in record["limitations"], record
+    code, out = table(fixture.root, ran["execution"])
+    assert code == 0 and out["measured"] is False and out["rows"] == [], out
+    assert (out["status"], out["reason"], out["anomalies"], out["load_limit_exceeded"]) == (
+        "inconclusive", "load_limit_exceeded", ["load_limit_exceeded"], [line]), out
+
+
+def test_a_limit_an_ingested_summary_shows_the_run_went_past_is_listed_as_a_run_s_own_is(qa_on_fixture, tmp_path):
+    """``qa ingest k6 FILE --from EXE`` records the load limits a summary shows the run went past on the ingested entry, not
+    on the execution's own limitations: the table lists them all the same, and the would-be pass reads inconclusive, measured
+    nothing, as it does when the run's own k6 report shows them (the test above)."""
+    fixture = qa_on_fixture("rest-api")
+    line = load_test_grant_of_4_users(fixture)
+    code, ran = fixture.cli("run", "--category", "performance", "--", k6_stand_in(tmp_path, "exit 0"), "run")
+    assert ran["status"] == "passed", ran  # it declared no report: its status comes from the exit code
+    (fixture.root / "later.json").write_text(json.dumps(summary()))
+    code, ingested = fixture.cli("ingest", "k6", "later.json", "--from", ran["execution"])
+    assert code == 0 and (ingested["status"], ingested["reason"]) == ("inconclusive", "load_limit_exceeded"), ingested
+    record = fixture.cli("state", "show", "executions")[1]["state"][ran["execution"]]
+    assert line not in (record.get("limitations") or []) and record["ingested"][-1]["limitations"] == [line], record
+    code, out = table(fixture.root, ran["execution"])
+    assert code == 0 and out["measured"] is False and out["rows"] == [], out
+    assert (out["status"], out["reason"], out["anomalies"], out["load_limit_exceeded"]) == (
+        "inconclusive", "load_limit_exceeded", ["load_limit_exceeded"], [line]), out
+
+
 @pytest.mark.parametrize("execution", ["x", "EXE-1", "EXE-01AAAAAAAAAAAAAAAAAAAAAAAA; ls", "EXE-01AAAAAAAAAAAAAAAAAAAAAAAA"])
 def test_an_unknown_or_malformed_execution_is_refused(qa_on_fixture, execution):
     fixture = qa_on_fixture("rest-api")
