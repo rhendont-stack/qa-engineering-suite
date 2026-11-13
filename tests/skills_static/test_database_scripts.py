@@ -335,6 +335,17 @@ def test_query_trace_refuses_a_driver_outside_qa_work_and_attach_inside_a_case(f
     assert code == 1 and "not authorized" in out["cases"][0]["error"] and not target.exists()
 
 
+def test_query_trace_driver_import_error_is_one_json_object(f3):
+    for name, body in (("syntax.py", "def case_x(:\n"), ("missing.py", "import no_such_module_for_this_test\n"),
+                       ("raises.py", "raise RuntimeError('boom')\n")):
+        write(f3, {".qa/work/database/" + name: body})
+        done = subprocess.run([sys.executable, "-I", "-B", str(SCRIPTS / "query_trace.py"), "--driver", ".qa/work/database/" + name,
+                               "--junit", ".qa/t.xml"], capture_output=True, text=True, timeout=120, cwd=str(f3),
+                              env={"PATH": os.environ["PATH"], "HOME": str(f3)})
+        assert done.returncode == 2 and "Traceback" not in done.stdout + done.stderr, (name, done)
+        assert json.loads(done.stdout) == {"ok": False, "error": "driver_import_failed", "driver": ".qa/work/database/" + name}, name
+
+
 # ----------------------------------------------------------------------------------------------- squawk_to_sarif.py
 
 SQUAWK = [{"file": "/work/postgres/migrations/0004_split_customer_name.up.sql", "line": 2, "column": 0, "line_end": 2, "column_end": 33,

@@ -411,3 +411,23 @@ def test_the_assets_hold_the_bounds_the_skill_states():
     assert sections == {"examples": "true", "coverage": "true", "fuzzing": "false", "stateful": "false"}
     hurl = (assets / "smoke.hurl").read_text(encoding="utf-8")
     assert "{{base}}" in hurl and "http://" not in hurl.replace("http://127.0.0.1", "")
+
+
+# ----------------------------------------------------------------------------------------------- file size cap
+
+CAP = 2 << 20
+
+
+def test_endpoint_inventory_skips_a_file_over_the_cap(f2):
+    """A contract or a source file over 2 MiB is listed as unreadable (``too_large``) and not read; one at the cap is read."""
+    (f2 / "generated.py").write_bytes(b"#" * (CAP + 1))
+    (f2 / "edge.py").write_bytes(b"#" * CAP)
+    code, out, err = run("scan", "--spec", "openapi.yaml", cwd=f2)
+    assert code == 0 and out["documented"] == 7, err
+    assert out["unreadable"] == 1
+    assert inventory(f2)["unreadable"] == [{"file": "generated.py", "reason": "too_large"}]
+    big = f2 / "big-openapi.json"
+    big.write_bytes(b"{" + b" " * CAP + b"}")
+    code, out, _ = run("scan", "--spec", "big-openapi.json", "--out", ".qa/work/api/big.json", cwd=f2)
+    assert code == 1 and out["ok"] is False and out["documented"] == 0
+    assert {"file": "big-openapi.json", "reason": "too_large"} in inventory(f2, ".qa/work/api/big.json")["unreadable"]

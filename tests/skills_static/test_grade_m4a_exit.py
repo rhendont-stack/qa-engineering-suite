@@ -104,14 +104,36 @@ def f6_evidence(tmp_path, setup=True):
 
 # --------------------------------------------------------------------------- the cases
 
+# The thirteen skills the exit cases installed when they were frozen; later skills do not belong to them.
+FROZEN_SKILLS = frozenset(["qa-api-testing", "qa-codebase-intelligence", "qa-database", "qa-mutation", "qa-orchestrator", "qa-performance",
+                           "qa-regression-guard", "qa-reporting", "qa-requirements", "qa-security", "qa-test-execution",
+                           "qa-test-generation", "qa-test-strategy"])
+
+
+def built_skills():
+    return {p.parent.name for p in (REPO / "skills").glob("*/SKILL.md")}
+
+
+def installed(case):
+    return {case["skill"].split("/")[-1]} | {s.split("/")[-1] for s in case["skills"]}
+
+
+def test_grade_m4a_exit_freezes_its_thirteen_skills():
+    """The cases name the frozen thirteen, a subset of the built skills: a fourteenth built skill leaves them correct."""
+    assert len(FROZEN_SKILLS) == 13
+    for name, _ in grade.CASES.values():
+        assert installed(json.loads((GRADER.parent / name).read_text(encoding="utf-8"))) == FROZEN_SKILLS
+    assert FROZEN_SKILLS <= built_skills()
+    assert FROZEN_SKILLS <= built_skills() | {"qa-a-fourteenth-skill"}            # what a later skill does to the comparison
+
+
 @pytest.mark.parametrize("case_id", sorted(grade.CASES))
 def test_each_exit_case_is_the_frozen_one(case_id, tmp_path):
     name, key = grade.CASES[case_id]
     case = json.loads((GRADER.parent / name).read_text(encoding="utf-8"))
     assert case["id"] == case_id and case["prompt"] == PROMPTS[case_id]
     assert case["skill"] == "skills/qa-orchestrator" and (REPO / "benchmark" / "answer-keys" / (key + ".json")).is_file()
-    built = {p.parent.name for p in (REPO / "skills").glob("*/SKILL.md")}
-    assert len(built) == 13 and {case["skill"].split("/")[-1]} | {s.split("/")[-1] for s in case["skills"]} == built
+    assert installed(case) == FROZEN_SKILLS and FROZEN_SKILLS <= built_skills()
     assert sorted(case["agents"]) == ["agents/qa-auditor.md", "agents/qa-evaluator.md", "agents/qa-verifier.md"]
     assert case["allow_write"] is True and case["system_path_only"] is True and case["runtime_venv"] == ".venv-eval"
     assert case["keep_work"] == ["api", "database", "security", "performance"]

@@ -129,7 +129,7 @@ def grant(aid, activities, targets=(), quote="q", environment="local"):
 
 def facts(executions=(), findings=None, grants=(), config=None):
     st = {"executions": {e["id"]: e for e in executions}, "findings": findings or {}, "authorizations": {}, "config": config or {}}
-    return {"state": st, "events": [{"type": "authorization.granted", "data": g} for g in grants]}
+    return {"state": st, "events": [{"type": "authorization.granted", "data": g} for g in grants], "config": config or {}}
 
 
 def verdicts(criteria):
@@ -684,3 +684,41 @@ def test_a_baseline_run_grades_end_to_end_from_its_files(tmp_path):
     (out / "costs.jsonl").write_text(json.dumps(record) + "\n")
     with pytest.raises(KeyError):
         grade.grade(out, "R1")
+
+
+def test_trusted_reads_the_saved_config_file(tmp_path):
+    """``project.trust`` comes from the run's saved ``qa-state/config.json``; the folded state's ``config`` key is the
+    configuration-drift record and does not decide it."""
+    saved = tmp_path / "qa-state"
+    saved.mkdir()
+    assert grade.saved_config(tmp_path) is None
+    (saved / "config.json").write_text(json.dumps({"project": {"name": "x", "trust": "trusted"}}), encoding="utf-8")
+    assert grade.saved_config(tmp_path)["project"]["trust"] == "trusted"
+    (saved / "config.json").write_text("[1]", encoding="utf-8")
+    assert grade.saved_config(tmp_path) is None
+    (saved / "config.json").write_text("{", encoding="utf-8")
+    assert grade.saved_config(tmp_path) is None
+    (saved / "config.json").unlink()
+    (tmp_path / "elsewhere.json").write_text(json.dumps({"project": {"trust": "trusted"}}), encoding="utf-8")
+    (saved / "config.json").symlink_to(tmp_path / "elsewhere.json")
+    assert grade.saved_config(tmp_path) is None
+    drift = {"state": {"config": {"project": {"trust": "trusted"}}}, "events": [], "config": {"project": {"trust": "untrusted"}}}
+    assert grade.trusted(drift) is False                                 # the drift record says trusted; the saved file does not
+    saved_only = {"state": {"config": {}}, "events": [], "config": {"project": {"trust": "trusted"}}}
+    assert grade.trusted(saved_only) is True
+    assert grade.trusted({"state": {}, "events": [], "config": None}) is False
+    assert grade.trusted({"state": {}, "events": []}) is False
+
+
+def test_kernel_facts_carries_the_saved_config(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    (evidence / "qa-state" / "ledger").mkdir(parents=True)
+    done = subprocess.CompletedProcess([], 0, stdout=json.dumps({"state": {"config": {"project": {"trust": "trusted"}}}}), stderr="")
+    monkeypatch.setattr(grade.subprocess, "run", lambda *a, **k: done)       # the folded state is the drift record here
+    (evidence / "qa-state" / "config.json").write_text(json.dumps({"project": {"trust": "untrusted"}}), encoding="utf-8")
+    found = grade.kernel_facts(evidence)
+    assert found["config"] == {"project": {"trust": "untrusted"}} and grade.trusted(found) is False
+    (evidence / "qa-state" / "config.json").write_text(json.dumps({"project": {"trust": "trusted"}}), encoding="utf-8")
+    assert grade.trusted(grade.kernel_facts(evidence)) is True
+    (evidence / "qa-state" / "config.json").unlink()
+    assert grade.kernel_facts(evidence)["config"] is None and grade.trusted(grade.kernel_facts(evidence)) is False

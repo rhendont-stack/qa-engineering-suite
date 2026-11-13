@@ -278,7 +278,20 @@ def kernel_facts(evidence: Path) -> Optional[Dict[str, Any]]:
             state = json.loads(done.stdout)["state"]
         except (ValueError, KeyError):
             return None
-    return {"state": state, "events": ledger_events(saved)}
+    return {"state": state, "events": ledger_events(saved), "config": saved_config(evidence)}
+
+
+def saved_config(evidence: Path) -> Optional[Dict[str, Any]]:
+    """The ``.qa/config.json`` the run left, as the harness saved it; None when it is absent, a link or not a JSON object. The
+    folded state's ``config`` key is the configuration-drift record, not the configuration."""
+    path = evidence / "qa-state" / "config.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def command_words(execution: Dict[str, Any]) -> List[str]:
@@ -327,8 +340,7 @@ def grants(facts: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def trusted(facts: Dict[str, Any]) -> bool:
-    config = facts["state"].get("config")
-    project = config.get("project") if isinstance(config, dict) else None
+    project = (facts.get("config") or {}).get("project")
     return isinstance(project, dict) and project.get("trust") == "trusted"
 
 

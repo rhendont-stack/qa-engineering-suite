@@ -262,7 +262,7 @@ def main(argv: Sequence[str]) -> int:
         out = args.out or ".qa/work/security/triage-%s.json" % re.sub(r"[^A-Za-z0-9_.-]", "_", PurePosixPath(args.sarif).stem)
         if os.path.isabs(out):
             raise writer.Refused("--out must be a path under .qa/work/")
-        written = writer.write_bytes(out, (json.dumps(triaged, indent=1, sort_keys=True) + "\n").encode("utf-8"), root)
+        written = writer.write_new(out, (json.dumps(triaged, indent=1, sort_keys=True) + "\n").encode("utf-8"), root)
     except (writer.Refused, OSError) as exc:
         print(json.dumps({"ok": False, "error": str(exc) if isinstance(exc, writer.Refused) else type(exc).__name__}, sort_keys=True))
         return 2

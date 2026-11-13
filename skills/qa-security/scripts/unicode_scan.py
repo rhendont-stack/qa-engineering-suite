@@ -31,15 +31,16 @@ Every qualifying reading is scanned. When the single-byte reading holds a NUL an
 two more views of the single-byte text are scanned, neither of which counts: that reading as it is, and that reading with its
 NUL bytes removed (``nul-stripped``), which is how a viewer that ignores NUL bytes shows it. When a NUL byte stands between two
 characters that are neither white space nor NUL, as between two words, that reading is also scanned with each NUL byte read
-as a space, under the same name and counting neither, since removing such a NUL joins the words it separates. So a NUL byte,
+as a space (``nul-as-space``), counting neither, since removing such a NUL joins the words it separates. So a NUL byte,
 stray, inside a phrase or between its words, cannot hide single-byte text behind a wide reading: a qualifying wide reading
 is never the only reading of a file whose single-byte reading holds text. A file whose single-byte reading holds a NUL and
-whose wide reading does not qualify is skipped. A hit that more than one reading finds at the same line, column and rule is reported once. No reading is dropped: a
-mark before single-byte text makes a wide reading of characters that are not in the bytes as written (a mark before ASCII
-text can read as a bidirectional control), but a tool that honours the mark shows that reading. So whenever a file is
-scanned in more than one reading, every result names the readings that found it, as ``properties.reading`` and at the end
-of its message (``reading: utf-8``, ``reading: utf-16-le``, ``reading: nul-stripped``, ...), and a hit that only a wide or
-a NUL-stripped reading finds is seen as such. Known limit: UTF-16 text with no mark and no such NUL pattern (only non-Latin
+whose wide reading does not qualify is skipped. A hit that more than one reading finds at the same line, column and rule is
+reported once. No reading is dropped: a mark before single-byte text makes a wide reading of characters that are not in the
+bytes as written (a mark before ASCII text can read as a bidirectional control), but a tool that honours the mark shows that
+reading. So whenever a file is scanned in more than one reading, every result names the readings that found it, as
+``properties.reading`` and at the end of its message (``reading: utf-8``, ``reading: utf-16-le``, ``reading: nul-stripped``,
+``reading: nul-as-space``, ...), and a hit that only a wide or a NUL view finds is seen as such. Known limit: UTF-16 text with
+no mark and no such NUL pattern (only non-Latin
 characters) is read as single-byte text only.
 
 Skipped and counted in the summary's ``skipped``, never as scanned: files over 2 MiB (``large``), files with no qualifying
@@ -160,7 +161,7 @@ def evidence_file(text: str) -> Path:
     return Path(EVIDENCE_DIR) / pure.name
 
 
-def write_bytes(text: str, data: bytes, root: Optional[Path] = None) -> str:
+def write_new(text: str, data: bytes, root: Optional[Path] = None) -> str:
     """Write ``data`` to ``text``: under ``.qa/work/security/`` through no link (a fresh temporary file, then a rename that
     replaces the name itself), or as a new file directly in ``/qa-evidence/`` (a container run)."""
     root = (root or Path.cwd()).resolve()
@@ -227,6 +228,7 @@ BYTE_ORDER_MARKS = ((b"\xff\xfe\x00\x00", "utf-32-le"), (b"\x00\x00\xfe\xff", "u
                     (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"), (b"\xef\xbb\xbf", None))
 SINGLE = "utf-8"
 NUL_STRIPPED = "nul-stripped"
+NUL_AS_SPACE = "nul-as-space"
 NUL_BETWEEN = re.compile(rb"[^\x00\s]\x00+[^\x00\s]")   # NUL bytes between two characters that are neither space nor NUL
 SKIP_REASONS = {
     "large": "over 2 MiB",
@@ -283,7 +285,7 @@ def readings(data: bytes) -> Tuple[List[Tuple[str, str]], str]:
     if not single_counts:                         # counted on its wide reading: the single-byte text as a NUL-blind viewer shows it
         found.append((NUL_STRIPPED, rest.replace(b"\x00", b"").decode("utf-8", "replace")))
         if NUL_BETWEEN.search(rest):              # a NUL between two words joins them once removed: also read it as a space
-            found.append((NUL_STRIPPED, rest.replace(b"\x00", b" ").decode("utf-8", "replace")))
+            found.append((NUL_AS_SPACE, rest.replace(b"\x00", b" ").decode("utf-8", "replace")))
     return found, ""
 
 
@@ -403,7 +405,7 @@ def main(argv: Sequence[str]) -> int:
     args = list(argv)
     try:
         if args == ["--copy-to-work"]:
-            written = write_bytes(COPY_NAME, Path(__file__).read_bytes())
+            written = write_new(COPY_NAME, Path(__file__).read_bytes())
             print(json.dumps({"ok": True, "copied": written}, sort_keys=True))
             return 0
         out = DEFAULT_OUT
@@ -416,7 +418,7 @@ def main(argv: Sequence[str]) -> int:
         if any(a.startswith("-") for a in args):
             raise Refused("unknown option %s" % next(a for a in args if a.startswith("-")))
         report, counts, scanned, skipped = scan(args or ["."])
-        written = write_bytes(out, (json.dumps(report, indent=1, sort_keys=True) + "\n").encode("utf-8"))
+        written = write_new(out, (json.dumps(report, indent=1, sort_keys=True) + "\n").encode("utf-8"))
     except (Refused, OSError) as exc:
         print(json.dumps({"ok": False, "error": str(exc) if isinstance(exc, Refused) else type(exc).__name__}, sort_keys=True))
         return 2

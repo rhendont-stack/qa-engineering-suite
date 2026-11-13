@@ -18,7 +18,7 @@ query, a lead to confirm against the code, not a measurement of time.
 Outputs: the JSON trace under ``.qa/work/`` (``--out``), and a JUnit report (``--junit``, under ``.qa/`` or a new file outside the project;
 in ``qa run`` use ``/qa-evidence/<name>.xml`` with ``--report junit:{evidence}/<name>.xml``) with one test per case that fails
 when a statement repeats or the case raises. Stdout is one JSON object with the counts. Exit 0, 1 when a case fails, 2 on a
-refusal.
+refusal or a driver that fails to import (``{"ok": false, "error": "driver_import_failed", "driver": PATH}``).
 """
 from __future__ import annotations
 
@@ -239,7 +239,13 @@ def main(argv: List[str]) -> int:
     sqlite3.connect = tracer.connect  # type: ignore[assignment]
     results = []
     try:
-        module = load(driver, root)
+        try:
+            module = load(driver, root)
+        except Refused:
+            raise
+        except (Exception, SystemExit):   # a driver that fails to import (syntax, import or any error of its own top level): one JSON object, no traceback
+            print(json.dumps({"ok": False, "error": "driver_import_failed", "driver": driver.relative_to(root).as_posix()}, sort_keys=True))
+            return 2
         for case in cases_of(module):
             name = case.__name__[len("case_"):]
             database = driver.parent / ("trace-%s.sqlite" % name)
