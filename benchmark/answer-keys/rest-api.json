@@ -96,7 +96,6 @@
       "class": "undocumented administrative endpoint (improper inventory management)",
       "detectable_by": [
         "spectral",
-        "zap",
         "static-review",
         "in-process-check"
       ]
@@ -153,7 +152,6 @@
       "class": "CWE-209 internal error detail exposed on malformed input",
       "detectable_by": [
         "schemathesis",
-        "zap",
         "static-review",
         "in-process-check"
       ]

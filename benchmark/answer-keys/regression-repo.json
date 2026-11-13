@@ -81,10 +81,11 @@
       "category": "compatibility",
       "severity_anchor": "FUNC-H1",
       "detectable_by": [
-        "oasdiff v1.37.0 (tufin/oasdiff, pinned by digest, run through qa run --container)",
+        "oasdiff",
         "diff review"
       ],
-      "expected_record": "a breaking change to the OrderSummary response: payable_cents removed from properties and required. Run by the oasdiff leg in a container since milestone 4a."
+      "expected_record": "a breaking change to the OrderSummary response: payable_cents removed from properties and required. Run by the oasdiff leg in a container since milestone 4a.",
+      "note": "The oasdiff leg is oasdiff v1.37.0 (tufin/oasdiff, pinned by digest, run through qa run --container)."
     },
     {
       "id": "F7-04",
