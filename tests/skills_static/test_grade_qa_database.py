@@ -30,6 +30,7 @@ needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="tool missing
 E1, E2, E3 = "EXE-01AAAAAAAAAAAAAAAAAAAAAAAA", "EXE-01BBBBBBBBBBBBBBBBBBBBBBBB", "EXE-01CCCCCCCCCCCCCCCCCCCCCCCC"
 AUDIT_PROMPT = grade.case_prompt("qa-database-f3-audit")
 APPROVAL = "Throwaway SQLite databases on this machine are approved for that check"
+TRUST_APPROVAL = "a test of the grader, in its own workspace: running the fixture's migrations on this machine is approved"
 AUDIT_HARD = ("finding_missing_foreign_key", "finding_missing_uniqueness", "finding_data_losing_migration", "finding_missing_down_step",
               "roundtrip_executed_under_the_prompts_grant", "no_fabricated_execution_id", "no_database_file_outside_work",
               "roundtrip_database_under_work")
@@ -410,6 +411,10 @@ def test_a_real_ledger_grades_end_to_end(tmp_path):
     root = tmp_path / "project"
     shutil.copytree(str(F3), str(root), ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     kernel(root, "init")
+    # Milestone 4b: a host run of any activity but static-analysis needs trust, so the grader's test workspace states it
+    # first; the first run below is then refused for the missing grant alone.
+    trusted = kernel(root, "config", "set", "project.trust", "trusted", "--approval", TRUST_APPROVAL)
+    assert trusted.get("ok") is True, trusted
     (root / ".qa" / "work" / "database").mkdir(parents=True)
     (root / ".qa" / "work" / "database" / "stub.py").write_text(ROUNDTRIP_STUB)
     refused = kernel(root, "run", "--activity", "db-ephemeral", "--report", "junit:{evidence}/roundtrip.xml", "--", sys.executable, "-B",

@@ -6,17 +6,20 @@
 2. ``db-write`` and ``dast-active`` on a ``production`` environment are ``policy_denied``;
 3. a ``ci`` environment is ``policy_denied``: ci environments arrive in milestone 4;
 4. ``static-analysis`` is allowed by default;
-5. ``test-execution-local`` runs the tests on this machine whatever the environment's class, so
-   an untrusted project is ``not_authorized`` on every class unless the check is ``containerized``,
-   which only ``execution`` sets, and only for a run it then hands to the container pipeline
-   (§12.2). A project that is trusted, or a containerized check, is allowed on a ``local``
-   environment and otherwise goes on to 6 and 7;
-6. a standing authorization in config.json for the environment and the activity allows it;
-7. so does a grant this machine recorded (``authority``; ``state.load`` holds no other) that is not revoked, has not expired (it covers a check while
+5. any other activity runs something on this machine unless the check is ``containerized``, which
+   only ``execution`` sets, and only for a run it then hands to the container pipeline (§12.2). So
+   a check that is not containerized, for a project whose ``project.trust`` is not ``trusted``, is
+   ``not_authorized`` on every class, whatever standing authorization or grant exists; the refusal
+   names the activity and both routes: trust recorded from the user's words, or a container run;
+6. ``test-execution-local`` runs the tests on this machine whatever the environment's class: on a
+   ``local`` environment it is allowed (the project is trusted, or the check is containerized), and
+   on any other class it goes on to 7 and 8;
+7. a standing authorization in config.json for the environment and the activity allows it;
+8. so does a grant this machine recorded (``authority``; ``state.load`` holds no other) that is not revoked, has not expired (it covers a check while
    ``now < expires_at``) and covers the environment, the activity and every host; for a
    per-target activity (``network-download``, ``dast-passive``, ``dast-active``) the check must
    also name at least one host, since §12.2 grants those per target;
-8. anything else is ``not_authorized``.
+9. anything else is ``not_authorized``.
 
 Grants are ``authorization.granted`` events in the Appendix A.4 shape. ``grant`` records them
 (``qa authorize``) and ``revoke`` withdraws them (``qa auth revoke``); editing config.json never
@@ -67,11 +70,15 @@ _HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
 _BARE_NAME = re.compile(r"([A-Za-z0-9._-]+)(?::[0-9]{1,5})?")
 _BARE_BRACKETED = re.compile(r"\[([^\]]*)\](?::[0-9]{1,5})?")
 _IPV6_TEXT = re.compile(r"[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?")
-_UNTRUSTED = ("untrusted project: run it with `qa run --container IMAGE@DIGEST`, "
-              "or approve `qa config set project.trust trusted`")
+_UNTRUSTED_HOST = ("untrusted project: a host run of %s needs trust, recorded from the user's own words with "
+                   "`qa config set project.trust trusted`, or run it in a container with `qa run --container IMAGE@DIGEST`")
 # A run inside a suite worktree cannot be containerised (its archive would hold the main tree), so only trust is offered.
 UNTRUSTED_IN_WORKTREE = "untrusted project: a run inside a suite worktree needs `qa config set project.trust trusted` approved"
-UNTRUSTED = _UNTRUSTED
+
+
+def untrusted_host(activity: str) -> str:
+    """The detail ``check`` gives when an untrusted project's host run of ``activity`` is refused (rule 5)."""
+    return _UNTRUSTED_HOST % activity
 
 
 def _count(value: Any) -> bool:
@@ -190,14 +197,13 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
         return _deny("policy_denied", "ci environments arrive in milestone 4")
     if activity == "static-analysis":
         return _allow("default:static-analysis", "static analysis is allowed by default")
-    if activity == "test-execution-local":  # on every class: the tests run on this machine
-        trusted = cfg["project"]["trust"] == "trusted"
-        if not trusted and not containerized:
-            return _deny("not_authorized", _UNTRUSTED)
-        if env_class == "local":
-            if trusted:
-                return _allow("trusted:local", "the project is trusted to run its tests on this machine")
-            return _allow("container:local", "an untrusted project may run its tests in a container with no network")
+    trusted = cfg["project"]["trust"] == "trusted"
+    if not trusted and not containerized:  # on every class: a host run executes on this machine
+        return _deny("not_authorized", untrusted_host(activity))
+    if activity == "test-execution-local" and env_class == "local":
+        if trusted:
+            return _allow("trusted:local", "the project is trusted to run its tests on this machine")
+        return _allow("container:local", "an untrusted project may run its tests in a container with no network")
     for standing in cfg["standing_authorizations"]:
         if standing["environment"] == env_id and activity in standing["activities"]:
             return _allow("standing:%s" % env_id, "standing authorization in config.json")

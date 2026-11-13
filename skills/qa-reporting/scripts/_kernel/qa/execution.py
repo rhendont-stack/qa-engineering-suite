@@ -48,6 +48,8 @@ _SCOPES = ("targeted", "full")
 _ATTEMPT_ACTIVITY = "test-execution-local"
 _DEFAULT_ACTIVITY = "static-analysis"  # allowed without authority (§12.2)
 _LOAD_TEST = "load-test"  # its grants carry max_vus, max_rps and max_duration_s (§12.2)
+_LOAD_LIMIT_EXCEEDED = "load_limit_exceeded"  # the anomaly, and the reason of a would-be pass past those limits
+_K6 = "k6"  # the one report format that carries metrics a load-test grant limits
 _ENV_VALUE_NAMES = ("CI", "NODE_ENV")
 _STDERR_TAIL = 64 * 1024
 _MIB = 2 ** 20
@@ -476,7 +478,7 @@ def _authorize(run: _Run, gate: _Gate) -> None:
         gate.policy_denied = gate.policy_denied or verdict.reason == "policy_denied"
         gate.not_authorized = gate.not_authorized or verdict.reason == "not_authorized"
         detail = verdict.detail
-        if detail == authz.UNTRUSTED and worktree.containing(run.ws, run.st, run.cwd) is not None:
+        if detail == authz.untrusted_host(activity) and worktree.containing(run.ws, run.st, run.cwd) is not None:
             detail = authz.UNTRUSTED_IN_WORKTREE  # the container route the usual hint names is refused inside a worktree
         run.note("%s on environment %s: %s: %s" % (activity, environment["id"], verdict.reason, detail))
 
@@ -869,16 +871,17 @@ def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
 _LOAD_LIMITS = (("max_vus", "vus_max", "max"), ("max_rps", "http_reqs", "rate"))
 
 
-def _load_limits_passed(run: _Run, gate: _Gate, summary: Optional[ingest.ReportSummary]) -> List[str]:
-    """Each limit of the ``load-test`` grant that covered the run and that the run's summary shows it went past.
+def _load_limits_passed(st: dict, authorizations: List[dict], summary: Optional[ingest.ReportSummary]) -> List[str]:
+    """Each limit of the ``load-test`` grant that covered the run and that ``summary`` shows it went past.
 
-    Only a recorded grant carries limits; a run no grant covered has nothing to compare against."""
+    ``authorizations`` are the run's (its gate's, or its record's: ``{"activity", "environment", "authorization"}``), and
+    ``st`` holds the grants. Only a recorded grant carries limits; a run no grant covered has nothing to compare against."""
     if summary is None or (not summary.metrics and summary.run_duration_ms is None):
         return []
     measured = {m.name: m.values for m in summary.metrics}
     passed = []
-    for entry in gate.authorizations:
-        grant = run.st["authorizations"].get(entry["authorization"]) if entry["activity"] == _LOAD_TEST else None
+    for entry in authorizations:
+        grant = st["authorizations"].get(entry["authorization"]) if entry["activity"] == _LOAD_TEST else None
         limits = grant.get("limits", {}).get(_LOAD_TEST, {}) if grant is not None else {}
         found = [(limit, "%s.%s" % (metric, stat), measured.get(metric, {}).get(stat)) for limit, metric, stat in _LOAD_LIMITS]
         found.append(("max_duration_s", "run_duration_ms / 1000",
@@ -1114,10 +1117,10 @@ def _run_command(run: _Run, gate: _Gate, grace_s: float) -> _Recorded:
     stdout, stdout_redactions = run.redactor.bytes_(outcome.stdout)
     stderr, stderr_redactions = run.redactor.bytes_(outcome.stderr)
     reports = _no_reports(req) if ran.dependency_unavailable else _store_reports(run, directory, snapshot)
-    over = _load_limits_passed(run, gate, reports.summary)
+    over = _load_limits_passed(run.st, gate.authorizations, reports.summary)
     for text in over:
-        run.note("load_limit_exceeded: " + text)
-    anomalies = ran.anomalies + (("load_limit_exceeded",) if over else ())
+        run.note(_LOAD_LIMIT_EXCEEDED + ": " + text)
+    anomalies = ran.anomalies + ((_LOAD_LIMIT_EXCEEDED,) if over else ())
     verdict = status.decide(status.StatusInputs(
         spawn_error=outcome.spawn_error, shell=req.shell or req.container is not None, exit_code=outcome.exit_code,
         timed_out=outcome.timed_out, dependency_unavailable=ran.dependency_unavailable,
@@ -1175,10 +1178,17 @@ def _ingest_strength(ws: Workspace, record: dict, file_sha256: str) -> str:
 
 def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, from_execution: str,
                 category: str = "security") -> dict:
-    """Attach a report file to an existing execution, as a redacted copy under its ``ingested/``."""
+    """Attach a report file to an existing execution, as a redacted copy under its ``ingested/``.
+
+    A k6 summary also records its report block (threshold counts and the metrics, labelled ``measured``), and is checked
+    against the limits of the ``load-test`` grant that covered the execution, as a run's own k6 report is. A limit it shows
+    the run went past adds ``load_limit_exceeded`` to the event, and the state applies the status rule: the execution's
+    pass turns ``inconclusive``; any other status keeps its reason, with the anomaly. The answer then carries the report
+    block and the execution's status, reason and anomalies as the state reads them after the ingest."""
     if schema.errors(category, _CATEGORY):
         raise QaError("invalid_category", "unknown category", category=category)
-    record = state.load(ws)["executions"].get(from_execution)
+    st = state.load(ws)
+    record = st["executions"].get(from_execution)
     if record is None:
         raise QaError("unknown_execution", "no such execution", execution=from_execution)
     path = Path(path)
@@ -1188,8 +1198,9 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     redactor = redact.load_redactor(ws)
     clean = redacted_report(redactor, fmt, original)[0]
     digest = sha256_bytes(clean)
-    if ingest.is_measurement(fmt):  # what the event records derives from the redacted copy, as a run's does: a path is a dict key
-        summary = ingest.parse_bytes(fmt, clean)
+    metered = fmt == _K6
+    if ingest.is_measurement(fmt) or metered:  # what the event records derives from the redacted copy, as a run's does: a
+        summary = ingest.parse_bytes(fmt, clean)  # path, or a metric name, is a dict key
     total = {"tests": len(summary.cases), "alerts": len(summary.alerts), "coverage": len(summary.files),
              "mutants": len(summary.mutants)}[summary.kind]
     measured: dict = {}
@@ -1198,6 +1209,12 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
         flags = _flags(ws.root, summary)
         if flags:
             measured["anomalies"] = flags
+    if metered:  # what the load test measured, and whether it stayed within the grant that covered the run
+        measured["report"] = _report_block(summary)
+        over = _load_limits_passed(st, record["authorizations"], summary)
+        if over:
+            measured["anomalies"] = [_LOAD_LIMIT_EXCEEDED]
+            measured["limitations"] = [_LOAD_LIMIT_EXCEEDED + ": " + text for text in over]
     with ws.lock():
         folder = ws.path("evidence", from_execution, "ingested")
         folder.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1210,8 +1227,14 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     raised = {"opened": 0, "updated": 0}
     if summary.kind == "alerts":  # §8.2: a standard report becomes results or findings, or the gate never sees it
         raised = findings.ingest_alerts(ws, actor, _redacted(redactor, summary), execution_id=from_execution, category=category)
-    return {"event": event["id"], "execution": from_execution, "strength": strength, "kind": summary.kind, "total": total,
-            "findings": raised}
+    answer = {"event": event["id"], "execution": from_execution, "strength": strength, "kind": summary.kind, "total": total,
+              "findings": raised}
+    if metered:
+        folded = state.load(ws)["executions"][from_execution]
+        answer.update(report=event["data"]["report"], status=folded["status"], reason=folded["reason"],
+                      anomalies=list(folded["anomalies"]),
+                      **({"limitations": event["data"]["limitations"]} if "limitations" in event["data"] else {}))
+    return answer
 
 
 def reclassify(ws: Workspace, actor: ledger.Actor, result_id: str, new_status: str, reason: str,

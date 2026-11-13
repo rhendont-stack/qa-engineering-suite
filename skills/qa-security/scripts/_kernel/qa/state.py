@@ -6,7 +6,7 @@ from typing import Callable, Dict, Iterable, Optional, Set
 from . import authority, ledger, regression, schema
 from .canonical import hash_obj
 from .errors import QaError
-from .status import can_reclassify
+from .status import can_reclassify, with_anomaly
 from .vocab import FIX_TRANSITIONS, TRANSITIONS
 from .workspace import Workspace, config_bytes, write_atomic
 
@@ -94,6 +94,7 @@ def _authorization_revoked(state: dict, event: dict) -> None:
 # ts first, so after a clock step or in the same millisecond an event can precede what it refers to,
 # and a lost downgrade would leave a result passed. _settle applies them; its queue never leaves fold.
 _SETTLE = "_settle"
+_LOAD_LIMIT = "load_limit_exceeded"
 
 
 def _violation(state: dict, event: dict, kind: str) -> None:
@@ -353,8 +354,13 @@ def _settle_ingest(state: dict, event: dict) -> None:
     execution = state["executions"].get(event["data"]["execution"])
     if execution is None:
         _violation(state, event, "unknown_execution")
-    else:
-        execution["ingested"].append(dict(copy.deepcopy(event["data"]), event=event["id"]))
+        return
+    execution["ingested"].append(dict(copy.deepcopy(event["data"]), event=event["id"]))
+    # A k6 summary attached later that shows the run went past its grant's limits: the status rule a run applies when its
+    # own report shows it (a pass turns inconclusive; any other status keeps its reason, with the anomaly).
+    if _LOAD_LIMIT in event["data"].get("anomalies", ()):
+        execution["status"], execution["reason"], execution["anomalies"] = with_anomaly(
+            execution["status"], execution["reason"], execution["anomalies"], _LOAD_LIMIT)
 
 
 def _finding_opened(state: dict, event: dict) -> None:

@@ -116,3 +116,51 @@ def test_defaults():
                                         ("failed", "weird", False), ("weird", "failed", False), ("passed", "weird", False)])
 def test_can_reclassify(old, new, ok):
     assert status.can_reclassify(old, new) is ok
+
+
+# --------------------------------------------------------------------------- load limits (milestone 4b)
+# A run past its authorized load proves nothing about the objective: a would-be pass is inconclusive.
+
+LIMIT = ("load_limit_exceeded",)
+
+
+@pytest.mark.parametrize("kw", [dict(exit_code=0), dict(exit_code=0, summary=suite(p=2), **R),
+                                dict(exit_code=0, summary=suite(), allow_empty=True, **R)], ids=["exit-code", "structured", "allow-empty"])
+def test_load_limit_exceeded_turns_a_pass_inconclusive(kw):
+    d = status.decide(status.StatusInputs(anomalies=LIMIT, **kw))
+    assert (d.status, d.reason) == ("inconclusive", "load_limit_exceeded")
+    assert "load_limit_exceeded" in d.anomalies   # kept beside the reason, as network_not_isolated is
+
+
+def test_load_limit_exceeded_keeps_a_failure_failed():
+    d = status.decide(status.StatusInputs(exit_code=1, summary=suite(p=1, f=1), anomalies=LIMIT, **R))
+    assert (d.status, d.reason, d.strength, d.anomalies) == ("failed", "assertion", "structured", LIMIT)
+    d = status.decide(status.StatusInputs(exit_code=2, anomalies=LIMIT))
+    assert (d.status, d.reason, d.anomalies) == ("failed", "nonzero_exit", LIMIT)
+
+
+@pytest.mark.parametrize("kw,want", [(dict(timed_out=True), ("inconclusive", "timeout")),
+                                     (dict(exit_code=0, summary=suite(s=1), **R), ("not_run", "all_skipped")),
+                                     (dict(not_authorized=True), ("blocked", "not_authorized"))])
+def test_load_limit_exceeded_leaves_other_statuses_and_their_reasons(kw, want):
+    d = status.decide(status.StatusInputs(anomalies=LIMIT, **kw))
+    assert (d.status, d.reason) == want and "load_limit_exceeded" in d.anomalies
+
+
+def test_without_network_isolation_and_past_its_limits_the_isolation_is_the_reason():
+    d = status.decide(status.StatusInputs(exit_code=0, anomalies=("load_limit_exceeded", "network_not_isolated")))
+    assert (d.status, d.reason, d.anomalies) == ("inconclusive", "network_not_isolated", ("network_not_isolated", "load_limit_exceeded"))
+
+
+def test_load_limit_exceeded_is_a_reason_the_schema_knows():
+    from qa import schema
+    assert "load_limit_exceeded" in schema.load_schema("defs.schema.json")["$defs"]["reason"]["enum"]
+
+
+def test_a_recorded_pass_past_its_limits_reads_inconclusive():
+    """The rule ``decide`` applies, for a status recorded before the anomaly was known (a k6 summary ingested later)."""
+    assert status.with_anomaly("passed", None, [], "load_limit_exceeded") == ("inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])
+    assert status.with_anomaly("failed", "assertion", ["partial"], "load_limit_exceeded") == (
+        "failed", "assertion", ["partial", "load_limit_exceeded"])
+    assert status.with_anomaly("inconclusive", "load_limit_exceeded", ["load_limit_exceeded"], "load_limit_exceeded") == (
+        "inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])

@@ -210,7 +210,8 @@ def _add_execution_commands(groups: Dict[str, Any]) -> None:
     run.add_argument("--service-user", metavar="UID[:GID]", help="with --service: the numeric user the service runs as")
     run.add_argument("--input", action="append", metavar="PATH", default=[], dest="inputs",
                      help="with --container: a file under .qa/work/ (relative to the project root), found at /work/.qa-input/ in the container")
-    attach = _command(groups, "ingest", "attach a report file to a recorded execution, or import an evidence bundle")
+    attach = _command(groups, "ingest", "attach a report file to a recorded execution (a k6 summary also records its metrics and "
+                                        "is checked against the run's load-test limits), or import an evidence bundle")
     attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6", "bundle"), metavar="FORMAT")
     attach.add_argument("file", metavar="FILE")
     attach.add_argument("--from", dest="from_execution", metavar="EXE", help="the execution the report belongs to (not for a bundle)")
@@ -740,8 +741,10 @@ def cmd_ingest(args: argparse.Namespace, ctx: Context) -> int:
         raise QaError("usage", "--from is required: the execution the report belongs to")
     _refuse_irregular(args.file)
     category = args.category if args.category is not None else _INGEST_CATEGORIES.get(args.format, "functional")
-    ctx.reply(**execution.ingest_file(ctx.ws, ctx.actor, args.format, Path(args.file), from_execution=args.from_execution,
-                                      category=category))
+    attached = execution.ingest_file(ctx.ws, ctx.actor, args.format, Path(args.file), from_execution=args.from_execution,
+                                     category=category)
+    ctx.limitations.extend(attached.pop("limitations", ()))  # a k6 summary's load limits passed, beside the command's own
+    ctx.reply(**attached)
     return 0
 
 
