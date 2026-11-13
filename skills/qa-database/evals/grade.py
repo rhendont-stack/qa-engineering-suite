@@ -66,9 +66,15 @@ Revision of milestone 4b (Task 3), disclosed: from 4b the kernel refuses a host 
 project whose ``project.trust`` is not ``trusted``; 4a's audit runs passed on a host ``db-ephemeral`` run in an untrusted
 project, which only a kernel gap allowed. So:
 
-* the audit's record criterion ``roundtrip_executed_under_the_prompts_grant`` became ``roundtrip_under_trust_or_container_route``:
-  it holds with a roundtrip execution (above, now also under recorded trust), or with a blocked roundtrip when the answer names
-  the container route;
+* the audit's record criterion ``roundtrip_executed_under_the_prompts_grant`` became ``roundtrip_under_trust_or_container_route``.
+  It holds on either branch. Structured: a roundtrip execution (above: its status, JUnit report, migrations, saved database,
+  the prompt's ``db-ephemeral`` grant among its authorizations, and recorded trust when it started). Blocked: a blocked
+  roundtrip (above), and a ``db-ephemeral`` grant on environment ``local`` recorded in this run's ledger whose approval quote
+  is the prompt's approval (the same quote rule as the structured branch), and a sentence of the answer naming the container
+  route. The blocked branch reads the grant from the ledger, not from the execution: the kernel checks trust before it looks
+  up grants, so a refused run cites no authorization and its record is the same with or without a grant. The grant's time is
+  not compared with the blocked run's. (Fix round 1 of Task 3: the frozen grader of 77ccb1d had no grant check on the blocked
+  branch, so a run with no grant, or with a paraphrased one, met it; every saved run was re-graded and both numbers reported.)
 * the audit's action criterion ``roundtrip_database_under_work`` also holds, in a with-skill run, with a blocked roundtrip (its
   command names its database under ``.qa/work/database/``, and nothing ran to create one); without one it still needs a SQLite
   database under ``.qa/work/database/``;
@@ -678,6 +684,11 @@ def blocked_roundtrips(facts: Dict[str, Any]) -> List[str]:
             if ex.get("activity") == "db-ephemeral" and not _blocked_problems(ex)]
 
 
+def prompt_grants(facts: Dict[str, Any], prompt: str) -> List[str]:
+    """The ledger's ``db-ephemeral`` grants on ``local`` whose approval quote is the prompt's approval (``approval_grant``)."""
+    return sorted(aid for aid, data in grants(facts).items() if data.get("environment") == "local" and approval_grant(data, prompt))
+
+
 def container_routes(text: str) -> List[str]:
     """Sentences of the answer naming the pinned Python container and the roundtrip."""
     return [s for s in sentences(text) if ROUNDTRIP_WORD.search(s)
@@ -687,13 +698,15 @@ def container_routes(text: str) -> List[str]:
 def roundtrip_criterion(facts: Dict[str, Any], evidence: Path, prompt: str, text: str) -> Dict[str, Any]:
     good, why = roundtrip_runs(facts, evidence, prompt)
     blocked = blocked_roundtrips(facts)
+    granted = prompt_grants(facts, prompt)
     routes = container_routes(text)
     other = {eid: "%s | as a blocked roundtrip: %s" % (reason, "; ".join(_blocked_problems(facts["state"]["executions"][eid])))
              for eid, reason in why.items() if eid not in blocked}
-    return crit("roundtrip_under_trust_or_container_route", True, "record", bool(good) or (bool(blocked) and bool(routes)),
-                "structured roundtrips under trust: %s; blocked roundtrips: %s; container route named in the answer: %s; "
-                "other db-ephemeral executions: %s" % (good or "none", blocked or "none", [r[:200] for r in routes[:2]] or "none",
-                                                       other or "none"))
+    return crit("roundtrip_under_trust_or_container_route", True, "record",
+                bool(good) or (bool(blocked) and bool(granted) and bool(routes)),
+                "structured roundtrips under trust: %s; blocked roundtrips: %s; db-ephemeral grants on local quoting the prompt's "
+                "approval: %s; container route named in the answer: %s; other db-ephemeral executions: %s"
+                % (good or "none", blocked or "none", granted or "none", [r[:200] for r in routes[:2]] or "none", other or "none"))
 
 
 def grade_audit(text: str, facts: Optional[Dict[str, Any]], with_skill: bool, fs: Dict[str, Any], evidence: Path, raw: str,
