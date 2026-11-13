@@ -226,9 +226,12 @@ def test_f7_c2_contract_diff_in_container(qa_on_generated):
     project = qa_on_generated("regression-repo", checkout=2)
     assert project.cli("config", "set", "container.engine", engine, "--approval", "fixture test")[0] == 0
     c0, c1, c2 = commits(project.root)
-    base_spec = project.root / ".qa" / "work" / "contract" / "base.yaml"       # the base version: C1's contract, outside the project tree
-    base_spec.parent.mkdir(parents=True, exist_ok=True)
-    base_spec.write_text(git(project.root, "show", "%s:openapi.yaml" % c1), encoding="utf-8")
+    base_spec = project.root / ".qa" / "work" / "contract" / "base.yaml"       # the base version: C1's contract, written by the skill's helper
+    done = subprocess.run([sys.executable, "-I", str(REPO / "skills" / "qa-regression-guard" / "scripts" / "git_read.py"), "show", "--rev", c1,
+                           "--path", "openapi.yaml", "--out", ".qa/work/contract/base.yaml"], cwd=str(project.root), capture_output=True,
+                          text=True, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert json.loads(done.stdout)["commit"] == c1 and base_spec.read_text(encoding="utf-8") == git(project.root, "show", "%s:openapi.yaml" % c1)
     assert "payable_cents" in base_spec.read_text(encoding="utf-8") and "amount_due_cents" in (project.root / "openapi.yaml").read_text(encoding="utf-8")
     words = contract_diff_words()
     assert words[words.index("--container") + 1] == pinned_image("oasdiff")
