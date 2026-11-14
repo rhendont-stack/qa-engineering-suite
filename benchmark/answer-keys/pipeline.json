@@ -1,0 +1,123 @@
+{
+  "fixture": "pipeline",
+  "version": 1,
+  "note": "Locations are the file with the line that holds the cause. F11 has no test suite, is never run and is never pushed: its workflows sit under fixtures/pipeline/.github/workflows/, which GitHub never runs, and name only placeholder secrets and example.com hosts. Each seed is a class; F11-07 was added to the original six. detectable_by was measured by running actionlint 1.7.12 and zizmor 1.32.0 (offline), each in its pinned image, on the fixture's two workflows: a tool is listed for a seed only when it reported that seed, and every seed lists static-review. zizmor reports the pull_request_target trigger (line 3 of the pull-request workflow) for F11-02, not the checkout line the key locates. Neither tool reports F11-04, F11-05, F11-06 or F11-07. The tools reported no finding beyond the seeds.",
+  "issues": [
+    {
+      "id": "F11-01",
+      "location": "CI workflow, an action referenced by a tag",
+      "file": ".github/workflows/ci.yml",
+      "lines": [
+        15,
+        15
+      ],
+      "match": "actions/checkout@v4",
+      "category": "pipeline",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-829 inclusion of functionality from an untrusted control sphere: an action referenced by a mutable tag, not a commit",
+      "detectable_by": [
+        "zizmor",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F11-02",
+      "location": "pull-request workflow, a pull_request_target trigger that checks out the pull request head",
+      "file": ".github/workflows/pr-preview.yml",
+      "lines": [
+        16,
+        16
+      ],
+      "match": "github.event.pull_request.head.sha",
+      "category": "pipeline",
+      "severity_anchor": "SEC-H1",
+      "class": "CWE-829 inclusion of functionality from an untrusted control sphere: a pull_request_target workflow checks out the head of the pull request",
+      "detectable_by": [
+        "zizmor",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F11-03",
+      "location": "pull-request workflow, a run step",
+      "file": ".github/workflows/pr-preview.yml",
+      "lines": [
+        19,
+        19
+      ],
+      "match": "github.event.pull_request.title",
+      "category": "pipeline",
+      "severity_anchor": "SEC-H1",
+      "class": "CWE-94 code injection: an expression from github.event used inside a run script",
+      "detectable_by": [
+        "actionlint",
+        "zizmor",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F11-04",
+      "location": "CI workflow, the test step",
+      "file": ".github/workflows/ci.yml",
+      "lines": [
+        22,
+        22
+      ],
+      "match": "continue-on-error: true",
+      "category": "pipeline",
+      "severity_anchor": "FUNC-M1",
+      "class": "tests allowed to fail: a failing test run does not fail the job",
+      "detectable_by": [
+        "static-review"
+      ]
+    },
+    {
+      "id": "F11-05",
+      "location": "CI workflow, the deploy job",
+      "file": ".github/workflows/ci.yml",
+      "lines": [
+        31,
+        31
+      ],
+      "match": "$DEPLOY_TOKEN",
+      "category": "pipeline",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-532 insertion of sensitive information into a log file: a secret written to the log",
+      "detectable_by": [
+        "static-review"
+      ]
+    },
+    {
+      "id": "F11-06",
+      "location": "README, the deploy section",
+      "file": "README.md",
+      "lines": [
+        12,
+        19
+      ],
+      "match": "## Deploy",
+      "category": "pipeline",
+      "severity_anchor": "FUNC-M2",
+      "class": "no rollback documentation: the deploy steps have no procedure to return to the previous release",
+      "detectable_by": [
+        "static-review"
+      ]
+    },
+    {
+      "id": "F11-07",
+      "location": "Dockerfile, the base image",
+      "file": "Dockerfile",
+      "lines": [
+        1,
+        1
+      ],
+      "match": "FROM python:3.12-slim",
+      "category": "pipeline",
+      "severity_anchor": "SEC-L1",
+      "class": "base image pinned by tag, not by digest",
+      "detectable_by": [
+        "static-review"
+      ]
+    }
+  ]
+}
