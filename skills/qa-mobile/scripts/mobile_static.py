@@ -47,9 +47,11 @@ level read here.
 
 Hostile input. XML is read with ``xml.parsers.expat`` and handlers that refuse any DOCTYPE except Apple's public plist
 identifier without an internal subset (and that one only in a property list), any entity declaration, any reference to an
-undeclared entity and any external entity. A file that one of them refuses, that is over 1 MiB, is a link, is not a regular
-file, resolves outside ``DIR``, is not well-formed or is not text where text is read is listed ``unreadable`` with its reason,
-and nothing is reported from it.
+undeclared entity, any external entity and elements nested deeper than 256 levels. A file that one of them refuses, that is
+over 1 MiB, is a link, is not a regular file, resolves outside ``DIR``, is not well-formed or is not text where text is read
+is listed ``unreadable`` with its reason, and nothing is reported from it; so is a file whose reading fails in any other way
+(the error's type is the reason), and the scan goes on with the other files. Trees are walked without recursion, and an SDK
+level is a number only when written in ASCII digits (at most nine).
 
 Paths are relative to the current directory when the file lies under it (run it from the project root, so they are the
 project's own paths), absolute otherwise. ``--out PATH`` writes the report to a new file under ``.qa/work/mobile/`` or,
@@ -78,6 +80,8 @@ DRIVER = "qa-mobile-static"
 WORK_DIR = ".qa/work/mobile"
 EVIDENCE_DIR = "/qa-evidence"
 MAX_BYTES = 1024 * 1024
+MAX_DEPTH = 256
+KEY_DEPTH = 4  # the deepest key path a rule reads: NSAppTransportSecurity, NSExceptionDomains, a domain, its key
 APPLE_PUBLIC_ID = "-//Apple//DTD PLIST 1.0//EN"
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 SKIP_DIRS = {".git", ".qa", ".qa-input", ".claude", "node_modules", "__pycache__", "vendor", ".venv", "venv", "dist", "build",
@@ -103,7 +107,7 @@ RULES: Dict[str, Dict[str, Any]] = {
 COMPONENT_TEST = {"activity": "MASTG-TEST-0364", "activity-alias": "MASTG-TEST-0364", "service": "MASTG-TEST-0365",
                   "receiver": "MASTG-TEST-0366", "provider": "MASTG-TEST-0355"}
 ATS_FINE = ("NSAllowsArbitraryLoadsInWebContent", "NSAllowsArbitraryLoadsForMedia", "NSAllowsLocalNetworking")
-SDK_LINE = re.compile(r"\b(minSdk|minSdkVersion|targetSdk|targetSdkVersion)\b\s*(?:=\s*|\(\s*)?(\d+)\b")
+SDK_LINE = re.compile(r"\b(minSdk|minSdkVersion|targetSdk|targetSdkVersion)\b\s*(?:=\s*|\(\s*)?([0-9]{1,9})\b")
 APPROXIMATE = " (approximate: it rests on a level read from the files, which a build may resolve differently)"
 
 
@@ -291,6 +295,8 @@ def parse_xml(data: bytes, plist: bool) -> Node:
         raise Unreadable("an external entity reference")
 
     def start(name: str, attrs: Dict[str, str]) -> None:
+        if len(stack) >= MAX_DEPTH:
+            raise Unreadable("elements nested deeper than %d levels" % MAX_DEPTH)
         node = Node(_name(name), {_name(k): v for k, v in attrs.items()}, parser.CurrentLineNumber)
         (stack[-1].children if stack else top).append(node)
         stack.append(node)
@@ -319,20 +325,29 @@ def parse_xml(data: bytes, plist: bool) -> Node:
     return top[0]
 
 
-def plist_key_lines(node: Node, path: Tuple[Any, ...] = ()) -> Dict[Tuple[Any, ...], int]:
-    """The line of each ``<key>`` of an XML property list, by its path of keys (and array indexes)."""
+def plist_key_lines(root: Node) -> Dict[Tuple[Any, ...], int]:
+    """The line of each ``<key>`` of an XML property list, by its path of keys (and array indexes), to ``KEY_DEPTH`` deep;
+    walked without recursion, in document order level by level, so a repeated key keeps its last line as ``plistlib`` keeps
+    its last value."""
     found: Dict[Tuple[Any, ...], int] = {}
-    if node.tag in ("plist", "array"):
-        for index, child in enumerate(node.children):
-            found.update(plist_key_lines(child, path if node.tag == "plist" else path + (index,)))
-    elif node.tag == "dict":
-        children = node.children
-        for index, child in enumerate(children):
-            if child.tag == "key":
-                key = path + ("".join(child.text),)
-                found[key] = child.line
-                if index + 1 < len(children) and children[index + 1].tag != "key":
-                    found.update(plist_key_lines(children[index + 1], key))
+    queue: List[Tuple[Node, Tuple[Any, ...]]] = [(root, ())]
+    at = 0
+    while at < len(queue):
+        node, path = queue[at]
+        at += 1
+        if len(path) >= KEY_DEPTH:
+            continue
+        if node.tag in ("plist", "array"):
+            for index, child in enumerate(node.children):
+                queue.append((child, path if node.tag == "plist" else path + (index,)))
+        elif node.tag == "dict":
+            children = node.children
+            for index, child in enumerate(children):
+                if child.tag == "key":
+                    key = path + ("".join(child.text),)
+                    found[key] = child.line
+                    if index + 1 < len(children) and children[index + 1].tag != "key":
+                        queue.append((children[index + 1], key))
     return found
 
 
@@ -388,8 +403,8 @@ def sdk_for(manifest: Path, root: Path, tree: Node, gradles: Dict[Path, Dict[str
     uses = tree.all("uses-sdk")
 
     def level(name: str) -> Optional[int]:
-        value = uses[0].android(name) if uses else None
-        return int(value) if value is not None and value.strip().isdigit() else None
+        value = (uses[0].android(name) or "").strip() if uses else ""
+        return int(value) if value.isascii() and value.isdecimal() and len(value) <= 9 else None
     return {"manifest": uri_of(manifest), "min_sdk": level("minSdkVersion"), "target_sdk": level("targetSdkVersion"),
             "from": uri_of(manifest) if uses else None, "approximate": True}
 
@@ -485,10 +500,13 @@ def manifest_results(uri: str, tree: Node, sdk: Dict[str, Any], nsc_found: Optio
 
 
 def descendants(node: Node) -> List[Node]:
+    """Every element below ``node``, in document order, walked without recursion."""
     found: List[Node] = []
-    for child in node.children:
+    stack = list(reversed(node.children))
+    while stack:
+        child = stack.pop()
         found.append(child)
-        found += descendants(child)
+        stack.extend(reversed(child.children))
     return found
 
 
@@ -552,6 +570,13 @@ def entitlement_results(uri: str, values: Dict[str, Any], lines: Dict[Tuple[Any,
 
 # --------------------------------------------------------------------------- the scan
 
+FAILED = (Unreadable, RecursionError, ValueError)  # a file's own failure: it is listed, and the scan goes on
+
+
+def failure(exc: BaseException) -> str:
+    return str(exc) if isinstance(exc, Unreadable) else "not read: %s" % type(exc).__name__
+
+
 def scan(root: Path) -> Dict[str, Any]:
     unreadable: List[Dict[str, str]] = []
     notes: List[str] = []
@@ -573,17 +598,18 @@ def scan(root: Path) -> Dict[str, Any]:
                 counts["gradle"] += 1
             except UnicodeDecodeError:
                 unreadable.append({"path": uri_of(path), "reason": "not UTF-8"})
+            except FAILED as exc:
+                unreadable.append({"path": uri_of(path), "reason": failure(exc)})
     nsc_trees: Dict[Path, Node] = {}
     for path, kind in files:
         if kind == "res-xml":
             try:
                 tree = parse_xml(data[path], plist=False)
-            except Unreadable as exc:
-                unreadable.append({"path": uri_of(path), "reason": str(exc)})
+            except FAILED as exc:
+                unreadable.append({"path": uri_of(path), "reason": failure(exc)})
                 continue
             if tree.tag == "network-security-config":
                 nsc_trees[Path(os.path.abspath(str(path)))] = tree
-                counts["network-security-config"] += 1
     results: List[Dict[str, Any]] = []
     sdk: List[Dict[str, Any]] = []
     referenced: set = set()
@@ -592,35 +618,49 @@ def scan(root: Path) -> Dict[str, Any]:
             continue
         try:
             tree = parse_xml(data[path], plist=False)
-        except Unreadable as exc:
-            unreadable.append({"path": uri_of(path), "reason": str(exc)})
+            levels = sdk_for(path, root, tree, gradles)
+            nsc_found: Optional[bool] = None
+            names = set()
+            for app in tree.all("application"):
+                name = app.android("networkSecurityConfig") or ""
+                if name.startswith("@xml/"):
+                    target = Path(os.path.abspath(str(path.parent / "res" / "xml" / (name[len("@xml/"):] + ".xml"))))
+                    nsc_found = target in nsc_trees
+                    if nsc_found:
+                        names.add(target)
+            own_notes: List[str] = []
+            found = manifest_results(uri_of(path), tree, levels, nsc_found, own_notes)
+        except FAILED as exc:
+            unreadable.append({"path": uri_of(path), "reason": failure(exc)})
             continue
         counts["manifest"] += 1
-        levels = sdk_for(path, root, tree, gradles)
         sdk.append(levels)
-        nsc_found: Optional[bool] = None
-        for app in tree.all("application"):
-            name = app.android("networkSecurityConfig") or ""
-            if name.startswith("@xml/"):
-                target = Path(os.path.abspath(str(path.parent / "res" / "xml" / (name[len("@xml/"):] + ".xml"))))
-                nsc_found = target in nsc_trees
-                if nsc_found:
-                    referenced.add(target)
-        results += manifest_results(uri_of(path), tree, levels, nsc_found, notes)
+        referenced |= names
+        notes += own_notes
+        results += found
     for target, tree in sorted(nsc_trees.items()):
-        results += nsc_results(uri_of(target), tree, target in referenced)
+        try:
+            found = nsc_results(uri_of(target), tree, target in referenced)
+        except FAILED as exc:
+            unreadable.append({"path": uri_of(target), "reason": failure(exc)})
+            continue
+        counts["network-security-config"] += 1
+        results += found
     for path, kind in files:
         if kind not in ("plist", "entitlements"):
             continue
         try:
             values, lines, binary = read_plist(data[path])
-        except Unreadable as exc:
-            unreadable.append({"path": uri_of(path), "reason": str(exc)})
+            own_notes = []
+            found = ats_results(uri_of(path), values, lines, own_notes) if kind == "plist" else entitlement_results(uri_of(path), values, lines)
+        except FAILED as exc:
+            unreadable.append({"path": uri_of(path), "reason": failure(exc)})
             continue
         counts[kind] += 1
         if binary:
             notes.append("%s: a binary property list has no lines; its results cite line 1" % uri_of(path))
-        results += ats_results(uri_of(path), values, lines, notes) if kind == "plist" else entitlement_results(uri_of(path), values, lines)
+        notes += own_notes
+        results += found
     results.sort(key=lambda r: (r["path"], r["line"], r["rule"]))
     return {"results": results, "unreadable": unreadable, "counts": counts, "sdk": sdk, "notes": notes}
 

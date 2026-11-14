@@ -20,8 +20,9 @@ They are the tests whose published steps need a device, among the tests that the
 | `MASTG-TEST-0348` | iOS | Insecure TLS Protocols in Network Traffic | `MASWE-0026` | none here | install, capture the traffic while it is used, read the TLS versions | https://mas.owasp.org/MASTG/tests/ios/MASVS-NETWORK/MASTG-TEST-0348/ |
 | `MASTG-TEST-0356` | Android | Runtime Verification of Unauthorized Database Access through Content Providers | `MASWE-0018` | `exported-without-permission` (providers) | install, use with sensitive data, query the exported content providers from outside the app | https://mas.owasp.org/MASTG/tests/android/MASVS-PLATFORM/MASTG-TEST-0356/ |
 
-Not listed: `MASTG-TEST-0238` (Android, "Runtime Use of Network APIs Transmitting Cleartext Traffic", MASWE-0026) is a
-placeholder on mas.owasp.org with no published steps; `MASTG-TEST-0236` covers cleartext on the network. No exported
+Not listed: `MASTG-TEST-0238` (Android, "Runtime Use of Network APIs Transmitting Cleartext Traffic", MASWE-0026,
+https://mas.owasp.org/MASTG/tests/android/MASVS-NETWORK/MASTG-TEST-0238/) is a placeholder on mas.owasp.org with no
+published steps; `MASTG-TEST-0236` covers cleartext on the network. No exported
 activity, service or receiver has a device test on those pages: whether one exposes sensitive functionality is a person's
 reading of the code.
 

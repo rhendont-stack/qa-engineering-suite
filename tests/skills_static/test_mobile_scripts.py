@@ -251,6 +251,53 @@ def test_mobile_static_refuses_entities_and_links(tmp_path):
     assert len(report["invocations"][0]["toolExecutionNotifications"]) == 4
 
 
+def test_mobile_static_lists_an_over_deep_or_badly_numbered_file_and_goes_on(tmp_path):
+    """Fix round 1 (task review, Important 3): a property list and a network security configuration nested far deeper than the
+    interpreter's recursion limit, and a manifest whose SDK levels use digits ``int`` cannot read as ASCII numbers, beside a
+    normal property list. Exit 0, no traceback, each deep file ``unreadable`` with its reason, the levels not read, and the
+    other files' results still listed."""
+    depth = 5000
+    allowing = "<key>NSAppTransportSecurity</key>\n<dict>\n<key>NSAllowsArbitraryLoads</key>\n<true/>\n</dict>\n"
+    deep_plist = APPLE + '<plist version="1.0">\n' + "<dict><key>k</key>" * depth + "<true/>" + "</dict>" * depth + "\n</plist>\n"
+    deep_nsc = ('<?xml version="1.0"?>\n<network-security-config>\n' + '<domain-config cleartextTrafficPermitted="true">' * depth
+                + "</domain-config>" * depth + "\n</network-security-config>\n")
+    numbered = manifest('android:allowBackup="true"', sdk='<uses-sdk android:minSdkVersion="²" android:targetSdkVersion="٣٤" />\n')
+    root = project(tmp_path / "p", {
+        "ios/Deep/Info.plist": deep_plist,
+        "android/app/src/main/res/xml/deep.xml": deep_nsc,
+        "android/app/src/main/AndroidManifest.xml": numbered,
+        "ios/App/Info.plist": plist(allowing),
+    })
+    code, out, err = run(STATIC, "--root", ".", "--out", ".qa/work/mobile/mobile-static.sarif", cwd=root)
+    assert (code, out["ok"], err) == (0, True, ""), (out, err)
+    assert {u["path"]: u["reason"] for u in out["unreadable"]} == {
+        "ios/Deep/Info.plist": "elements nested deeper than 256 levels",
+        "android/app/src/main/res/xml/deep.xml": "elements nested deeper than 256 levels"}
+    assert located(out) == [("ats-arbitrary-loads", "ios/App/Info.plist:7"), ("backup-enabled", "android/app/src/main/AndroidManifest.xml:4")]
+    assert out["sdk"] == [{"manifest": "android/app/src/main/AndroidManifest.xml", "min_sdk": None, "target_sdk": None,
+                           "from": "android/app/src/main/AndroidManifest.xml", "approximate": True}]
+    assert out["files"] == {"entitlements": 0, "gradle": 0, "manifest": 1, "network-security-config": 0, "plist": 1}
+    report = json.loads((root / ".qa" / "work" / "mobile" / "mobile-static.sarif").read_text(encoding="utf-8"))["runs"][0]
+    assert len(report["results"]) == 2 and report["properties"]["unreadable"] == out["unreadable"]
+
+
+def test_mobile_static_walks_trees_without_recursion_and_reads_only_ascii_levels():
+    static = load(STATIC, "qa_mobile_static_for_walks")
+    top = node = static.Node("network-security-config", {}, 1)
+    for line in range(2, 5002):
+        child = static.Node("domain-config", {"cleartextTrafficPermitted": "true"}, line)
+        node.children.append(child)
+        node = child
+    assert len(static.descendants(top)) == 5000 and [n.line for n in static.descendants(top)[:3]] == [2, 3, 4]
+    assert len(static.nsc_results("net.xml", top, True)) == 5000
+    lines = static.plist_key_lines(static.parse_xml(plist("<key>a</key>\n<dict>\n<key>b</key>\n<dict>\n<key>c</key>\n<dict>\n"
+                                                          "<key>d</key>\n<dict>\n<key>e</key>\n<true/>\n</dict>\n</dict>\n</dict>\n"
+                                                          "</dict>\n<key>a</key>\n<false/>\n").encode("utf-8"), plist=True))
+    assert lines == {("a",): 19, ("a", "b"): 7, ("a", "b", "c"): 9, ("a", "b", "c", "d"): 11}  # a repeated key keeps its last line
+    assert static.gradle_levels("minSdk 1234567890123\ntargetSdk = 34\n") == {"min": None, "target": 34}
+    assert static.gradle_levels("minSdk ٢٦\n") == {"min": None, "target": None}
+
+
 def test_mobile_static_refuses_other_doctypes_and_undeclared_entities(tmp_path):
     allowing = "<key>NSAppTransportSecurity</key>\n<dict>\n<key>NSAllowsArbitraryLoads</key>\n<true/>\n</dict>\n"
     root = project(tmp_path / "p", {
@@ -380,8 +427,10 @@ def test_the_references_agree_with_the_scripts():
     used |= {i for c in dynamic.CHECKS for i in [c[0], c[4]] + c[5]}
     for identifier in used:
         assert identifier in mapping or identifier in checks, identifier
-    for identifier in re.findall(r"MAS(?:VS-[A-Z]+-\d|TG-TEST-\d{4}|WE-\d{4})", mapping):
+    for identifier in re.findall(r"MAS(?:VS-[A-Z]+-\d|TG-TEST-\d{4}|WE-\d{4})", mapping + "\n" + checks):  # every one has its page
         assert re.search(r"https://mas\.owasp\.org/\S*%s/" % re.escape(identifier), mapping + checks) or identifier.startswith("MASVS-"), identifier
+    for row in dynamic.NOT_LISTED:
+        assert row["test"] in checks and row["url"] in checks, row
     for test, platform, category, title, weakness, _masvs, _rules, _steps in dynamic.CHECKS:
         row = next(line for line in checks.splitlines() if line.startswith("| `%s` |" % test))
         assert title in row and "`%s`" % weakness in row and "/%s/%s/" % (category, test) in row, test
@@ -398,6 +447,38 @@ def test_the_references_agree_with_the_scripts():
     cli = (REPO / "shared" / "kernel" / "qa" / "cli.py").read_text(encoding="utf-8")
     choices = re.search(r'attach\.add_argument\("format", choices=\(([^)]*)\)', cli).group(1)
     assert formats and all('"%s"' % f in choices for f in formats + re.findall(r"`(\w+)`", tools.split("The kernel's other formats")[1].split(")")[0]))
+
+
+def key_citations(text):
+    """``(entry id, citation)`` of each place ``text`` cites a location of F10's answer key: an issue's or a negative control's
+    file, by its path or its file name alone, at a line (or a range) within the entry's lines."""
+    key = answer_key("mobile-static")
+    found = []
+    for entry in key["issues"] + key["negative_controls"]:
+        name = re.escape(entry["file"].rsplit("/", 1)[-1])
+        pattern = r"(?<![\w.-])(?:[\w.-]+/)*%s(?::|#L|,?\s+lines?\s+|\s*\(lines?\s+|\s+at\s+line\s+)(\d+)(?:\s*[-–]\s*L?(\d+))?" % name
+        for match in re.finditer(pattern, text):
+            first = int(match.group(1))
+            last = int(match.group(2)) if match.group(2) else first
+            if min(first, last) <= entry["lines"][1] and max(first, last) >= entry["lines"][0]:
+                found.append((entry["id"], match.group(0)))
+    return found
+
+
+def test_no_f10_key_location_in_the_installed_skill():
+    """Fix round 1 (task review, Important 4): the harness installs everything in the skill but ``evals/``, so no file there may
+    cite a location of F10's answer key, by its path from the project root or by its file name alone."""
+    old = ("(`android/app/src/main/AndroidManifest.xml:8`, never `AndroidManifest.xml:8`) "
+           "Open android/app/src/main/res/xml/network_security_config.xml at line 3; ios/App/Info.plist:15-16")
+    assert [i for i, _ in key_citations(old)] == ["F10-01", "F10-03", "F10-04", "F10-04"]
+    assert key_citations("app/src/main/AndroidManifest.xml:21, ios/Shop/Info.plist:30, the launcher activity at line 12") == []
+    cited = {}
+    for path in sorted(p for p in SKILL.rglob("*") if p.is_file() and "evals" not in p.relative_to(SKILL).parts
+                       and "__pycache__" not in p.parts):
+        found = key_citations(path.read_bytes().decode("utf-8", "replace"))
+        if found:
+            cited[str(path.relative_to(SKILL))] = found
+    assert cited == {}
 
 
 @pytest.mark.parametrize("script", [STATIC, DYNAMIC])

@@ -16,23 +16,23 @@ device check ran: that is what `suspected` is for.
 
 ```json
 {
-  "title": "android/app/src/main/res/xml/network_security_config.xml:3: the network security configuration permits cleartext traffic for every domain (MASVS-NETWORK-1)",
-  "description": "The base-config element at android/app/src/main/res/xml/network_security_config.xml:3 sets cleartextTrafficPermitted to true, so every connection may use plain HTTP. Read from the configuration by the static check; MASTG-TEST-0236, the device check, was not run.",
+  "title": "ios/Shop/Info.plist:30: an App Transport Security exception allows insecure HTTP loads to one domain (MASVS-NETWORK-1)",
+  "description": "Under NSAppTransportSecurity, NSExceptionDomains media.example.com sets NSExceptionAllowsInsecureHTTPLoads to true at ios/Shop/Info.plist:30, so the app may load that domain over plain HTTP. Read from the configuration by the static check; MASTG-TEST-0236, the device check, was not run.",
   "category": "security",
   "severity_rationale": {"anchor": "SEC-M1", "modifiers": []},
-  "component": {"path": "android/app/src/main/res/xml/network_security_config.xml", "criticality": "normal"},
+  "component": {"path": "ios/Shop/Info.plist", "criticality": "normal"},
   "verification_status": "suspected",
-  "evidence": ["android/app/src/main/res/xml/network_security_config.xml:3", ".qa/work/mobile/mobile-static.sarif"],
-  "reproduction_steps": ["Open android/app/src/main/res/xml/network_security_config.xml at line 3", "Read the cleartextTrafficPermitted attribute of base-config"],
-  "impact": "Traffic sent over HTTP can be read and changed by anyone on the network path.",
-  "probable_cause": "android/app/src/main/res/xml/network_security_config.xml:3 base-config sets cleartextTrafficPermitted=\"true\"",
-  "recommendation": "Set cleartextTrafficPermitted to false in base-config, and allow cleartext only in a domain-config for a host that needs it, if any; nothing was changed here.",
-  "refs": {"rule": "cleartext-traffic", "location": "android/app/src/main/res/xml/network_security_config.xml", "masvs": ["MASVS-NETWORK-1"], "mastg": ["MASTG-TEST-0235"], "maswe": ["MASWE-0026"], "cwe": ["CWE-319"]}
+  "evidence": ["ios/Shop/Info.plist:30", ".qa/work/mobile/mobile-static.sarif"],
+  "reproduction_steps": ["Open ios/Shop/Info.plist at line 30", "Read NSExceptionAllowsInsecureHTTPLoads under NSExceptionDomains media.example.com"],
+  "impact": "Traffic to that domain sent over HTTP can be read and changed by anyone on the network path.",
+  "probable_cause": "ios/Shop/Info.plist:30 NSExceptionDomains media.example.com sets NSExceptionAllowsInsecureHTTPLoads to true",
+  "recommendation": "Remove the exception and serve media.example.com over HTTPS; nothing was changed here.",
+  "refs": {"rule": "ats-insecure-exception", "location": "ios/Shop/Info.plist", "masvs": ["MASVS-NETWORK-1"], "mastg": ["MASTG-TEST-0322"], "maswe": ["MASWE-0026"], "cwe": ["CWE-319"]}
 }
 ```
 
-- `title` and `probable_cause` start with `path:line`, the path from the project root (`android/app/src/main/AndroidManifest.xml:8`,
-  never `AndroidManifest.xml:8`), the line as the check's `at` gives it or as Read numbers it, never a line counted by eye.
+- `title` and `probable_cause` start with `path:line`, the path from the project root (`app/src/main/AndroidManifest.xml:21`,
+  never `AndroidManifest.xml:21`), the line as the check's `at` gives it or as Read numbers it, never a line counted by eye.
 - `refs.rule` is the check's rule id, or `static-review` for a problem you read that no rule lists. `refs.location` and
   `component.path` are the file. Leave out `key_attributes`: the container leg's result for the same rule in the same file is
   then a new sighting of this finding, not a second one. Two results of one rule in one file (two exported activities) are
