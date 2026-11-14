@@ -4,7 +4,9 @@ generic checks of other CI systems' files, as SARIF results of category ``pipeli
 Usage: python3 release_check.py --root DIR [--out PATH]
        python3 release_check.py --copy-to-work
 
-It walks ``DIR`` (no link is followed; dependency, build, tool and VCS directories are skipped) and reads:
+It walks ``DIR`` with its own stack, never by recursion. No link is followed. Tool, dependency, cache and VCS directories are
+skipped. Build output, vendored code and coverage directories (``build``, ``dist``, ``target``, ``vendor``, ``coverage``) are
+skipped with a note naming each. A directory more than 64 levels below ``DIR`` is listed ``unreadable``. It reads:
 
 * ``rollback-documentation``: the documentation (``*.md``, ``*.rst``, ``*.adoc``, ``*.txt``). A deploy section is a heading
   whose text names a deploy, a release, a rollout or shipping and under which, before the next heading, at least two list
@@ -26,7 +28,10 @@ It walks ``DIR`` (no link is followed; dependency, build, tool and VCS directori
 
 Results carry CWE references where a class applies (CWE-829 for an unpinned image, CWE-532 for a printed secret). Files
 over 1 MiB, links, files that are not regular or not UTF-8, and paths that resolve outside ``DIR`` are listed ``unreadable``
-with the reason; nothing is reported from them.
+with the reason and no line; nothing is reported from them. A line over 4096 characters (and a Dockerfile instruction
+continued past that length) is listed ``unreadable`` with its line before any pattern reads it, and is read as an empty line.
+A leading UTF-8 byte-order mark is dropped. Each check reads a line in one pass, so the time a check takes grows with the
+size of the files, never faster.
 
 Paths are relative to the current directory when the file lies under it (run it from the project root). ``--out PATH`` writes
 SARIF 2.1.0 to a new file under ``.qa/work/release/`` or, inside a container run, ``/qa-evidence/``; without it nothing is
@@ -53,9 +58,17 @@ CATEGORY = "pipeline"
 WORK_DIR = ".qa/work/release"
 EVIDENCE_DIR = "/qa-evidence"
 MAX_BYTES = 1024 * 1024
+MAX_LINE = 4096
 MAX_FILES = 5000
-SKIP_DIRS = {".git", ".qa", ".qa-input", ".claude", "node_modules", "__pycache__", "vendor", ".venv", "venv", "dist", "build",
-             ".tox", ".nox", ".idea", "coverage", "target", "bower_components", ".gradle", ".terraform"}
+MAX_DEPTH = 64
+MAX_SKIP_NOTES = 50
+LONG_LINE = "a line over %d characters; it is not read" % MAX_LINE
+LONG_INSTRUCTION = "an instruction continued past %d characters; it is not read" % MAX_LINE
+# Skipped without a note: version control, the suite's own state, agent configuration, caches, environments and installed
+# dependencies. Skipped with a note: directories of the project that hold build output, vendored code or coverage reports.
+TOOL_DIRS = {".git", ".hg", ".svn", ".qa", ".qa-input", ".claude", "node_modules", "bower_components", "__pycache__", ".venv",
+             "venv", ".tox", ".nox", ".idea", ".gradle", ".terraform", ".mypy_cache", ".pytest_cache"}
+NOTED_DIRS = {"build", "dist", "target", "vendor", "coverage"}
 RULES: Dict[str, Dict[str, Any]] = {
     "rollback-documentation": {"cwe": [], "generic": False,
                                "text": "The deploy steps have no documented way back to the previous release"},
@@ -72,19 +85,28 @@ ROLLBACK = re.compile(r"\broll(?:ing|ed)?[ -]?backs?\b|\brollbacks?\b|\brevert(?
                       r"(?:release|deploy\w*|version|image|previous)\b|\bdowngrad(?:e|es|ed|ing)\b|"
                       r"\b(?:previous|prior|last\s+known\s+good)\s+(?:release|version|image|deployment|tag)\b", re.I)
 LIST_ITEM = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,3}[.)])\s+\S")
-MD_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 ADOC_HEADING = re.compile(r"^(={1,6})\s+(.*)$")
 RST_UNDERLINE = re.compile(r"^([=\-~^\"'`#*+])\1{2,}\s*$")
 FROM = re.compile(r"^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$", re.I)
 PINNED = re.compile(r"@sha256:[0-9a-f]{64}$")
-TEST_COMMAND = re.compile(
+# The test command, shared word for word with workflow_scan.py (a test asserts it): a runner's word, or a build tool with a test
+# goal later in the same command. test_command_end reads a line in one pass.
+TEST_WORD = re.compile(
     r"\b(?:py\.test|pytest|unittest|nose2|tox|nox|jest|vitest|mocha|karma|ava|rspec|phpunit|ctest|"
     r"playwright\s+test|cypress\s+run|go\s+test|cargo\s+test|dotnet\s+test|swift\s+test|mix\s+test|rake\s+(?:test|spec)|"
-    r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+(?:test|check)|mvnw?\b[^|;&\n]*\b(?:test|verify)|"
-    r"gradlew?\b[^|;&\n]*\b(?:test|check))\b")
+    r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+(?:test|check))\b")
+BUILD_TOOL = re.compile(r"\b(?:(mvnw?)|(gradlew?))\b")
+BUILD_GOAL = {"mvn": re.compile(r"\b(?:test|verify)\b"), "gradle": re.compile(r"\b(?:test|check)\b")}
+COMMAND_END = re.compile(r"[|;&\n]")
 MASKED = re.compile(r"\|\|\s*(?:true\b|:(?=\s|$|;|['\"])|exit\s+0\b)")
-SECRET_NAME = r"(?:[A-Za-z_][A-Za-z0-9_]*)?(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIALS?)[A-Za-z0-9_]*"
-PRINTED_SECRET = re.compile(r"\b(?:echo|printf|Write-Host)\b[^\n;|&]*(?:\$\{?(%s)\b|\$\((%s)\)|\benv\.(%s)\b)" % ((SECRET_NAME,) * 3), re.I)
+SECRET_WORD = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|CREDENTIALS?", re.I)
+PRINT_WORD = re.compile(r"\b(?:echo|printf|Write-Host)\b", re.I)
+PRINT_END = re.compile(r"[\n;|&]")
+VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\b|\$\(([A-Za-z_][A-Za-z0-9_]*)\)|\benv\.([A-Za-z_][A-Za-z0-9_]*)\b", re.I)
+CATCH_ERROR = re.compile(r"catchError\s*\(")
+SUCCESS_RESULT = re.compile(r"buildResult\s*:\s*['\"]SUCCESS['\"]")
+AZURE_ENTRY = re.compile(r"^\s*-\s*(stage|job|deployment):\s*(.*)$")
 YAML_IMAGE = re.compile(r"^\s*(?:-\s+)?(?:image|container):\s*['\"]?([^\s'\"#{}\[\]]+)['\"]?\s*(?:#.*)?$")
 JENKINS_IMAGE = re.compile(r"\bimage\s+['\"]([^'\"]+)['\"]|\bdocker\.image\(\s*['\"]([^'\"]+)['\"]")
 GITLAB_RESERVED = {"stages", "variables", "default", "include", "workflow", "image", "services", "before_script", "after_script",
@@ -146,6 +168,42 @@ def write_new(text: str, data: bytes, root: Optional[Path] = None) -> str:
     return "/".join(parts)
 
 
+# --------------------------------------------------------------------------- shared with workflow_scan.py, word for word
+
+def utf8_text(data: bytes) -> Optional[str]:
+    """``data`` as UTF-8 text without a leading byte-order mark, or None when it is not UTF-8."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text[1:] if text.startswith("\ufeff") else text
+
+
+def test_command_end(text: str) -> Optional[int]:
+    """Where the first test command on a line ends, or None. A build tool's command runs to the next ``|``, ``;``, ``&`` or line
+    end and ends at its last test goal; once one of a kind finds no test goal there, the rest of that command is not searched
+    again for that kind."""
+    word = TEST_WORD.search(text)
+    best = (word.start(), word.end()) if word else None
+    searched = {"mvn": -1, "gradle": -1}
+    for tool in BUILD_TOOL.finditer(text):
+        if best is not None and tool.start() >= best[0]:
+            break
+        kind = "mvn" if tool.group(1) else "gradle"
+        if tool.start() < searched[kind]:
+            continue
+        stop = COMMAND_END.search(text, tool.end())
+        end = stop.start() if stop else len(text)
+        last = None
+        for last in BUILD_GOAL[kind].finditer(text, tool.end(), end):
+            pass
+        if last is not None:
+            best = (tool.start(), last.end())
+            break
+        searched[kind] = end
+    return best[1] if best else None
+
+
 # --------------------------------------------------------------------------- files
 
 def uri_of(path: Path) -> str:
@@ -170,38 +228,66 @@ def kind_of(relative: str) -> Optional[str]:
     return None
 
 
-def project_files(root: Path, unreadable: List[Dict[str, Any]]) -> List[Tuple[Path, str]]:
+def unreadable_entry(path: Path, reason: str, line: Optional[int] = None) -> Dict[str, Any]:
+    return {"path": uri_of(path), "line": line, "reason": reason}
+
+
+def project_files(root: Path, unreadable: List[Dict[str, Any]], notes: List[str]) -> List[Tuple[Path, str]]:
+    """The files the checks read, by a walk with its own stack (top-down, each directory's entries in name order)."""
     real_root = os.path.realpath(str(root))
     found: List[Tuple[Path, str]] = []
-    for here, directories, names in os.walk(str(root)):
-        kept = []
-        for name in sorted(directories):
-            if name in SKIP_DIRS or name.startswith(".venv"):
+    noted = 0
+    stack: List[Tuple[Path, int]] = [(root, 0)]
+    while stack:
+        here, depth = stack.pop()
+        try:
+            names = sorted(os.listdir(str(here)))
+        except OSError as exc:
+            unreadable.append(unreadable_entry(here, "not listed: %s" % (exc.strerror or type(exc).__name__)))
+            continue
+        folders: List[Path] = []
+        for name in names:
+            path = here / name
+            try:
+                info = os.lstat(str(path))
+            except OSError as exc:
+                unreadable.append(unreadable_entry(path, "not opened: %s" % (exc.strerror or type(exc).__name__)))
                 continue
-            if os.path.islink(os.path.join(here, name)):
-                unreadable.append({"path": uri_of(Path(here) / name), "reason": "a link, not followed"})
+            link = stat.S_ISLNK(info.st_mode)
+            if stat.S_ISDIR(info.st_mode) or (link and os.path.isdir(str(path))):
+                if name in TOOL_DIRS or name.startswith(".venv"):
+                    continue
+                if link:
+                    unreadable.append(unreadable_entry(path, "a link, not followed"))
+                elif name in NOTED_DIRS:
+                    noted += 1
+                    if noted <= MAX_SKIP_NOTES:
+                        notes.append("%s/: skipped (build output, vendored code or a coverage report); a Dockerfile, CI file or "
+                                     "document kept there is not checked" % uri_of(path))
+                elif depth + 1 > MAX_DEPTH:
+                    unreadable.append(unreadable_entry(path, "more than %d directories below the root; not walked" % MAX_DEPTH))
+                else:
+                    folders.append(path)
                 continue
-            kept.append(name)
-        directories[:] = kept
-        for name in sorted(names):
-            path = Path(here) / name
-            relative = path.relative_to(root).as_posix()
-            kind = kind_of(relative)
+            kind = kind_of(path.relative_to(root).as_posix())
             if kind is None:
                 continue
-            info = os.lstat(str(path))
-            if stat.S_ISLNK(info.st_mode):
-                unreadable.append({"path": uri_of(path), "reason": "a link, not followed"})
+            if link:
+                unreadable.append(unreadable_entry(path, "a link, not followed"))
             elif not stat.S_ISREG(info.st_mode):
-                unreadable.append({"path": uri_of(path), "reason": "not a regular file"})
+                unreadable.append(unreadable_entry(path, "not a regular file"))
             elif info.st_size > MAX_BYTES:
-                unreadable.append({"path": uri_of(path), "reason": "over 1 MiB"})
+                unreadable.append(unreadable_entry(path, "over 1 MiB"))
             elif os.path.commonpath([real_root, os.path.realpath(str(path))]) != real_root:
-                unreadable.append({"path": uri_of(path), "reason": "resolves outside the root"})
+                unreadable.append(unreadable_entry(path, "resolves outside the root"))
             elif len(found) >= MAX_FILES:
-                unreadable.append({"path": uri_of(path), "reason": "beyond the first %d files" % MAX_FILES})
+                unreadable.append(unreadable_entry(path, "beyond the first %d files" % MAX_FILES))
             else:
                 found.append((path, kind))
+        stack.extend((folder, depth + 1) for folder in reversed(folders))
+    if noted > MAX_SKIP_NOTES:
+        notes.append("%d more skipped directories of build output, vendored code or coverage reports are not named"
+                     % (noted - MAX_SKIP_NOTES))
     return sorted(found)
 
 
@@ -213,10 +299,10 @@ def read_text(path: Path) -> str:
         data = handle.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("over 1 MiB")
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
+    text = utf8_text(data)
+    if text is None:
         raise ValueError("not UTF-8")
+    return text
 
 
 # --------------------------------------------------------------------------- the checks
@@ -247,9 +333,12 @@ def headings(lines: List[str]) -> List[Tuple[int, str]]:
     for index, line in enumerate(lines):
         if index in fenced:
             continue
-        match = MD_HEADING.match(line) or ADOC_HEADING.match(line)
-        if match:
-            found.append((index + 1, match.group(2)))
+        markdown = MD_HEADING.match(line)
+        asciidoc = None if markdown else ADOC_HEADING.match(line)
+        if markdown:   # the closing run of # and the blanks around it are cut in code, not by the pattern
+            found.append((index + 1, markdown.group(2).rstrip().rstrip("#").rstrip()))
+        elif asciidoc:
+            found.append((index + 1, asciidoc.group(2)))
         elif index and RST_UNDERLINE.match(line) and lines[index - 1].strip() and not RST_UNDERLINE.match(lines[index - 1]) \
                 and len(line.strip()) >= len(lines[index - 1].strip()):
             found.append((index, lines[index - 1].strip()))
@@ -271,20 +360,27 @@ def deploy_sections(lines: List[str]) -> List[Tuple[int, str]]:
     return found
 
 
-def image_results(uri: str, lines: List[str], notes: List[str]) -> List[Dict[str, Any]]:
+def image_results(path: Path, lines: List[str], notes: List[str], unreadable: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    uri = uri_of(path)
     found = []
     stages = set()
     logical: List[Tuple[int, str]] = []
-    buffer, start = "", 0
+    parts: List[str] = []
+    size, start = 0, 0
     for index, raw in enumerate(lines):
-        if not buffer:
-            start = index + 1
+        if not parts:
+            start, size = index + 1, 0
         stripped = raw.rstrip()
-        if stripped.endswith("\\"):
-            buffer += stripped[:-1] + " "
+        continued = stripped.endswith("\\")
+        parts.append(stripped[:-1] + " " if continued else stripped)
+        size += len(parts[-1])
+        if continued:
             continue
-        logical.append((start, buffer + stripped))
-        buffer = ""
+        if size > MAX_LINE:
+            unreadable.append(unreadable_entry(path, LONG_INSTRUCTION, start))
+        else:
+            logical.append((start, "".join(parts)))
+        parts = []
     for line, text in logical:
         match = FROM.match(text)
         if not match:
@@ -307,20 +403,50 @@ def pinned_image(value: str) -> bool:
     return bool(PINNED.search(value))
 
 
+def caught_as_success(text: str) -> bool:
+    """A ``catchError(`` whose arguments, up to the next ``)``, set ``buildResult: 'SUCCESS'``. The first opener of a stretch
+    with no ``)`` is searched to that stretch's end, which covers every later opener in it."""
+    covered = -1
+    for opener in CATCH_ERROR.finditer(text):
+        if opener.start() < covered:
+            continue
+        close = text.find(")", opener.end())
+        covered = len(text) if close < 0 else close
+        if SUCCESS_RESULT.search(text, opener.end(), covered):
+            return True
+    return False
+
+
+def printed_secret(raw: str) -> Optional[str]:
+    """The last variable named like a secret in the first print command on the line that prints one, or None. A print
+    command runs from ``echo``, ``printf`` or ``Write-Host`` to the next separator; a later print word inside it is part of it
+    and is not read again."""
+    covered = -1
+    for word in PRINT_WORD.finditer(raw):
+        if word.start() < covered:
+            continue
+        stop = PRINT_END.search(raw, word.end())
+        covered = stop.start() if stop else len(raw)
+        names = [name for match in VARIABLE.finditer(raw, word.end(), covered) for name in match.groups() if name]
+        secret = [name for name in names if SECRET_WORD.search(name)]
+        if secret:
+            return secret[-1]
+    return None
+
+
 def ci_results(uri: str, system: str, lines: List[str], notes: List[str], inventory: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     found = []
     for index, raw in enumerate(lines):
         line = index + 1
         text = raw.split("#", 1)[0] if system != "jenkins" else raw.split("//", 1)[0]
-        test = TEST_COMMAND.search(text)
-        if test and MASKED.search(text[test.end():]):
+        end = test_command_end(text)
+        if end is not None and MASKED.search(text, end):
             found.append(result("generic-masked-gate", uri, line, "the test command's failure is masked on its line"))
         if system == "gitlab" and re.match(r"^\s*allow_failure:\s*true\s*$", text):
             found.append(result("generic-masked-gate", uri, line, "allow_failure: true lets the job fail without failing the pipeline"))
         if system == "azure" and re.match(r"^\s*continueOnError:\s*true\s*$", text):
             found.append(result("generic-masked-gate", uri, line, "continueOnError: true lets the step fail without failing the run"))
-        if system == "jenkins" and (re.search(r"catchError\s*\([^)]*buildResult\s*:\s*['\"]SUCCESS['\"]", text)
-                                    or re.search(r"\bpropagate\s*:\s*false\b", text)):
+        if system == "jenkins" and (caught_as_success(text) or re.search(r"\bpropagate\s*:\s*false\b", text)):
             found.append(result("generic-masked-gate", uri, line, "the stage's failure is caught and the build still reads as a success"))
         images = []
         if system == "jenkins":
@@ -334,9 +460,8 @@ def ci_results(uri: str, system: str, lines: List[str], notes: List[str], invent
                 notes.append("%s:%d: the image is set by a variable (%s); not judged" % (uri, line, image))
             elif not pinned_image(image):
                 found.append(result("generic-unpinned-image", uri, line, "the image %s is named by a tag, not an @sha256 digest" % image))
-        secret = PRINTED_SECRET.search(raw)
-        if secret:
-            name = next(g for g in secret.groups() if g)
+        name = printed_secret(raw)
+        if name:
             found.append(result("generic-secret-echoed", uri, line, "the variable %s, which by its name holds a secret, is printed" % name))
         inventory.extend(stage_entries(uri, system, raw, line))
     return found
@@ -347,8 +472,9 @@ def stage_entries(uri: str, system: str, raw: str, line: int) -> List[Dict[str, 
         return [{"path": uri, "line": line, "kind": "stage", "name": m.group(1)}
                 for m in re.finditer(r"\bstage\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", raw)]
     if system == "azure":
-        match = re.match(r"^\s*-\s*(stage|job|deployment):\s*['\"]?([^'\"#]+?)['\"]?\s*(?:#.*)?$", raw)
-        return [{"path": uri, "line": line, "kind": match.group(1), "name": match.group(2)}] if match else []
+        match = AZURE_ENTRY.match(raw)
+        name = azure_name(match.group(2)) if match else None
+        return [{"path": uri, "line": line, "kind": match.group(1), "name": name}] if match and name else []
     if system == "gitlab":
         match = re.match(r"^([A-Za-z0-9_.\-][^:#]*):\s*(?:#.*)?$", raw)
         if match and match.group(1) not in GITLAB_RESERVED and not match.group(1).startswith("."):
@@ -361,6 +487,17 @@ def stage_entries(uri: str, system: str, raw: str, line: int) -> List[Dict[str, 
     return []
 
 
+def azure_name(rest: str) -> Optional[str]:
+    """The name after ``stage:``, ``job:`` or ``deployment:``: the text before a comment, one quote cut at each end, and no quote
+    left inside; None when nothing is left."""
+    body = rest.split("#", 1)[0].rstrip()
+    if body.startswith(("'", '"')):
+        body = body[1:]
+    if body.endswith(("'", '"')):
+        body = body[:-1]
+    return body if body and "'" not in body and '"' not in body else None
+
+
 def scan(root: Path) -> Dict[str, Any]:
     unreadable: List[Dict[str, Any]] = []
     notes: List[str] = []
@@ -368,13 +505,18 @@ def scan(root: Path) -> Dict[str, Any]:
     results: List[Dict[str, Any]] = []
     counts = {"doc": 0, "image": 0, "workflow": 0, "ci": 0}
     texts: Dict[Path, Tuple[str, List[str]]] = {}
-    for path, kind in project_files(root, unreadable):
+    for path, kind in project_files(root, unreadable, notes):
         try:
             text = read_text(path)
         except (OSError, ValueError) as exc:
-            unreadable.append({"path": uri_of(path), "reason": str(exc) if isinstance(exc, ValueError) else "not opened: %s" % type(exc).__name__})
+            unreadable.append(unreadable_entry(path, str(exc) if isinstance(exc, ValueError) else "not opened: %s" % type(exc).__name__))
             continue
-        texts[path] = (kind, text.splitlines())
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if len(line) > MAX_LINE:   # listed before any pattern reads it, then read as an empty line
+                unreadable.append(unreadable_entry(path, LONG_LINE, index + 1))
+                lines[index] = ""
+        texts[path] = (kind, lines)
         counts[kind.split(":")[0]] += 1
     rollback = any(ROLLBACK.search("\n".join(lines)) for kind, lines in texts.values() if kind == "doc" or kind == "workflow"
                    or kind.startswith("ci:"))
@@ -386,7 +528,7 @@ def scan(root: Path) -> Dict[str, Any]:
                                                                            "or CI file in the project describes a way back to the "
                                                                            "previous release" % text, approximate=True))
         elif kind == "image":
-            results += image_results(uri, lines, notes)
+            results += image_results(path, lines, notes, unreadable)
         elif kind.startswith("ci:"):
             results += ci_results(uri, kind[3:], lines, notes, inventory)
     results.sort(key=lambda r: (r["path"], r["line"], r["rule"]))
@@ -404,7 +546,8 @@ def sarif(found: Dict[str, Any]) -> Dict[str, Any]:
                 "locations": [{"physicalLocation": {"artifactLocation": {"uri": r["path"]}, "region": {"startLine": r["line"]}}}],
                 "properties": {"category": CATEGORY, "cwe": r["cwe"], "generic": r["generic"], "approximate": r["approximate"]}}
                for r in found["results"]]
-    notes = [{"level": "warning", "message": {"text": "unreadable: %s: %s" % (u["path"], u["reason"])}} for u in found["unreadable"]]
+    notes = [{"level": "warning", "message": {"text": "unreadable: %s%s: %s" % (u["path"], ":%d" % u["line"] if u["line"] else "", u["reason"])}}
+             for u in found["unreadable"]]
     notes += [{"level": "note", "message": {"text": n}} for n in found["notes"]]
     return {"version": "2.1.0", "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
             "runs": [{"tool": {"driver": {"name": DRIVER, "version": VERSION, "rules": rules}},

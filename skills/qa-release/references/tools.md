@@ -64,7 +64,8 @@ deploy tool, a registry client or a GitHub client is used, and none is added: th
    `--copy-to-work` writes.
 5. Alternatives: zizmor and actionlint (below), which read the same files with full YAML parsers; a person's reading.
 6. License, costs, restrictions: part of this skill (Apache-2.0); no network. Files over 1 MiB, links, files that are not
-   regular or not UTF-8 are listed `unreadable`, and nothing is reported from them.
+   regular or not UTF-8 are listed `unreadable`, and nothing is reported from them. A line over 4096 characters is listed
+   `unreadable` with its number before any rule reads it.
 7. Reason selected: it runs everywhere with no install and no engine, and cites the file and line.
 
 ```qa-leg workflow-scan grant=none report=sarif
@@ -83,13 +84,16 @@ python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-releas
    uses them.
 3. Compatibility: Markdown, reStructuredText, AsciiDoc and text documentation; Dockerfile syntax; `.gitlab-ci.yml`,
    `Jenkinsfile`, `azure-pipelines.yml` and `.circleci/config.yml` read as text, so every generic result is approximate: a
-   lead for a person, never that system's own verdict. An image set by a build argument or a variable goes to `notes`.
+   lead for a person, never that system's own verdict. An image set by a build argument or a variable goes to `notes`, and
+   so does each `build`, `dist`, `target`, `vendor` or `coverage` directory it skips: a Dockerfile, CI file or document
+   kept there is not checked, so read it yourself if the project keeps one there.
 4. Dependencies: Python 3.9 or newer, standard library only. In the container leg, the Python image above and the copy that
    `--copy-to-work` writes.
 5. Alternatives: hadolint for Dockerfiles; each CI system's own linter (GitLab's CI lint, the Jenkins pipeline linter);
    a person's reading of the runbook.
 6. License, costs, restrictions: part of this skill (Apache-2.0); no network. Files over 1 MiB, links and files that are
-   not regular or not UTF-8 are listed `unreadable`.
+   not regular or not UTF-8 are listed `unreadable`, as is a line over 4096 characters (with its number) and a directory
+   more than 64 levels below the root.
 7. Reason selected: the release process lives in documents and files no workflow linter reads.
 
 ```qa-leg release-check grant=none report=sarif

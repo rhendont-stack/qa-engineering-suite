@@ -278,7 +278,8 @@ def own_check_leg(project, script, leg, rules, sarif):
     assert words[words.index("--container") + 1].startswith("python@sha256:") and "--activity" not in words
     code, out = release_cli(project.root, words)
     print("%s leg:" % leg, out["execution"], "exit", code, out["status"], out.get("reason"), out.get("findings"))
-    assert (code, out["status"]) == (1, "failed"), out
+    # Measured on both legs: failed with reason assertion, from the results in the SARIF report.
+    assert (code, out["status"], out["reason"]) == (1, "failed", "assertion"), out
     assert out["findings"] == {"opened": 0, "updated": len(rules)}, out
     run = execution_of(project, out["execution"])
     assert run["container"]["network_mode"] == "none" and run["reports"][0]["files"] == ["reports/%s" % sarif]
@@ -359,7 +360,7 @@ def test_f11_zizmor_leg(f11_project):
     assert words[words.index("--container") + 1].startswith("ghcr.io/zizmorcore/zizmor@sha256:")
     code, out = release_cli(project.root, words)
     print("zizmor leg:", out["execution"], "exit", code, out["status"], out.get("reason"), out.get("findings"), out.get("limitations"))
-    assert (code, out["status"]) == (1, "failed"), out
+    assert (code, out["status"], out["reason"]) == (1, "failed", "assertion"), out
     run = execution_of(project, out["execution"])
     assert run["container"]["network_mode"] == "none" and run["reports"][0]["files"] == ["reports/zizmor.sarif"]
     found = sarif_locations(project.root / ".qa" / "evidence" / out["execution"] / "reports" / "zizmor.sarif")

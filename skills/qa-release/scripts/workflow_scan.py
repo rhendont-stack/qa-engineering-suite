@@ -35,8 +35,10 @@ comments, a leading ``---`` and flat single-line flow collections (``[a, b]``, `
 exactly is listed ``unreadable`` with its line number and reason, and nothing under it is read, never guessed: an anchor, an
 alias, a tag, a merge key, a complex key, a duplicate key, a tab in the indentation, a quoted or plain value continued on
 another line, ``: `` inside a plain value, a nested or unclosed flow collection, an explicit block indentation indicator, a
-line indented where no value can start, a second document. A file over 1 MiB, a link, a file that is not regular or not
-UTF-8 is listed ``unreadable`` with its reason and no line. The rules read only what the reader read.
+line indented where no value can start, a second document, a line over 4096 characters (checked before any pattern reads
+it). A file over 1 MiB, a link, a file that is not regular or not UTF-8 is listed ``unreadable`` with its reason and no line;
+a leading UTF-8 byte-order mark is dropped. The rules read only what the reader read, and each rule reads a line in one
+pass, so the time a scan takes grows with the size of the files, never faster.
 
 Paths are relative to the current directory when the file lies under it (run it from the project root), absolute otherwise.
 ``--out PATH`` writes SARIF 2.1.0 to a new file under ``.qa/work/release/`` or, inside a container run, ``/qa-evidence/``;
@@ -63,7 +65,10 @@ CATEGORY = "pipeline"
 WORK_DIR = ".qa/work/release"
 EVIDENCE_DIR = "/qa-evidence"
 MAX_BYTES = 1024 * 1024
+MAX_LINE = 4096
 MAX_DEPTH = 64
+LONG_LINE = "a line over %d characters; nothing on it or under it is read" % MAX_LINE
+LONG_BLOCK_LINE = "a line over %d characters in a block value; the value is not read" % MAX_LINE
 RULES: Dict[str, Dict[str, Any]] = {
     "unpinned-action": {"cwe": ["CWE-829"], "text": "An action or reusable workflow is referenced by a tag or branch, not a commit SHA"},
     "pr-target-head-checkout": {"cwe": ["CWE-829"],
@@ -75,20 +80,27 @@ RULES: Dict[str, Dict[str, Any]] = {
 }
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
-EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}")
 HEAD_REF = re.compile(r"github\.event\.pull_request\.head\.|github\.head_ref|github\.event\.workflow_run\.head_|refs/pull/")
-FETCH_PR = re.compile(r"\bgh\s+pr\s+checkout\b|\bfetch\b[^\n]*\bpull/|refs/pull/")
+PR_CHECKOUT = re.compile(r"\bgh\s+pr\s+checkout\b|refs/pull/")
+FETCH_WORD = re.compile(r"\bfetch\b")
+PULL_PATH = re.compile(r"\bpull/")
 UNSAFE_CONTEXT = re.compile(r"\bgithub\.event\.[\w.\-\[\]'\"*]+|\bgithub\.head_ref\b|\binputs\.[\w\-]+")
 SAFE_FIELD = re.compile(r"(?:^|[._])(?:number|id|sha|ids|count|created_at|updated_at|run_attempt|run_number)$")
-TEST_COMMAND = re.compile(
+# The test command, shared word for word with release_check.py (a test asserts it): a runner's word, or a build tool with a test
+# goal later in the same command. test_command_end reads a line in one pass.
+TEST_WORD = re.compile(
     r"\b(?:py\.test|pytest|unittest|nose2|tox|nox|jest|vitest|mocha|karma|ava|rspec|phpunit|ctest|"
     r"playwright\s+test|cypress\s+run|go\s+test|cargo\s+test|dotnet\s+test|swift\s+test|mix\s+test|rake\s+(?:test|spec)|"
-    r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+(?:test|check)|mvnw?\b[^|;&\n]*\b(?:test|verify)|"
-    r"gradlew?\b[^|;&\n]*\b(?:test|check))\b")
+    r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test|make\s+(?:test|check))\b")
+BUILD_TOOL = re.compile(r"\b(?:(mvnw?)|(gradlew?))\b")
+BUILD_GOAL = {"mvn": re.compile(r"\b(?:test|verify)\b"), "gradle": re.compile(r"\b(?:test|check)\b")}
+COMMAND_END = re.compile(r"[|;&\n]")
 MASKED = re.compile(r"\|\|\s*(?:true\b|:(?=\s|$|;)|exit\s+0\b)")
 PRINTS = re.compile(r"(?:^|[;&|(`]\s*|\$\(\s*)(?:echo|printf)\b")
+PRINT_STOP = re.compile(r"[;&|](?![|&])")
+VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 DUMPS = re.compile(r"(?:^|[;&|(]\s*)(?:printenv|env)\s*(?:$|[;&|)>])")
-SECRET_EXPR = re.compile(r"\$\{\{[^}]*\bsecrets\.")
+SECRETS_WORD = re.compile(r"\bsecrets\.")
 PRIVILEGED_TRIGGERS = ("pull_request_target", "workflow_run")
 
 
@@ -145,6 +157,42 @@ def write_new(text: str, data: bytes, root: Optional[Path] = None) -> str:
             os.unlink(str(temporary))
         raise
     return "/".join(parts)
+
+
+# --------------------------------------------------------------------------- shared with release_check.py, word for word
+
+def utf8_text(data: bytes) -> Optional[str]:
+    """``data`` as UTF-8 text without a leading byte-order mark, or None when it is not UTF-8."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text[1:] if text.startswith("\ufeff") else text
+
+
+def test_command_end(text: str) -> Optional[int]:
+    """Where the first test command on a line ends, or None. A build tool's command runs to the next ``|``, ``;``, ``&`` or line
+    end and ends at its last test goal; once one of a kind finds no test goal there, the rest of that command is not searched
+    again for that kind."""
+    word = TEST_WORD.search(text)
+    best = (word.start(), word.end()) if word else None
+    searched = {"mvn": -1, "gradle": -1}
+    for tool in BUILD_TOOL.finditer(text):
+        if best is not None and tool.start() >= best[0]:
+            break
+        kind = "mvn" if tool.group(1) else "gradle"
+        if tool.start() < searched[kind]:
+            continue
+        stop = COMMAND_END.search(text, tool.end())
+        end = stop.start() if stop else len(text)
+        last = None
+        for last in BUILD_GOAL[kind].finditer(text, tool.end(), end):
+            pass
+        if last is not None:
+            best = (tool.start(), last.end())
+            break
+        searched[kind] = end
+    return best[1] if best else None
 
 
 # --------------------------------------------------------------------------- the YAML subset
@@ -244,6 +292,9 @@ class Reader:
             if self.i >= len(self.lines):
                 break
             raw = self.lines[self.i]
+            if len(raw) > MAX_LINE:
+                self.refuse(LONG_LINE, -1)
+                continue
             if raw.rstrip() in ("---", "...") or raw.startswith("%"):
                 self.unreadable.append((self.i + 1, "a document marker or directive; the rest of the file is not read"))
                 break
@@ -277,6 +328,9 @@ class Reader:
             here = self.indent(raw)
             if here < indent:
                 break
+            if len(raw) > MAX_LINE:
+                self.refuse(LONG_LINE, indent)
+                continue
             reason = self.tab_check()
             if reason:
                 self.refuse(reason, indent)
@@ -313,6 +367,9 @@ class Reader:
             here = self.indent(raw)
             if here < indent:
                 break
+            if len(raw) > MAX_LINE:
+                self.refuse(LONG_LINE, indent)
+                continue
             reason = self.tab_check()
             if reason:
                 self.refuse(reason, indent)
@@ -405,6 +462,7 @@ class Reader:
         self.i += 1
         body: List[Tuple[int, str]] = []
         content_indent: Optional[int] = None
+        too_long: Optional[int] = None
         while self.i < len(self.lines):
             raw = self.lines[self.i]
             if raw.strip(" ") == "":
@@ -418,8 +476,13 @@ class Reader:
                 content_indent = here
             if here < content_indent:
                 break
+            if len(raw) > MAX_LINE and too_long is None:
+                too_long = self.i + 1
             body.append((self.i + 1, raw[content_indent:]))
             self.i += 1
+        if too_long is not None:
+            self.unreadable.append((too_long, LONG_BLOCK_LINE))
+            return Unknown(line)
         while body and body[-1][1] == "":
             body.pop()
         joined = "\n".join(t for _, t in body) if style == "literal" else " ".join(t for _, t in body if t)
@@ -575,10 +638,7 @@ def read_text(path: Path) -> Optional[str]:
         data = handle.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         return None
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    return utf8_text(data)
 
 
 # --------------------------------------------------------------------------- the rules
@@ -612,6 +672,46 @@ def triggers(doc: Mapping) -> Dict[str, int]:
     return {} if on is None else {"?": line}
 
 
+def expressions(content: str) -> List[str]:
+    """The text inside each ``${{ ... }}`` of a line, in order; each one closes at the first ``}}`` after its opener."""
+    found = []
+    position = 0
+    while True:
+        start = content.find("${{", position)
+        if start < 0:
+            return found
+        end = content.find("}}", start + 3)
+        if end < 0:
+            return found
+        found.append(content[start + 3:end])
+        position = end + 2
+
+
+def secret_expression(text: str) -> bool:
+    """Whether a ``${{`` opener is followed by ``secrets.`` before the next ``}``. The first opener of a stretch with no ``}``
+    is searched to that stretch's end, which covers every later opener in it."""
+    position = 0
+    while True:
+        start = text.find("${{", position)
+        if start < 0:
+            return False
+        close = text.find("}", start + 3)
+        end = len(text) if close < 0 else close
+        if SECRETS_WORD.search(text, start + 3, end):
+            return True
+        if close < 0:
+            return False
+        position = close + 1
+
+
+def fetches_pr(content: str) -> bool:
+    """``gh pr checkout``, a ``refs/pull/`` reference, or a ``fetch`` with ``pull/`` after it on the line."""
+    if PR_CHECKOUT.search(content):
+        return True
+    fetch = FETCH_WORD.search(content)
+    return bool(fetch and PULL_PATH.search(content, fetch.end()))
+
+
 def secret_env(*scopes: Optional[Node]) -> Dict[str, int]:
     """Variables set from ``secrets`` in the given ``env`` mappings, outermost first (an inner scope overrides)."""
     names: Dict[str, int] = {}
@@ -621,7 +721,7 @@ def secret_env(*scopes: Optional[Node]) -> Dict[str, int]:
             continue
         for name, line, value in env.items:
             text = scalar(value)
-            if text is not None and SECRET_EXPR.search(text.value or ""):
+            if text is not None and secret_expression(text.value or ""):
                 names[name] = line
             else:
                 names.pop(name, None)
@@ -636,8 +736,8 @@ def is_true(node: Optional[Node]) -> Optional[int]:
 def expression_problems(text: Scalar) -> List[Tuple[int, str]]:
     found = []
     for line, content in text.lines:
-        for match in EXPRESSION.finditer(content):
-            for read in UNSAFE_CONTEXT.findall(match.group(1)):
+        for inside in expressions(content):
+            for read in UNSAFE_CONTEXT.findall(inside):
                 if read.startswith("github.event.") and SAFE_FIELD.search(read.rstrip(".")):
                     continue
                 found.append((line, read))
@@ -674,12 +774,12 @@ def step_rules(uri: str, step: Mapping, scopes: Tuple[Optional[Node], ...], priv
         env = secret_env(*(scopes + (step.get("env"),)))
         reported_fetch = False
         for line, content in run.lines:
-            if TEST_COMMAND.search(content):
+            end = test_command_end(content)
+            if end is not None:
                 tests = True
-                after = content[TEST_COMMAND.search(content).end():]   # type: ignore[union-attr]
-                if MASKED.search(after):
+                if MASKED.search(content, end):
                     results.append(result("tests-allowed-to-fail", uri, line, "the test command's failure is masked on its line"))
-            if privileged and not reported_fetch and FETCH_PR.search(content):
+            if privileged and not reported_fetch and fetches_pr(content):
                 trigger, trigger_line = sorted(privileged.items(), key=lambda item: item[1])[0]
                 results.append(result("pr-target-head-checkout", uri, line, "a %s workflow (trigger at line %d) fetches or checks "
                                                                             "out a pull request in a run script" % (trigger, trigger_line),
@@ -695,14 +795,20 @@ def step_rules(uri: str, step: Mapping, scopes: Tuple[Optional[Node], ...], priv
 
 
 def secret_printed(content: str, env: Dict[str, int]) -> Optional[str]:
+    """What a print command on the line writes to the log from a secret, or None. A print command runs from ``echo`` or
+    ``printf`` to the next command separator; a later print word inside that command is part of it and is not read again."""
+    covered = -1
     for match in PRINTS.finditer(content):
-        tail = content[match.start():]
-        stop = re.search(r"[;&|](?![|&])", tail[len(match.group(0)):])
-        command = tail[:len(match.group(0)) + stop.start()] if stop else tail
-        if SECRET_EXPR.search(command):
+        if match.start() < covered:
+            continue
+        stop = PRINT_STOP.search(content, match.end())
+        covered = stop.start() if stop else len(content)
+        command = content[match.start():covered]
+        if secret_expression(command):
             return "a secrets expression is printed to the log"
+        named = {braced or bare for braced, bare in VARIABLE.findall(command)}
         for name in env:
-            if re.search(r"\$(?:\{%s\}|%s\b)" % (re.escape(name), re.escape(name)), command):
+            if name in named:
                 return "the variable %s, set from a secret, is printed to the log" % name
     if env and DUMPS.search(content):
         return "the whole environment, which holds %s set from a secret, is printed to the log" % ", ".join(sorted(env))
