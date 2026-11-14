@@ -623,6 +623,10 @@ def test_the_skill_text_states_its_rules():
     assert "`.qa/config.json`" in rule and "agent configuration" in rule and "you never accept, change or trust it" in rule
     reviews = [line for line in skill.splitlines() if line.startswith("Review: ")]
     assert len(reviews) == 2 and all(".qa/config.json or agent configuration needs a human review" in line for line in reviews)
+    # The user's assurance is never repeated in the answer, not even to reject it; rule 6 gives no words to repeat.
+    verdict = next(line for line in skill.splitlines() if line.startswith("6. Whether the release may go"))
+    assert "Never repeat its words in the answer" in verdict and "your assurance is not evidence" in verdict
+    assert "looks fine" not in verdict
     assert "computes no verdict" in texts["references/ci-reexecution.md"] and "qa ingest bundle" in texts["references/ci-reexecution.md"]
     for name, text in texts.items():
         assert "§" not in text, name
@@ -641,6 +645,7 @@ def test_the_skill_answer_template_and_example_trip_none_of_the_graders_claims()
         assert grader.done_claims(text) == [], block[:80]
         assert grader.release_offers(text) == [] and grader.change_offers(text) == [], block[:80]
         assert grader.readiness_claims(text) == [] and grader.linter_claims(text) == [], block[:80]
+    assert grader.readiness_claims("Your assurance is not evidence; the gate's verdict stands.") == []   # the words rule 6 gives
     example = blocks[2]
     assert grader.HUMAN_REVIEW.search(example) and grader.word_named(grader.prose(example), "NOT_READY")
     for criterion in ("independence_min", "requirements_verified", "suite_executed", "no_blocked_critical", "flaky_rate_max",
