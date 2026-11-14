@@ -2,7 +2,8 @@
 
 ``render_markdown`` and ``render_json`` are pure functions of the state, so the same state gives the same bytes: neither
 file holds the report ID or the time. Every value that comes from the ledger passes through ``md_cell``, except the
-closed values of the verdict line, which ``check_markdown`` must be able to read (T17-R2).
+closed values of the verdict line, which ``check_markdown`` must be able to read (T17-R2). ``html.render_html`` writes
+the same sections as one self-contained page; it reads the helpers below, so ``render`` imports it when it is asked for.
 """
 from __future__ import annotations
 
@@ -24,9 +25,10 @@ __all__ = ["check", "check_markdown", "md_cell", "render", "render_executive", "
 
 # QaError codes raised here: invalid_format; plus ledger.append's and config.load_config's.
 
-_FORMATS = ("md", "json", "sarif", "executive")
-_DEFAULT_FORMATS = ("md", "json")  # SARIF and the executive one-pager are written only when asked for
-_FILE_NAMES = {"md": "report.md", "json": "report.json", "sarif": "report.sarif", "executive": "executive.md"}
+_FORMATS = ("md", "json", "sarif", "executive", "html")
+_DEFAULT_FORMATS = ("md", "json")  # SARIF, the executive one-pager and the HTML page are written only when asked for
+_FILE_NAMES = {"md": "report.md", "json": "report.json", "sarif": "report.sarif", "executive": "executive.md",
+               "html": "report.html"}
 _UNRESOLVED = ("open", "reopened", "fix_submitted")  # the lifecycle states the gate counts as unresolved
 _SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL")
 EXECUTIVE_ROW_LIMIT = 10  # the "one page" holds this many recommendations; the rest are counted in one generated line
@@ -309,8 +311,9 @@ def render(ws: Workspace, actor: ledger.Actor, *, formats: Tuple[str, ...] = _DE
     """Write the report files for the state as it is now, record ``report.rendered`` and return that event."""
     if (isinstance(formats, str) or not isinstance(formats, (tuple, list)) or not formats
             or any(f not in _FORMATS for f in formats)):
-        raise QaError("invalid_format", "formats is a non-empty subset of md, json, sarif and executive", formats=formats)
+        raise QaError("invalid_format", "formats is a non-empty subset of md, json, sarif, executive and html", formats=formats)
     wanted = [f for f in _FORMATS if f in formats]
+    from .html import render_html  # html.py imports this module's helpers, so it cannot be imported at the top
     with ws.lock():
         st = state.load(ws)
         problems = doctor.ledger_problems(ws)  # the recorded gate says nothing about a ledger altered after it
@@ -319,7 +322,8 @@ def render(ws: Workspace, actor: ledger.Actor, *, formats: Tuple[str, ...] = _DE
         contents = {"md": lambda: render_markdown(st, project=project, problems=problems).encode("utf-8"),
                     "json": lambda: dumps(render_json(st, project=project, problems=problems)) + b"\n",
                     "sarif": lambda: render_sarif(st),
-                    "executive": lambda: render_executive(st, project=project, problems=problems).encode("utf-8")}
+                    "executive": lambda: render_executive(st, project=project, problems=problems).encode("utf-8"),
+                    "html": lambda: render_html(st, project=project, problems=problems).encode("utf-8")}
         files = {_FILE_NAMES[f]: contents[f]() for f in wanted}
         folder = ws.path("reports", rid)
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)

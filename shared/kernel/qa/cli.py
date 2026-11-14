@@ -49,7 +49,7 @@ _GATE_EXIT = {"READY": 0, "NOT_READY": 1, "INSUFFICIENT_EVIDENCE": 3, "READY_WIT
 _GUARD_REFUSED = 3
 _INPUT_ERROR = 2
 _INTERNAL_ERROR = 70
-_REPORT_FORMATS = ("md", "json", "sarif", "executive")
+_REPORT_FORMATS = ("md", "json", "sarif", "executive", "html")
 _DEFAULT_REPORT_FORMATS = ("md", "json")
 _INGEST_CATEGORIES = {"sarif": "security", "k6": "performance"}  # `qa ingest`'s default category per format; else functional
 
@@ -259,7 +259,7 @@ def _add_integrity_commands(groups: Dict[str, Any]) -> None:
     show.add_argument("key", nargs="?", metavar="KEY")
     _group(groups, "report", "render reports and check their claims")
     render = _command(groups, "report render", "write the report files for the state as it is now")
-    render.add_argument("--format", action="append", choices=_REPORT_FORMATS, metavar="FORMAT", help="md, json, sarif or executive (default: md and json)")
+    render.add_argument("--format", action="append", choices=_REPORT_FORMATS, metavar="FORMAT", help="md, json, sarif, executive or html (default: md and json)")
     packed = _command(groups, "report bundle", "write the ledger, evidence and reports as one portable archive")
     packed.add_argument("--output", required=True, metavar="PATH", help="the archive to create; it must not exist")
     check = _command(groups, "report check", "check that every claim in a report cites a recorded run")
