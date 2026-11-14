@@ -4,7 +4,9 @@
 
 1. a never-activity (``credential-use``, ``deploy``) is ``policy_denied``;
 2. ``db-write`` and ``dast-active`` on a ``production`` environment are ``policy_denied``;
-3. a ``ci`` environment is ``policy_denied``: ci environments arrive in milestone 4;
+3. a ``ci`` environment outside a CI-pinned workspace (``config.ci_pinned``: ``qa ci begin`` ran there) is
+   ``policy_denied``, and in a CI-pinned workspace so is any activity outside ``vocab.RUNNER_CONFINED``, whatever the
+   environment; nothing reads ``CI=true``;
 4. ``static-analysis`` is allowed by default;
 5. any other activity runs something on this machine unless the check is ``containerized``, which
    only ``execution`` sets, and only for a run it then hands to the container pipeline (§12.2). So
@@ -23,7 +25,8 @@
 
 Grants are ``authorization.granted`` events in the Appendix A.4 shape. ``grant`` records them
 (``qa authorize``) and ``revoke`` withdraws them (``qa auth revoke``); editing config.json never
-creates one. A target is stored as given and has one of these forms:
+creates one. A ``ci`` environment takes no grant, only standing authorizations, and a CI-pinned
+workspace records none. A target is stored as given and has one of these forms:
 
 - a URL (text with ``://``): an http(s) URL that names a host and carries no userinfo (§12.5);
 - a bare target: a host name of ASCII letters, digits, ``.``, ``-`` and ``_`` (an IPv4 address
@@ -58,7 +61,7 @@ from .workspace import Workspace
 
 # QaError codes raised here: approval_required, unknown_environment, ci_unsupported,
 # invalid_activity, targets_required, invalid_target, undeclared_target, invalid_limits,
-# invalid_expiry (build_grant, and so grant); invalid_id, invalid_environment, invalid_activity,
+# invalid_expiry (build_grant, and so grant); ci_no_grants, invalid_id, invalid_environment, invalid_activity,
 # invalid_target and invalid_expiry for a field the ledger would redact (grant);
 # unknown_authorization, already_revoked (revoke); plus whatever config.load_config,
 # redact.load_redactor and ledger.append raise.
@@ -74,6 +77,9 @@ _UNTRUSTED_HOST = ("untrusted project: a host run of %s needs trust, recorded fr
                    "`qa config set project.trust trusted`, or run it in a container with `qa run --container IMAGE@DIGEST`")
 # A run inside a suite worktree cannot be containerised (its archive would hold the main tree), so only trust is offered.
 UNTRUSTED_IN_WORKTREE = "untrusted project: a run inside a suite worktree needs `qa config set project.trust trusted` approved"
+CI_OUTSIDE_PIN = ("a ci environment is used only in the CI job `qa ci generate` writes, after `qa ci begin` pinned its workspace "
+                  "to the accepted configuration; setting CI=true grants nothing")
+_CI_NOT_CONFINED = "%s is not confined to the CI runner, and this workspace is CI-pinned (`qa ci begin`)"
 
 
 def untrusted_host(activity: str) -> str:
@@ -193,8 +199,11 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
         return _deny("policy_denied", "%s is never performed by the suite" % activity)
     if env_class == "production" and activity in _NEVER_ON_PRODUCTION:
         return _deny("policy_denied", "%s is never performed on production" % activity)
-    if env_class == "ci":
-        return _deny("policy_denied", "ci environments arrive in milestone 4")
+    pinned = config.ci_pinned(st)
+    if env_class == "ci" and not pinned:
+        return _deny("policy_denied", CI_OUTSIDE_PIN)
+    if pinned and activity not in vocab.RUNNER_CONFINED:
+        return _deny("policy_denied", _CI_NOT_CONFINED % activity)
     if activity == "static-analysis":
         return _allow("default:static-analysis", "static analysis is allowed by default")
     trusted = cfg["project"]["trust"] == "trusted"
@@ -261,7 +270,8 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     if env is None:
         raise QaError("unknown_environment", "config.json declares no such environment", environment=environment_id)
     if env["class"] == "ci":
-        raise QaError("ci_unsupported", "ci environments arrive in milestone 4", environment=environment_id)
+        raise QaError("ci_unsupported", "ci environments take standing authorizations from config.json only",
+                      environment=environment_id)
     _check_activities(env, activities)
     per_target = [a for a in activities if a in vocab.PER_TARGET_ACTIVITIES]
     if per_target and not targets:
@@ -353,6 +363,9 @@ def grant(ws: Workspace, actor: ledger.Actor, *, now: Optional[datetime] = None,
     The approval quote and the limits may still be redacted.
     """
     with ws.lock():
+        if config.ci_pinned(state.load(ws)):  # nobody can answer in a CI job (§12.2), so no approval can be recorded there
+            raise QaError("ci_no_grants", "a CI-pinned workspace records no grants: a CI job uses the standing authorizations "
+                                          "of the configuration it was pinned to")
         if now is None:
             now = ids.now_utc()
         data = build_grant(config.load_config(ws), now=now, **build_grant_kwargs)

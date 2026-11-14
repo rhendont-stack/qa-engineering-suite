@@ -25,7 +25,8 @@ _UNHASHED_WHEN_EMPTY = ("worktrees", "requirements", "criteria", "assumptions", 
 
 def empty_state() -> dict:
     state: dict = {k: ([] if k in _LISTS else {}) for k in _KEYS}
-    state["config"] = {"accepted_hash": None, "history": [], "drift": []}
+    # accepted_basis: "user", or "ci-pin" from `qa ci begin` on (config.ci_pinned); left out of state_hash while "user".
+    state["config"] = {"accepted_hash": None, "accepted_basis": "user", "history": [], "drift": []}
     return state
 
 
@@ -43,8 +44,25 @@ def _config_approved(kind: str) -> Callable[[dict, dict], None]:
         entry = {"event": event["id"], "kind": kind, "hash": config_hash}
         if data.get("key") == "container.engine":  # the only record that can back the engine: config.container_engine
             entry["container_engine"] = data["new"]
+        if kind == "accepted":
+            state["config"]["accepted_basis"] = data.get("basis", "user")
         state["config"]["history"].append(entry)
     return reduce
+
+
+def _ci_begun(state: dict, event: dict) -> None:
+    """The workspace is a CI job's from here on, matched or not. Unmatched, nothing is accepted: the entry's null hash keeps
+    a later settling of gate.policy_accepted from bringing back an earlier accepted hash."""
+    data, config = event["data"], state["config"]
+    config["accepted_basis"] = "ci-pin"
+    entry = {"event": event["id"], "kind": "ci_begun", "expected": data["expected"], "matched": data["matched"]}
+    if not data["matched"]:
+        config["accepted_hash"] = entry["hash"] = None
+    config["history"].append(entry)
+
+
+def _ci_generated(state: dict, event: dict) -> None:
+    """The patch under .qa/work/patches/ is the record; nothing in the state depends on it."""
 
 
 def _config_drift_detected(state: dict, event: dict) -> None:
@@ -615,6 +633,8 @@ REDUCERS: Dict[str, Callable[[dict, dict], None]] = {
     "file.created": _file_recorded("created"),
     "file.modified": _file_recorded("modified"),
     "file.modification_approved": _file_approved,
+    "ci.begun": _ci_begun,
+    "ci.generated": _ci_generated,
 }
 
 
@@ -675,5 +695,8 @@ def rebuild(ws: Workspace) -> dict:
 
 
 def state_hash(state: dict) -> str:
-    return hash_obj({k: v for k, v in state.items()
-                     if k not in _UNHASHED and not (k in _UNHASHED_WHEN_EMPTY and not v)})
+    hashed = {k: v for k, v in state.items() if k not in _UNHASHED and not (k in _UNHASHED_WHEN_EMPTY and not v)}
+    config = hashed.get("config")
+    if isinstance(config, dict) and config.get("accepted_basis", "user") == "user":  # as a ledger before the key hashed it
+        hashed["config"] = {k: v for k, v in config.items() if k != "accepted_basis"}
+    return hash_obj(hashed)

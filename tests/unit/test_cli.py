@@ -566,6 +566,8 @@ WRITE_ARGV = {
     "fix add": ("fix", "add", "--json", "missing.json"),
     "changes record": ("changes", "record", "tests/x.py", "--kind", "created"),
     "revalidate": ("revalidate", "FIX-001", "--f2p", "EXE-X:EXE-Y", "--p2p", "EXE-X:EXE-Y", "--defect-test", "t.py::test_x"),
+    "ci begin": ("ci", "begin", "--config-hash", "sha256:" + "0" * 64),
+    "ci generate": ("ci", "generate", "--platform", "github-actions", "--environment", "ci", "--execution", "EXE-X"),
 }
 READ_ARGV = {
     "doctor": ("doctor",),

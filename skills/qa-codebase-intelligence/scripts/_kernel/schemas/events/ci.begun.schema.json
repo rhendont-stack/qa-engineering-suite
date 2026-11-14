@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ci.begun event data",
+  "description": "qa ci begin compared the .qa/config.json a CI job checked out (found) with the hash its workflow carries (expected). From this event on the workspace is CI-pinned. When they match, config.accepted with basis ci-pin follows; when they do not, nothing is accepted, so every later run but static analysis is blocked with config_drift. runner holds only the allowlisted GITHUB_* values that are well formed. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority.",
+  "type": "object",
+  "properties": {
+    "expected": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "found": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "matched": {"type": "boolean"},
+    "runner": {
+      "type": "object",
+      "properties": {
+        "GITHUB_RUN_ID": {"$ref": "#/$defs/runner_value"},
+        "GITHUB_RUN_ATTEMPT": {"$ref": "#/$defs/runner_value"},
+        "GITHUB_REPOSITORY": {"$ref": "#/$defs/runner_value"},
+        "GITHUB_SHA": {"$ref": "#/$defs/runner_value"},
+        "GITHUB_WORKFLOW_REF": {"$ref": "#/$defs/runner_value"}
+      },
+      "additionalProperties": false
+    },
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
+  },
+  "required": ["expected", "found", "matched", "runner"],
+  "additionalProperties": false,
+  "$defs": {
+    "runner_value": {"type": "string", "pattern": "^[A-Za-z0-9._/@:-]{1,200}$"}
+  }
+}

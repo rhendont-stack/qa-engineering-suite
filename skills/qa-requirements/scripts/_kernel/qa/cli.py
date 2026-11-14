@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from . import authz, bundle, catalog, changes, compare, config, doctor, execution, findings, fixes, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
+from . import authz, bundle, catalog, changes, ci, compare, config, doctor, execution, findings, fixes, gate, guard, ids, ingest, integrity, ledger, plan, records, redact, report, schema, state, trace, workspace, worktree
 from .canonical import loads
 from .detect import stack as detect_stack, tests as detect_tests
 from .errors import QaError
@@ -42,6 +42,7 @@ WRITE_COMMANDS = (
     "req add", "req import", "req confirm", "ac add", "asm add", "asm decide", "risk add", "tc add", "tc import",
     "trace link", "trace scan", "trace matrix",
     "fix add", "revalidate", "changes record",
+    "ci begin", "ci generate",
 )
 
 _RUN_EXIT = {"passed": 0, "failed": 1, "blocked": 3, "inconclusive": 4, "not_run": 5}
@@ -270,6 +271,21 @@ def _add_integrity_commands(groups: Dict[str, Any]) -> None:
                             "report can cite ALIAS:GATE-001; read-only, verified, repeatable")
 
 
+def _add_ci_commands(groups: Dict[str, Any]) -> None:
+    _group(groups, "ci", "pin a CI job to the accepted configuration, and write that job")
+    begin = _command(groups, "ci begin", "in a CI job, first: pin this fresh checkout's workspace to the configuration hash "
+                                         "the workflow carries; exits 1 when config.json differs from it")
+    begin.add_argument("--config-hash", required=True, metavar="sha256:HEX")
+    generate = _command(groups, "ci generate", "write a workflow that re-runs recorded host runs on a clean runner, as a patch "
+                                               "under .qa/work/patches/; nothing is written into the project")
+    generate.add_argument("--platform", required=True, metavar="P", help="github-actions, the only one supported")
+    generate.add_argument("--environment", required=True, metavar="E", help="a ci environment with a standing authorization")
+    generate.add_argument("--execution", required=True, action="append", dest="executions", metavar="EXE")
+    generate.add_argument("--launcher", metavar="PATH",
+                          help="the qa.py the job runs, tracked at the runs' commit (default: the one running now)")
+    generate.add_argument("--name", default=ci.DEFAULT_NAME, metavar="NAME", help="the workflow file's name, without .yml")
+
+
 def _add_detect_commands(groups: Dict[str, Any]) -> None:
     _group(groups, "detect", "read the project without running anything of it")
     _command(groups, "detect stack", "list the languages, manifests, lockfiles and CI files, each with its path")
@@ -369,6 +385,7 @@ def build_parser() -> _Parser:
     _add_execution_commands(groups)
     _add_finding_commands(groups)
     _add_integrity_commands(groups)
+    _add_ci_commands(groups)
     _add_detect_commands(groups)
     _add_plan_commands(groups)
     _add_record_commands(groups)
@@ -474,6 +491,29 @@ def cmd_init(args: argparse.Namespace, ctx: Context) -> int:
         ctx.reply(event=config.record_initialized(ctx.ws, ctx.actor)["id"])
     ctx.limitations.extend(integrity.authority(ctx.ws)["refused"])  # a clone may arrive with .qa/ already in it (§12.2)
     ctx.reply(created=created, workspace=str(ctx.ws.root))
+    return 0
+
+
+def cmd_ci_begin(args: argparse.Namespace, ctx: Context) -> int:
+    """Like init, it makes the workspace it needs, here or at --workspace; a CI checkout has only the two shareable files."""
+    try:
+        ctx.ws = workspace.init_workspace(Path(args.workspace) if args.workspace is not None else Path.cwd())[0]
+    except OSError as exc:
+        raise QaError("invalid_workspace", "the workspace cannot be created there", error=str(exc))
+    _check_schema(args, ctx)
+    _bind_actor(args, ctx)
+    result = ci.begin(ctx.ws.root, ctx.actor, config_hash=args.config_hash, environ=os.environ)
+    ctx.limitations.extend(integrity.authority(ctx.ws)["refused"])
+    ctx.reply(**result)
+    if not result["matched"]:
+        ctx.reply(reason="ci_config_mismatch")
+        return 1
+    return 0
+
+
+def cmd_ci_generate(args: argparse.Namespace, ctx: Context) -> int:
+    ctx.reply(**ci.generate(ctx.ws, ctx.actor, platform=args.platform, environment=args.environment,
+                            executions=args.executions, launcher=args.launcher, name=args.name))
     return 0
 
 
@@ -895,7 +935,7 @@ def _run(argv: List[str], ctx: Context) -> Tuple[int, dict]:
         ctx.command = args.command
         _given_session(args)  # refused before anything is read or created
         (args.skill or "").encode("utf-8")  # the ledger could not store it, and a run must not start first
-        if args.command != "init":
+        if args.command not in ("init", "ci begin"):  # both make the workspace they run in
             _enter_workspace(args, ctx)
         code = globals()["cmd_" + args.command.replace(" ", "_")](args, ctx)
     except _HelpRequested as shown:

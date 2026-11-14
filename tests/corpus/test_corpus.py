@@ -120,8 +120,11 @@ def sample_key():
 
 
 def test_corpus_files_are_the_manifest_files():
+    """Every tool output is listed. ci/ holds what the kernel itself writes (tests/unit/test_ci.py), which no tool produced:
+    it is checked for secrets and traces below, like the rest, but has no manifest entry."""
     listed = {e["file"] for e in ENTRIES}
-    on_disk = {p.relative_to(CORPUS).as_posix() for p in corpus_files() if p.name != "MANIFEST.json"}
+    on_disk = {p.relative_to(CORPUS).as_posix() for p in corpus_files()
+               if p.name != "MANIFEST.json" and p.relative_to(CORPUS).parts[0] != "ci"}
     assert listed == on_disk
 
 

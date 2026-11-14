@@ -12,12 +12,15 @@ from .errors import QaError
 from .workspace import Workspace, config_bytes, read_config, write_atomic
 
 # QaError codes raised here: config_invalid, approval_required, use_gate_policy_accept, config_drift
-# (set_value only; check_drift returns it), container_engine_unapproved, plus whatever ledger.append raises.
+# (set_value only; check_drift returns it), ci_config_pinned (set_value, accept), container_engine_unapproved, plus
+# whatever ledger.append raises.
 
 _SCHEMA = "config.schema.json"
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 DRIFT_REFUSAL = ("config.json differs from the approval this machine recorded: it was edited outside the CLI, or accepted on "
                  'another machine or before approvals were bound to a machine; run `qa config accept --approval "<quote>"`')
+CI_PINNED_REFUSAL = ("a CI-pinned workspace runs only against the configuration `qa ci begin` checked; change config.json in "
+                     "the project and generate the job again")
 
 
 def current_hash(ws: Workspace) -> str:
@@ -26,6 +29,21 @@ def current_hash(ws: Workspace) -> str:
 
 def accepted_hash(st: dict) -> Optional[str]:
     return st["config"]["accepted_hash"]
+
+
+def accepted_basis(st: dict) -> str:
+    """``ci-pin`` once ``qa ci begin`` ran in this workspace (``ci.begun``, then ``config.accepted`` with that basis), else ``user``."""
+    return st["config"].get("accepted_basis", "user")
+
+
+def ci_pinned(st: dict) -> bool:
+    """A CI job's workspace (§12.2 "Unattended CI"): only runner-confined activities, no grants, no verdict, no config change."""
+    return accepted_basis(st) == "ci-pin"
+
+
+def _refuse_ci_pinned(st: dict) -> None:
+    if ci_pinned(st):
+        raise QaError("ci_config_pinned", CI_PINNED_REFUSAL)
 
 
 def _schema_errors(cfg: Any) -> List[str]:
@@ -180,7 +198,9 @@ def set_value(ws: Workspace, actor: ledger.Actor, key: str, value: Any, approval
         raise QaError("approval_required", "a configuration change needs the user's approval quote")
     new = _parse_value(value)
     with ws.lock():
-        if current_hash(ws) != accepted_hash(state.load(ws)):
+        st = state.load(ws)
+        _refuse_ci_pinned(st)
+        if current_hash(ws) != accepted_hash(st):
             raise QaError("config_drift", DRIFT_REFUSAL)
         cfg = load_config(ws)
         before = read_config(ws)
@@ -208,6 +228,7 @@ def accept(ws: Workspace, actor: ledger.Actor, approval: str) -> dict:
     if not approval.strip():
         raise QaError("approval_required", "accepting a configuration needs the user's approval quote")
     with ws.lock():
+        _refuse_ci_pinned(state.load(ws))
         load_config(ws)
         return ledger.append(ws, actor, "config.accepted", {"hash": current_hash(ws), "approval": approval})
 

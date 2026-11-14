@@ -38,6 +38,7 @@ POLICY_SCHEMAS = {
     "severity-rubric.json": "severity-rubric.schema.json",
     "priority-matrix.json": "priority-matrix.schema.json",
     "container-images.json": "container-images.schema.json",
+    "ci-actions.json": "ci-actions.schema.json",
 }
 GATE_SCHEMA = "gate-policy.schema.json"
 PLACEHOLDER_WORDS = (b"todo", b"tbd", b"placeholder", b"...")

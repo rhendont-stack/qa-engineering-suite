@@ -156,10 +156,39 @@ def test_ci_environment_refused():
     cfg = workspace.default_config("x")
     cfg["environments"].append({"id": "ci", "class": "ci"})
     d = chk(state.empty_state(), cfg, "static-analysis", {"id": "ci", "class": "ci"})   # step (3) comes before the static-analysis default
-    assert not d.allowed and d.reason == "policy_denied" and "milestone 4" in d.detail
+    assert not d.allowed and d.reason == "policy_denied" and "qa ci begin" in d.detail
     with pytest.raises(QaError) as e:
         authz.build_grant(cfg, environment_id="ci", targets=[], activities=["db-readonly"], limits={}, approval="ok", expires_at=None, now=ids.now_utc())
-    assert e.value.code == "ci_unsupported"
+    assert e.value.code == "ci_unsupported" and e.value.message == "ci environments take standing authorizations from config.json only"
+
+
+def _ci_pinned_state():
+    st = state.empty_state()
+    st["config"]["accepted_basis"] = "ci-pin"
+    return st
+
+
+def test_ci_pinned_state_allows_a_ci_environment_only_for_runner_activities():
+    cfg = _cfg(CI)
+    cfg["project"]["trust"] = "trusted"
+    cfg["standing_authorizations"].append({"environment": "ci", "activities": ["test-execution-local", "db-ephemeral"]})
+    st = _ci_pinned_state()
+    assert chk(st, cfg, "static-analysis", CI).authorization == "default:static-analysis"
+    for activity in ("test-execution-local", "db-ephemeral"):
+        assert chk(st, cfg, activity, CI).authorization == "standing:ci"
+    assert chk(st, cfg, "install-dependencies", CI).reason == "not_authorized"   # confined, but no standing authorization
+    for activity in ("db-write", "load-test", "dast-passive", "write-tests", "device-control", "git-history-scan"):
+        for env in (CI, LOCAL):
+            d = chk(st, cfg, activity, env)
+            assert (d.allowed, d.reason) == (False, "policy_denied") and "CI-pinned" in d.detail, (activity, env)
+    assert chk(st, cfg, "test-execution-local", LOCAL).authorization == "trusted:local"
+
+
+def test_ci_pinned_state_keeps_the_trust_rule():
+    cfg = _cfg(CI)
+    cfg["standing_authorizations"].append({"environment": "ci", "activities": ["test-execution-local"]})
+    d = chk(_ci_pinned_state(), cfg, "test-execution-local", CI)
+    assert (d.allowed, d.reason, d.detail) == (False, "not_authorized", untrusted("test-execution-local"))
 
 
 def test_default_expiry_is_local_end_of_day(monkeypatch, restore_tz):

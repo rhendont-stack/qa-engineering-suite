@@ -22,8 +22,9 @@ from .findings import SEVERITIES
 from .ingest import mutation
 from .workspace import Workspace, read_config, write_atomic
 
-# QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, unknown_criterion,
-# invalid_override, blank_rationale, approval_required, unknown_proposal, already_accepted; plus ledger.append's.
+# QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, ci_no_verdict, unknown_criterion,
+# invalid_override, blank_rationale, approval_required, ci_config_pinned, unknown_proposal, already_accepted; plus
+# ledger.append's.
 
 _POLICY_SCHEMA = "gate-policy.schema.json"
 _PARAMS = {"$ref": _POLICY_SCHEMA + "#/$defs/params"}
@@ -739,6 +740,9 @@ def evaluate(ws: Workspace, actor: ledger.Actor, *, profile: Optional[str] = Non
         raise QaError("invalid_target", "a target commit is the full 40-character hash", target=target_commit)
     with ws.lock():
         st = state.load(ws)
+        if config.ci_pinned(st):  # §12.2: the verdict comes from wherever the job's bundle is imported
+            raise QaError("ci_no_verdict", "a CI job computes no verdict: import its evidence bundle with `qa ingest bundle` "
+                                           "and evaluate the gate there")
         cfg = config.load_config(ws)
         policy, policy_hash = load_policy(cfg["gate"]["profile"] if profile is None else profile, cfg)
         _refuse_drift(ws, st)
@@ -784,6 +788,8 @@ def accept(ws: Workspace, actor: ledger.Actor, proposal_event_id: str, approval:
         raise QaError("approval_required", "accepting a gate override needs the user's approval quote")
     with ws.lock():
         st = state.load(ws)
+        if config.ci_pinned(st):  # it rewrites config.json, which a CI job's workspace never changes
+            raise QaError("ci_config_pinned", config.CI_PINNED_REFUSAL)
         _refuse_drift(ws, st)
         history = st["config"]["history"]
         proposal = next((h for h in history if h["kind"] == "gate_policy_proposed" and h["event"] == proposal_event_id), None)

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ci.generated event data",
+  "description": "qa ci generate wrote patch, a unified diff that creates workflow_path, and nothing else. sha256 is the hash of that workflow file, whose first 12 hex digits name the patch. The workflow checks out target_commit, pins the job to config_hash with qa ci begin, re-runs executions through launcher on environment, and uploads the evidence bundle; skipped lists the executions asked for that it does not re-run, with the reason. actions are the pinned actions it uses.",
+  "type": "object",
+  "properties": {
+    "patch": {"type": "string", "pattern": "^\\.qa/work/patches/qa-ci-[0-9a-f]{12}\\.patch$"},
+    "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "workflow_path": {"type": "string", "pattern": "^\\.github/workflows/[a-z0-9][a-z0-9-]{0,39}\\.yml$"},
+    "platform": {"const": "github-actions"},
+    "environment": {"type": "string", "minLength": 1},
+    "target_commit": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+    "config_hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "launcher": {"type": "string", "minLength": 1},
+    "executions": {"type": "array", "minItems": 1, "items": {"$ref": "defs.schema.json#/$defs/exe_id"}},
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "execution": {"type": "string"},
+          "reason": {"enum": ["unknown_execution", "container_run", "dirty_tree", "activity_not_confined", "not_covered",
+                              "environment_variables"]}
+        },
+        "required": ["execution", "reason"],
+        "additionalProperties": false
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"enum": ["checkout", "upload-artifact"]},
+          "uses": {"type": "string", "minLength": 1},
+          "tag": {"type": "string", "minLength": 1},
+          "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        },
+        "required": ["id", "uses", "tag", "sha"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["patch", "sha256", "workflow_path", "platform", "environment", "target_commit", "config_hash", "launcher",
+               "executions", "skipped", "actions"],
+  "additionalProperties": false
+}

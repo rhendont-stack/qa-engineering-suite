@@ -22,7 +22,15 @@ def test_unknown_type_is_violation():
 def test_invalid_data_is_violation_and_not_reduced():
     s = state.fold([{"id": "EVT-Y", "type": "workspace.initialized", "data": {"x": 1}}])
     assert s["violations"] == [{"event": "EVT-Y", "kind": "invalid_data"}]
-    assert s["config"] == {"accepted_hash": None, "history": [], "drift": []}
+    assert s["config"] == {"accepted_hash": None, "accepted_basis": "user", "history": [], "drift": []}
+
+
+def test_accepted_basis_counts_in_the_state_hash_only_when_ci_pinned():
+    plain = state.empty_state()
+    before_the_key = dict(plain, config={k: v for k, v in plain["config"].items() if k != "accepted_basis"})
+    assert state.state_hash(plain) == state.state_hash(before_the_key)  # a ledger recorded before the key keeps its hash
+    pinned = dict(plain, config=dict(plain["config"], accepted_basis="ci-pin"))
+    assert state.state_hash(pinned) != state.state_hash(plain)
 
 
 def test_initialized_sets_accepted_hash(ws, actor):
