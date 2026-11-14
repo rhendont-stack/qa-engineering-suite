@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gate.policy_proposed event data",
+  "description": "A proposed override of one gate criterion (section 11.1). It changes nothing until it is accepted. accepted_in is not part of a proposal: accepting one writes it. Free-text strings carry no pattern beyond not being blank because they may hold redaction markers.",
+  "type": "object",
+  "properties": {
+    "criterion": {"type": "string", "minLength": 1},
+    "override": {"$ref": "#/$defs/override"},
+    "rationale": {"type": "string", "pattern": "\\S"}
+  },
+  "required": ["criterion", "override", "rationale"],
+  "additionalProperties": false,
+  "$defs": {
+    "override": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "blocking": {"type": "boolean"},
+        "params": {"$ref": "gate-policy.schema.json#/$defs/params", "minProperties": 1},
+        "not_applicable": {"type": "string", "pattern": "\\S"}
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  }
+}

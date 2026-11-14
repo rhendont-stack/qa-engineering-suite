@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "finding.state_changed event data",
+  "description": "A lifecycle transition (section 10.6). Fields the transition does not use are null. Which pairs are allowed is vocab.TRANSITIONS; the fold refuses the rest.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/fnd_id"},
+    "from": {"$ref": "defs.schema.json#/$defs/finding_state"},
+    "to": {"$ref": "defs.schema.json#/$defs/finding_state"},
+    "reason": {"type": "string", "minLength": 1},
+    "accepted_by": {"type": ["string", "null"]},
+    "expires_at": {"anyOf": [{"$ref": "defs.schema.json#/$defs/timestamp"}, {"type": "null"}]},
+    "duplicate_of": {"anyOf": [{"$ref": "defs.schema.json#/$defs/fnd_id"}, {"type": "null"}]}
+  },
+  "required": ["id", "from", "to", "reason", "accepted_by", "expires_at", "duplicate_of"],
+  "additionalProperties": false
+}

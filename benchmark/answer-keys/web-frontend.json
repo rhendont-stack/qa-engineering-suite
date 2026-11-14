@@ -1,7 +1,7 @@
 {
   "fixture": "web-frontend",
   "version": 1,
-  "note": "Locations are a route with the file and the lines that hold the cause. Test ids are classname::name as the kernel records them from the JUnit report. The seven smoke tests pass: none of the eight problems is reached by them. Problems 1-3, 6 and 7 are visible in the page source and styles to an HTML parser and a CSS rule scan; 4 needs a rendered page, 5 needs the about page loaded in a browser, 8 needs the product request to fail.",
+  "note": "Locations are a route with the file and the lines that hold the cause. Test ids are classname::name as the kernel records them from the JUnit report. The seven smoke tests pass: none of the eight problems is reached by them. Problems 1-3 and 7 are visible in the page source and styles to an HTML parser and a CSS rule scan; 4 needs a rendered page, 5 needs the about page loaded in a browser, 6 needs an empty product list, 8 needs the product request to fail.",
   "suites": {
     "python": {
       "run_status": "passed",

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "result.recorded event data",
+  "description": "One test case of an execution's report, as parsed.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/res_id"},
+    "execution": {"$ref": "defs.schema.json#/$defs/exe_id"},
+    "test_id": {"type": "string"},
+    "status": {"$ref": "defs.schema.json#/$defs/status"},
+    "failure_kind": {"enum": ["assertion", "error", null]},
+    "skip_reason": {"type": ["string", "null"]},
+    "flaky": {"type": "boolean"},
+    "duration_ms": {"type": ["integer", "null"]}
+  },
+  "required": ["id", "execution", "test_id", "status", "failure_kind", "skip_reason", "flaky", "duration_ms"],
+  "additionalProperties": false
+}

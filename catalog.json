@@ -4,6 +4,7 @@
     "qa-api-testing",
     "qa-codebase-intelligence",
     "qa-database",
+    "qa-frontend",
     "qa-mutation",
     "qa-orchestrator",
     "qa-performance",
@@ -79,6 +80,14 @@
     {
       "key": "measure-performance-under-load",
       "owner": "qa-performance"
+    },
+    {
+      "key": "validate-web-ui",
+      "owner": "qa-frontend"
+    },
+    {
+      "key": "check-web-accessibility",
+      "owner": "qa-frontend"
     }
   ]
 }

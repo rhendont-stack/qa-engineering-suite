@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "worktree.removed event data",
+  "description": "A worktree the suite made and has now removed. It closes the worktree.created event that names the same path.",
+  "type": "object",
+  "properties": {
+    "path": {"type": "string", "pattern": "^\\.qa/work/wt-[0-9a-f]{12}$"}
+  },
+  "required": ["path"],
+  "additionalProperties": false
+}
