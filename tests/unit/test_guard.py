@@ -570,6 +570,9 @@ NEW_CASE_IDS = (
     # milestone 4b: device control, zizmor, Lighthouse CI upload, the frontend runner
     "adb-devices", "xcrun-simctl-boot", "maestro-test", "emulator-avd", "zizmor-offline", "zizmor-online", "lhci-upload",
     "npm-ci-ignore-scripts", "playwright-bin-loopback",
+    # fix round 1: the all-in-one subcommand and the upload-target arguments
+    "lhci-collect-only", "lhci-autorun", "lhci-autorun-with-config-file", "lhci-upload-target-equals-form",
+    "lhci-upload-target-separate-value", "lhci-upload-server-base-url", "lhci-public-storage-value-alone",
 )
 NEW_CASES = [c for c in CASES if c["id"] in NEW_CASE_IDS]
 # decision, the activities the run needs beyond the declared one, the hosts the command line names
@@ -621,6 +624,13 @@ NEW_EXPECTED = {
     "lhci-upload": ("require_grant", ("data-egress",), ()),
     "npm-ci-ignore-scripts": ("require_grant", ("install-dependencies",), ()),
     "playwright-bin-loopback": ("allow", (), ("127.0.0.1",)),
+    "lhci-collect-only": ("allow", (), ()),
+    "lhci-autorun": ("require_grant", ("data-egress",), ()),
+    "lhci-autorun-with-config-file": ("require_grant", ("data-egress",), ()),
+    "lhci-upload-target-equals-form": ("require_grant", ("data-egress",), ()),
+    "lhci-upload-target-separate-value": ("require_grant", ("data-egress",), ()),
+    "lhci-upload-server-base-url": ("require_grant", ("data-egress",), ("192.0.2.7",)),
+    "lhci-public-storage-value-alone": ("require_grant", ("data-egress",), ()),
 }
 
 
@@ -675,9 +685,23 @@ def test_zizmor_is_offline_only_without_a_grant(ws):
     assert (d.decision, d.rule_id, d.required_activities) == ("require_grant", "zizmor-online", ("static-analysis", "data-egress"))
 
 
-def test_lhci_needs_data_egress_only_to_upload(ws):
-    assert classify(["lhci", "upload"], ws).required_activities == ("test-execution-local", "data-egress")
-    assert classify(["lhci", "collect"], ws).rule_id != "lhci-upload"
+def test_lhci_collect_alone_is_allowed_under_the_declared_activity(ws):
+    d = classify(["lhci", "collect", "--numberOfRuns=1"], ws)
+    assert (d.decision, d.rule_id, d.required_activities) == ("allow", None, ("test-execution-local",))
+
+
+@pytest.mark.parametrize("argv", [
+    ["lhci", "upload"], ["lhci", "autorun"], ["lhci", "autorun", "--config=./lighthouserc.json"],
+    ["lhci", "collect", "--upload.target=temporary-public-storage"], ["lhci", "collect", "--upload.target", "temporary-public-storage"],
+    ["lhci", "collect", "--upload.serverBaseUrl=http://192.0.2.7:9001"], ["lhci", "collect", "--upload.serverBaseUrl", "http://192.0.2.7:9001"],
+    ["lhci", "collect", "--upload.token=x"], ["lhci", "collect", "--target=temporary-public-storage"],
+    ["lhci", "collect", "--serverBaseUrl=http://192.0.2.7:9001"], ["lhci", "collect", "temporary-public-storage"],
+])
+def test_lhci_upload_paths_need_data_egress(argv, ws):
+    """Rule lhci-upload: the upload and all-in-one subcommands, and any argument naming an upload option, a server option or the
+    public-storage target (equals form or separate value), need data-egress."""
+    d = classify(argv, ws)
+    assert (d.decision, d.rule_id, d.required_activities) == ("require_grant", "lhci-upload", ("test-execution-local", "data-egress"))
 
 
 def test_zap_af_plan_target_assignment_is_read_as_a_host(ws):

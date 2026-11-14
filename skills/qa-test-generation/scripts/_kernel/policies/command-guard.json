@@ -388,8 +388,8 @@
     {
       "id": "lhci-upload",
       "effect": "require_grant:data-egress",
-      "reason": "Lighthouse CI upload sends its reports to a server; it needs a data-egress grant (\u00a712.2).",
-      "match": {"program": ["lhci"], "args_any": ["upload"]}
+      "reason": "Lighthouse CI sends its reports to a server or to public storage through the upload and all-in-one subcommands, whose configuration file can name the target, and through any upload or server option; it needs a data-egress grant (\u00a712.2).",
+      "match": {"program": ["lhci"], "args_regex": "^(upload|autorun)$|^--upload[.-]|^--(target|serverBaseUrl)(=|$)|temporary-public-storage"}
     },
     {
       "id": "load-test",
