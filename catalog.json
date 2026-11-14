@@ -10,6 +10,7 @@
     "qa-orchestrator",
     "qa-performance",
     "qa-regression-guard",
+    "qa-release",
     "qa-reporting",
     "qa-requirements",
     "qa-security",
@@ -93,6 +94,18 @@
     {
       "key": "validate-mobile-app",
       "owner": "qa-mobile"
+    },
+    {
+      "key": "validate-release-pipeline",
+      "owner": "qa-release"
+    },
+    {
+      "key": "define-release-criteria",
+      "owner": "qa-release"
+    },
+    {
+      "key": "generate-ci-reexecution",
+      "owner": "qa-release"
     }
   ]
 }

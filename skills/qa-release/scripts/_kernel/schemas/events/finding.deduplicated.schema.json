@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "finding.deduplicated event data",
+  "description": "A confirmed cross-tool duplicate (section 10.7). id is the finding that becomes a duplicate of duplicate_of; the fold moves it to the duplicate state, adds the evidence the kept finding lacked and links both sources. basis is why the pair was proposed: the shared path, the shared CWEs and the line span both cover.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/fnd_id"},
+    "duplicate_of": {"$ref": "defs.schema.json#/$defs/fnd_id"},
+    "basis": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "cwe": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "lines": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+      },
+      "required": ["path", "cwe", "lines"],
+      "additionalProperties": false
+    },
+    "evidence_added": {"type": "array", "items": {"type": "string"}},
+    "source_label": {"type": "string", "minLength": 1}
+  },
+  "required": ["id", "duplicate_of", "basis", "evidence_added", "source_label"],
+  "additionalProperties": false
+}

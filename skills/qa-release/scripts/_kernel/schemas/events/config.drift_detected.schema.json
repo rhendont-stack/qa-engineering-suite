@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "config.drift_detected event data",
+  "description": "config.json differs from the last accepted hash. accepted_hash is null when the ledger never accepted a configuration.",
+  "type": "object",
+  "properties": {
+    "hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "accepted_hash": {
+      "anyOf": [{"$ref": "defs.schema.json#/$defs/sha256"}, {"type": "null"}]
+    }
+  },
+  "required": ["hash", "accepted_hash"],
+  "additionalProperties": false
+}
