@@ -57,6 +57,26 @@ def test_f11_answer_key_locations_exist(repo_root):
     assert len({(issue["file"], tuple(issue["lines"])) for issue in issues}) == 7      # one line of its own per seed
 
 
+# Where each tool reported a seed (line numbers measured with actionlint 1.7.12 and zizmor 1.32.0 offline): each lies inside the seed's range.
+TOOL_LINES = {"F11-01": {"zizmor": 15}, "F11-02": {"zizmor": 3}, "F11-03": {"actionlint": 19, "zizmor": 19}}
+
+
+def test_f11_every_measured_tool_line_lies_inside_its_seed_range():
+    issues = {issue["id"]: issue for issue in answer_key("pipeline")["issues"]}
+    for seed, tools in TOOL_LINES.items():
+        assert set(tools) <= set(issues[seed]["detectable_by"]), seed
+        first, last = issues[seed]["lines"]
+        for tool, line in tools.items():
+            assert first <= line <= last, (seed, tool)
+    for seed, issue in issues.items():
+        assert {"actionlint", "zizmor"} & set(issue["detectable_by"]) == set(TOOL_LINES.get(seed, {})), seed
+
+
+def test_f11_preview_checkout_uses_the_verified_pin():
+    pin = [a for a in json.loads((REPO / "shared" / "policies" / "ci-actions.json").read_text(encoding="utf-8"))["actions"] if a["id"] == "checkout"][0]
+    assert ("uses: %s@%s" % (pin["uses"], pin["sha"])) in PREVIEW.read_text(encoding="utf-8")
+
+
 def test_f11_workflows_are_not_at_a_repository_root():
     own = REPO / ".github" / "workflows"
     held = {path.name: path.read_bytes() for path in (CI, PREVIEW)}

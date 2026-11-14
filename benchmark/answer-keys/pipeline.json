@@ -1,7 +1,7 @@
 {
   "fixture": "pipeline",
   "version": 1,
-  "note": "Locations are the file with the line that holds the cause. F11 has no test suite, is never run and is never pushed: its workflows sit under fixtures/pipeline/.github/workflows/, which GitHub never runs, and name only placeholder secrets and example.com hosts. Each seed is a class; F11-07 was added to the original six. detectable_by was measured by running actionlint 1.7.12 and zizmor 1.32.0 (offline), each in its pinned image, on the fixture's two workflows: a tool is listed for a seed only when it reported that seed, and every seed lists static-review. zizmor reports the pull_request_target trigger (line 3 of the pull-request workflow) for F11-02, not the checkout line the key locates. Neither tool reports F11-04, F11-05, F11-06 or F11-07. The tools reported no finding beyond the seeds.",
+  "note": "Locations are the file with the line that holds the cause. F11 has no test suite, is never run and is never pushed: its workflows sit under fixtures/pipeline/.github/workflows/, which GitHub never runs, and name only placeholder secrets and example.com hosts. Each seed is a class; F11-07 was added to the original six. detectable_by was measured by running actionlint 1.7.12 and zizmor 1.32.0 (offline), each in its pinned image, on the fixture's two workflows: a tool is listed for a seed only when it reported that seed, and every seed lists static-review. F11-02 spans the pull_request_target trigger (line 3) and the head checkout (line 16), and zizmor reports it at the trigger. Neither tool reports F11-04, F11-05, F11-06 or F11-07. The tools reported no finding beyond the seeds.",
   "issues": [
     {
       "id": "F11-01",
@@ -25,7 +25,7 @@
       "location": "pull-request workflow, a pull_request_target trigger that checks out the pull request head",
       "file": ".github/workflows/pr-preview.yml",
       "lines": [
-        16,
+        3,
         16
       ],
       "match": "github.event.pull_request.head.sha",
