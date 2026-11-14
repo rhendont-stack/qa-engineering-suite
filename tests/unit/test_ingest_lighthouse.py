@@ -199,3 +199,11 @@ def test_a_redaction_marker_in_a_field_the_parser_reads_is_refused_not_read_as_a
     with pytest.raises(ingest.ReportInvalid) as refused:
         parse(doc)
     assert refused.value.details["detail"] == "invalid_metric_value"
+
+
+def test_lighthouse_tool_version_is_bounded():
+    version = "13." + "0" * 197
+    assert parse(lhr(lighthouseVersion=version)).tool_version == version
+    with pytest.raises(ingest.ReportInvalid) as refused:
+        parse(lhr(lighthouseVersion=version + "0"))
+    assert refused.value.details["detail"] == "invalid_name"

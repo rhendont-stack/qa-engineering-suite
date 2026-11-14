@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from qa import execution, ingest, schema, state
+from qa import execution, findings, ingest, schema, state
 
 CORPUS = Path(__file__).resolve().parents[1] / "corpus" / "axe" / "axe-core-4.14.0-fixture-page.json"
 MANIFEST = json.loads((Path(__file__).resolve().parents[1] / "corpus" / "MANIFEST.json").read_text(encoding="utf-8"))
@@ -182,6 +182,47 @@ def test_cli_ingests_axe_results_as_accessibility_findings(trusted, actor, tmp_p
     code, ran = qa_cli("run", "--", str(program))
     assert code == 0
     code, attached = qa_cli("ingest", "axe", str(CORPUS), "--from", ran["execution"])
-    assert code == 0 and attached["kind"] == "alerts" and attached["findings"]["opened"] > 0
-    findings = state.load(trusted)["findings"]
-    assert findings and {f["category"] for f in findings.values()} == {"accessibility"}
+    assert code == 0 and attached["kind"] == "alerts" and attached["findings"] == {"opened": 3, "updated": 0}
+    found = state.load(trusted)["findings"]
+    assert len(found) == 3 and {f["category"] for f in found.values()} == {"accessibility"}
+    contrast = [f for f in found.values() if f["refs"]["rule"] == "color-contrast"]
+    assert sorted(f["source"]["level"] for f in contrast) == ["error", "note"]  # the note did not replace the violation
+    (violation,) = [f for f in contrast if f["source"]["level"] == "error"]
+    assert violation["severity"] == findings._LEVELS["error"]
+
+
+# --------------------------------------------------------------------------- bounds on what is recorded
+
+def test_axe_tool_version_is_bounded():
+    version = "4." + "0" * 198
+    assert parse(results(testEngine={"name": "axe-core", "version": version})).tool_version == version
+    with pytest.raises(ingest.ReportInvalid) as refused:
+        parse(results(testEngine={"name": "axe-core", "version": version + "0"}))
+    assert refused.value.details["detail"] == "invalid_name"
+
+
+def test_axe_versions_of_many_runs_are_bounded_together():
+    docs = [results(testEngine={"name": "axe-core", "version": "4.%d" % n}) for n in range(100)]
+    with pytest.raises(ingest.ReportInvalid) as refused:
+        parse(docs)
+    assert refused.value.details["detail"] == "invalid_name"
+
+
+def test_axe_success_criteria_are_ascii_whole_string_matches():
+    for tag in ("wcag\u0661\u0664\u0663", "wcag143\n", "wcag1410\n", " wcag143", "wcag14", "wcag12345"):
+        alert = parse(results([rule(tags=(tag,))])).alerts[0]
+        assert not any(t.startswith("wcag-sc:") for t in alert.tags), tag
+    assert "wcag-sc:1.4.10" in alert_with("wcag1410").tags
+
+
+def test_axe_repeated_tags_are_deduplicated_in_order():
+    alert = parse(results([rule(tags=("wcag143", "wcag2aa", "wcag143", "wcag2aa", "best-practice", "best-practice"))])).alerts[0]
+    assert alert.tags == ("wcag-sc:1.4.3", "wcag-level:AA", "best-practice")
+
+
+def test_axe_a_large_tag_list_is_refused_and_the_limit_is_inclusive():
+    limit = ingest.axe.TAG_LIMIT
+    assert parse(results([rule(tags=("wcag143",) * limit)])).alerts[0].tags == ("wcag-sc:1.4.3",)
+    with pytest.raises(ingest.ReportInvalid) as refused:
+        parse(results([rule(tags=("wcag143",) * (limit + 1))]))
+    assert refused.value.details["detail"] == "invalid_node"

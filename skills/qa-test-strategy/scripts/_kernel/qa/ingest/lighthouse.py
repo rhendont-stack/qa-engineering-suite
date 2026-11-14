@@ -58,6 +58,8 @@ def parse(data: bytes) -> ReportSummary:
     if (not isinstance(doc, dict) or not isinstance(doc.get("lighthouseVersion"), str)
             or not isinstance(doc.get("categories"), dict) or not isinstance(doc.get("audits"), dict)):
         raise ReportInvalid("not_lighthouse_result")
+    if len(doc["lighthouseVersion"]) > NAME_LIMIT:
+        raise ReportInvalid("invalid_name", what="tool version", limit=NAME_LIMIT)
     error = doc.get("runtimeError")
     if error is not None:
         code = error.get("code") if isinstance(error, dict) else None

@@ -180,7 +180,7 @@
         "kind": {"const": "alerts"},
         "alerts": {"type": "integer", "minimum": 0},
         "runs": {"type": "integer", "minimum": 0},
-        "tool_version": {"type": "string"},
+        "tool_version": {"type": "string", "maxLength": 200},
         "rules_passed": {"type": "integer", "minimum": 0},
         "rules_inapplicable": {"type": "integer", "minimum": 0}
       },
@@ -195,7 +195,7 @@
         "kind": {"const": "metrics"},
         "metrics": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "number"}}},
         "label": {"const": "measured"},
-        "tool_version": {"type": "string"}
+        "tool_version": {"type": "string", "maxLength": 200}
       },
       "required": ["format", "kind", "metrics", "label", "tool_version"],
       "additionalProperties": false
@@ -211,7 +211,7 @@
         "totals": {"$ref": "#/$defs/measurement_totals"},
         "metrics": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "number"}}},
         "label": {"const": "measured"},
-        "tool_version": {"type": "string"},
+        "tool_version": {"type": "string", "maxLength": 200},
         "anomalies": {"type": "array", "items": {"enum": ["path_outside_project", "partial"]}, "minItems": 1}
       },
       "required": ["format", "kind", "file", "sha256", "totals"],

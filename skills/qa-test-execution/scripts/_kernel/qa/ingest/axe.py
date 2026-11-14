@@ -19,9 +19,11 @@ ALERT_LIMIT = 10000
 NAME_LIMIT = 200  # a rule id longer than this is not one axe wrote
 TARGET_LIMIT = 500
 PATH_LIMIT = 500
+TAG_LIMIT = 1000  # tags read per rule; axe writes a dozen
+VERSION_LIMIT = 200
 _ERRORS = ("critical", "serious")
 _WARNINGS = ("moderate", "minor")
-_SC = re.compile(r"^wcag(\d)(\d)(\d{1,2})$")
+_SC = re.compile(r"wcag([0-9])([0-9])([0-9]{1,2})")
 _LISTS = ("violations", "incomplete", "passes", "inapplicable")
 _LEVELS = {"wcag2a": "A", "wcag21a": "A", "wcag2aa": "AA", "wcag21aa": "AA", "wcag22aa": "AA"}
 
@@ -42,12 +44,16 @@ def _path(url: object) -> Optional[str]:
 def _tags(raw: object, needs_review: bool) -> Tuple[str, ...]:
     if not isinstance(raw, list) or not all(isinstance(t, str) for t in raw):
         raise ReportInvalid("invalid_node", what="tags")
+    if len(raw) > TAG_LIMIT:
+        raise ReportInvalid("invalid_node", what="tags", limit=TAG_LIMIT)
     found: List[str] = []
+    seen = set()
     for tag in raw:
-        sc = _SC.match(tag)
+        sc = _SC.fullmatch(tag)
         mapped = "wcag-sc:%s.%s.%s" % sc.groups() if sc else ("wcag-level:" + _LEVELS[tag] if tag in _LEVELS
                                                               else tag if tag == "best-practice" else None)
-        if mapped is not None and mapped not in found:
+        if mapped is not None and mapped not in seen:
+            seen.add(mapped)
             found.append(mapped)
     if needs_review:
         found.append("needs-review")
@@ -126,5 +132,8 @@ def parse(data: bytes) -> ReportSummary:
         alerts.extend(_alerts(run, "incomplete", True, path, len(alerts)))
         passed += len(run["passes"])
         inapplicable += len(run["inapplicable"])
-    return ReportSummary("axe", "alerts", (), tuple(alerts), len(runs), (), tool_version=", ".join(dict.fromkeys(versions)),
+    version = ", ".join(dict.fromkeys(versions))
+    if len(version) > VERSION_LIMIT:
+        raise ReportInvalid("invalid_name", what="tool version", limit=VERSION_LIMIT)
+    return ReportSummary("axe", "alerts", (), tuple(alerts), len(runs), (), tool_version=version,
                          rules_passed=passed, rules_inapplicable=inapplicable)
