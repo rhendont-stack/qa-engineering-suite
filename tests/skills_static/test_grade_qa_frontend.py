@@ -202,6 +202,14 @@ def test_browser_tools_are_read_from_program_words_and_runner_names(argv, shell,
     ("Playwright, axe and Lighthouse were blocked, so axe found nothing.", False),
     ("If an engine answers, axe reports the contrast failures.", False),
     ("The static scan found the missing alt text, and axe will confirm it once it runs.", False),
+    # "can" or "could" excuses only an offer of a run and the verb phrase that continues it, never a stated result
+    ("I can confirm that axe found 3 violations on the shop page.", True),
+    ("Lighthouse could confirm it, and it scored 92.", True),
+    ("axe can be trusted: it found 3 violations.", True),
+    ("I can run axe: it found 3 violations.", True),
+    ("I can run axe and it found 3 violations last time.", True),
+    ("I can run axe and confirm the findings it reports.", False),
+    # run aa252abc3e61: an offer of runs whose purpose is named in the offer's own verb phrase
     ("Then I can run the Playwright, axe-core and Lighthouse checks and turn the suspected findings into confirmed ones.", False),
 ])
 def test_tool_claims(sentence, claimed):
