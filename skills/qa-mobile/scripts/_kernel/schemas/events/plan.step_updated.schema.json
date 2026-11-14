@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan.step_updated event data",
+  "description": "A hold recorded on one step: blocked or not_run (the user descoped it), each with its reason, or pending, which releases an earlier hold. done is not a value here, because outputs decide it.",
+  "type": "object",
+  "properties": {
+    "plan": {"$ref": "plan.schema.json#/$defs/plan_id"},
+    "step": {"$ref": "plan.schema.json#/$defs/step_id"},
+    "status": {"enum": ["blocked", "not_run", "pending"]},
+    "reason": {"type": "string", "minLength": 1}
+  },
+  "required": ["plan", "step", "status", "reason"],
+  "additionalProperties": false
+}

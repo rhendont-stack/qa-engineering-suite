@@ -5,6 +5,7 @@
     "qa-codebase-intelligence",
     "qa-database",
     "qa-frontend",
+    "qa-mobile",
     "qa-mutation",
     "qa-orchestrator",
     "qa-performance",
@@ -88,6 +89,10 @@
     {
       "key": "check-web-accessibility",
       "owner": "qa-frontend"
+    },
+    {
+      "key": "validate-mobile-app",
+      "owner": "qa-mobile"
     }
   ]
 }

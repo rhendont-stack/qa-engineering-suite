@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Redaction policy (shared/policies/redaction.json)",
+  "description": "Ordered secret patterns. For each match only capture group `group` (0 = whole match) is replaced by a keyed marker, and only when it is at least `min_len` characters long and, when `min_entropy` is not null, has at least that Shannon entropy in bits per character.",
+  "type": "object",
+  "properties": {
+    "patterns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {"type": "string", "pattern": "^[a-z_]+$"},
+          "regex": {"type": "string", "minLength": 1},
+          "group": {"type": "integer", "minimum": 0},
+          "min_len": {"type": "integer", "minimum": 0},
+          "min_entropy": {"type": ["number", "null"], "minimum": 0}
+        },
+        "required": ["kind", "regex", "group", "min_len", "min_entropy"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["patterns"],
+  "additionalProperties": false
+}

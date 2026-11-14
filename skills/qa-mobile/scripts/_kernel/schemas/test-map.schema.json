@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Test map (.qa/trace/test-map.json)",
+  "description": "Maps test case IDs to the automated tests that implement them, for projects that do not tag test names. Each entry is a test id in the form results record, classname::name (for example tests.test_discount::test_cap, or tests.test_discount.TestCap::test_cap for a class). qa trace scan also accepts the pytest path form (tests/test_discount.py::test_cap) and normalises it to that form; an entry it cannot map is reported, never guessed.",
+  "type": "object",
+  "propertyNames": {"pattern": "^TC-[0-9]{3,}$"},
+  "additionalProperties": {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1}
+  },
+  "examples": [{"TC-001": ["tests.test_discount::test_cap"], "TC-002": ["tests.test_discount.TestStacking::test_two_codes"]}]
+}

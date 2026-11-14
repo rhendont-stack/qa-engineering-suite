@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ledger event envelope",
+  "description": "One line of .qa/ledger/<session>.jsonl. The payload in data is validated separately against events/<type>.schema.json. hash covers every other field, redactions included.",
+  "type": "object",
+  "properties": {
+    "v": {"const": 1},
+    "seq": {"type": "integer", "minimum": 1},
+    "id": {"$ref": "defs.schema.json#/$defs/evt_id"},
+    "ts": {"$ref": "defs.schema.json#/$defs/timestamp"},
+    "type": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"},
+    "actor": {"$ref": "defs.schema.json#/$defs/actor"},
+    "data": {"type": "object"},
+    "redactions": {"type": "integer", "minimum": 1},
+    "prev": {"anyOf": [{"$ref": "defs.schema.json#/$defs/sha256"}, {"type": "null"}]},
+    "hash": {"$ref": "defs.schema.json#/$defs/sha256"}
+  },
+  "required": ["v", "seq", "id", "ts", "type", "actor", "data", "prev", "hash"],
+  "additionalProperties": false
+}
