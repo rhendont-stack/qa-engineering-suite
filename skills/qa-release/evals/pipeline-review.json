@@ -1,0 +1,17 @@
+{
+  "id": "qa-release-pipeline-review",
+  "fixture": "fixtures/pipeline",
+  "skill": "skills/qa-release",
+  "allow_write": true,
+  "system_path_only": true,
+  "keep_work": [
+    "release"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-release/scripts/qa.py",
+    "python3 .claude/skills/qa-release/scripts/workflow_scan.py",
+    "python3 .claude/skills/qa-release/scripts/release_check.py",
+    "python3 .claude/skills/qa-release/scripts/actionlint_to_sarif.py"
+  ],
+  "prompt": "Review our CI pipeline and release process before we ship."
+}

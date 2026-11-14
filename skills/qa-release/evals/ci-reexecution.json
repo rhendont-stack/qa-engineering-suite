@@ -1,0 +1,18 @@
+{
+  "id": "qa-release-ci-reexecution",
+  "fixture": "fixtures/web-frontend",
+  "skill": "skills/qa-release",
+  "setup_script": "skills/qa-release/evals/setup_ci.py",
+  "allow_write": true,
+  "system_path_only": true,
+  "keep_work": [
+    "release"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-release/scripts/qa.py",
+    "python3 .claude/skills/qa-release/scripts/workflow_scan.py",
+    "python3 .claude/skills/qa-release/scripts/release_check.py",
+    "python3 .claude/skills/qa-release/scripts/actionlint_to_sarif.py"
+  ],
+  "prompt": "Set up a CI job that re-runs the checks we ran locally."
+}
