@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Corner Stationery</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>Corner Stationery</h1>
+    <nav aria-label="Main">
+      <a href="index.html">Shop</a>
+      <a href="about.html">About</a>
+    </nav>
+  </header>
+  <main>
+    <img class="hero-banner" src="banner.svg">
+    <section aria-labelledby="products-title">
+      <h2 id="products-title">Products</h2>
+      <div class="filter-toggle" onclick="toggleFilters()">Filters</div>
+      <div id="filter-panel" class="filter-panel">
+        <label for="sort">Sort by</label>
+        <select id="sort" name="sort">
+          <option value="name">Name</option>
+          <option value="price">Price</option>
+        </select>
+      </div>
+      <p id="loading" class="loading" role="status">Loading products...</p>
+      <ul id="product-list" class="product-list"></ul>
+      <p class="price-note">Prices include tax.</p>
+    </section>
+    <section aria-labelledby="signup-title">
+      <h2 id="signup-title">Weekly offers</h2>
+      <form id="signup">
+        <label for="email">Email</label>
+        <input type="text" id="email" name="email" autocomplete="email">
+        <button type="submit">Subscribe</button>
+      </form>
+      <p id="signup-status" role="status"></p>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <p>Open Monday to Saturday.</p>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

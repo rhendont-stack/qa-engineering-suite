@@ -1,0 +1,158 @@
+{
+  "fixture": "web-frontend",
+  "version": 1,
+  "note": "Locations are a route with the file and the lines that hold the cause. Test ids are classname::name as the kernel records them from the JUnit report. The seven smoke tests pass: none of the eight problems is reached by them. Problems 1-3, 6 and 7 are visible in the page source and styles to an HTML parser and a CSS rule scan; 4 needs a rendered page, 5 needs the about page loaded in a browser, 8 needs the product request to fail.",
+  "suites": {
+    "python": {
+      "run_status": "passed",
+      "tests": {
+        "test_site.SiteTests::test_a_path_outside_the_site_is_not_found": "passed",
+        "test_site.SiteTests::test_an_unknown_path_is_not_found": "passed",
+        "test_site.SiteTests::test_only_reads_are_allowed": "passed",
+        "test_site.SiteTests::test_the_about_page_is_served": "passed",
+        "test_site.SiteTests::test_the_product_list_has_three_products": "passed",
+        "test_site.SiteTests::test_the_script_and_the_style_sheet_are_served_with_their_types": "passed",
+        "test_site.SiteTests::test_the_shop_page_is_served_as_html": "passed"
+      }
+    }
+  },
+  "issues": [
+    {
+      "id": "F1-01",
+      "location": "/ (index.html)",
+      "file": "site/index.html",
+      "lines": [
+        38,
+        38
+      ],
+      "match": "name=\"email\"",
+      "category": "functional",
+      "severity_anchor": "FUNC-M2",
+      "class": "CWE-20 improper input validation (an email field that accepts invalid addresses)",
+      "detectable_by": [
+        "playwright",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F1-02",
+      "location": "/ (index.html)",
+      "file": "site/index.html",
+      "lines": [
+        22,
+        22
+      ],
+      "match": "onclick=\"toggleFilters()\"",
+      "category": "accessibility",
+      "severity_anchor": "A11Y-H1",
+      "class": "WCAG 2.1.1 keyboard (a clickable element not reachable by keyboard)",
+      "detectable_by": [
+        "playwright",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F1-03",
+      "location": "/ (index.html)",
+      "file": "site/index.html",
+      "lines": [
+        19,
+        19
+      ],
+      "match": "<img class=\"hero-banner\"",
+      "category": "accessibility",
+      "severity_anchor": "A11Y-M1",
+      "class": "WCAG 1.1.1 non-text content (an image without a text alternative)",
+      "detectable_by": [
+        "axe-core",
+        "lighthouse",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F1-04",
+      "location": "/ (index.html)",
+      "file": "site/styles.css",
+      "lines": [
+        75,
+        78
+      ],
+      "match": "color: #aaaaaa",
+      "category": "accessibility",
+      "severity_anchor": "A11Y-M1",
+      "class": "WCAG 1.4.3 contrast (minimum) (text below the minimum ratio)",
+      "detectable_by": [
+        "axe-core",
+        "lighthouse"
+      ]
+    },
+    {
+      "id": "F1-05",
+      "location": "/about.html",
+      "file": "site/about.js",
+      "lines": [
+        2,
+        3
+      ],
+      "match": "contact.textContent",
+      "category": "reliability",
+      "severity_anchor": "FUNC-M1",
+      "class": "console error on one route",
+      "detectable_by": [
+        "playwright",
+        "lighthouse"
+      ]
+    },
+    {
+      "id": "F1-06",
+      "location": "/ (index.html)",
+      "file": "site/app.js",
+      "lines": [
+        7,
+        18
+      ],
+      "match": "products.forEach(function (product) {",
+      "category": "usability",
+      "severity_anchor": "FUNC-L1",
+      "class": "a list with no empty state",
+      "detectable_by": [
+        "playwright",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F1-07",
+      "location": "/ (index.html)",
+      "file": "site/styles.css",
+      "lines": [
+        31,
+        36
+      ],
+      "match": "width: 480px",
+      "category": "accessibility",
+      "severity_anchor": "A11Y-M1",
+      "class": "WCAG 1.4.10 reflow (horizontal overflow at 375 px)",
+      "detectable_by": [
+        "playwright",
+        "static-review"
+      ]
+    },
+    {
+      "id": "F1-08",
+      "location": "/ (index.html)",
+      "file": "site/app.js",
+      "lines": [
+        24,
+        26
+      ],
+      "match": "if (!response.ok) {",
+      "category": "reliability",
+      "severity_anchor": "FUNC-M1",
+      "class": "a loading indicator never cleared after an HTTP 500",
+      "detectable_by": [
+        "playwright",
+        "static-review"
+      ]
+    }
+  ]
+}
