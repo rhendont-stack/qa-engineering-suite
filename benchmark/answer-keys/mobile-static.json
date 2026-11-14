@@ -1,0 +1,110 @@
+{
+  "fixture": "mobile-static",
+  "version": 1,
+  "note": "Locations are the file with the line of the element that holds the cause; an XML element is located by the line its start tag opens on. F10 has no test suite and is never built: every problem is read from the configuration files, so detectable_by names the static checker (mobile-static) and a reading of the files (static-review); no device, emulator or simulator tool is listed. Identifiers were read from the OWASP MAS pages: the MASWE page (https://mas.owasp.org/MASWE/MASVS-NETWORK/MASWE-0026/, https://mas.owasp.org/MASWE/MASVS-STORAGE/MASWE-0006/, https://mas.owasp.org/MASWE/MASVS-AUTH/MASWE-0018/) and the MASTG test page (https://mas.owasp.org/MASTG/tests/android/MASVS-NETWORK/MASTG-TEST-0235/, https://mas.owasp.org/MASTG/tests/ios/MASVS-NETWORK/MASTG-TEST-0322/, https://mas.owasp.org/MASTG/tests/android/MASVS-PLATFORM/MASTG-TEST-0364/, https://mas.owasp.org/MASTG/tests/android/MASVS-STORAGE/MASTG-TEST-0262/, https://mas.owasp.org/MASTG/tests/android/MASVS-STORAGE/MASTG-TEST-0216/) for each. mastg is the static test that matches the configuration; mastg_dynamic, where present, is a test that needs a device and is not a detectable_by tool. MASWE-0018 lists MASVS-PLATFORM-1 among its controls (also MASVS-AUTH-1 and MASVS-STORAGE-2); MASVS-PLATFORM-1 lists MASWE-0018 as a related weakness. Negative controls are findings a checker must not report.",
+  "issues": [
+    {
+      "id": "F10-01",
+      "location": "Android network security configuration",
+      "file": "android/app/src/main/res/xml/network_security_config.xml",
+      "lines": [
+        3,
+        3
+      ],
+      "match": "cleartextTrafficPermitted=\"true\"",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-319 cleartext transmission: the network security configuration permits cleartext traffic for every domain (MASVS-NETWORK-1)",
+      "detectable_by": [
+        "mobile-static",
+        "static-review"
+      ],
+      "masvs": "MASVS-NETWORK-1",
+      "mastg": "MASTG-TEST-0235",
+      "maswe": "MASWE-0026"
+    },
+    {
+      "id": "F10-02",
+      "location": "Android manifest, an exported activity",
+      "file": "android/app/src/main/AndroidManifest.xml",
+      "lines": [
+        17,
+        17
+      ],
+      "match": "android:name=\".ShareActivity\" android:exported=\"true\"",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-926 improper export of an Android application component: an exported activity with no permission (MASVS-PLATFORM-1)",
+      "detectable_by": [
+        "mobile-static",
+        "static-review"
+      ],
+      "masvs": "MASVS-PLATFORM-1",
+      "mastg": "MASTG-TEST-0364",
+      "maswe": "MASWE-0018"
+    },
+    {
+      "id": "F10-03",
+      "location": "iOS Info.plist, App Transport Security",
+      "file": "ios/App/Info.plist",
+      "lines": [
+        15,
+        16
+      ],
+      "match": "NSAllowsArbitraryLoads",
+      "category": "security",
+      "severity_anchor": "SEC-M1",
+      "class": "CWE-319 cleartext transmission: App Transport Security is disabled for all connections (MASVS-NETWORK-1)",
+      "detectable_by": [
+        "mobile-static",
+        "static-review"
+      ],
+      "masvs": "MASVS-NETWORK-1",
+      "mastg": "MASTG-TEST-0322",
+      "maswe": "MASWE-0026"
+    },
+    {
+      "id": "F10-04",
+      "location": "Android manifest, the application element",
+      "file": "android/app/src/main/AndroidManifest.xml",
+      "lines": [
+        8,
+        8
+      ],
+      "match": "android:allowBackup=\"true\"",
+      "category": "security",
+      "severity_anchor": "SEC-L1",
+      "class": "CWE-212 sensitive information not removed before transfer: application data is eligible for backup with no exclusion rules (MASVS-STORAGE-2)",
+      "detectable_by": [
+        "mobile-static",
+        "static-review"
+      ],
+      "masvs": "MASVS-STORAGE-2",
+      "mastg": "MASTG-TEST-0262",
+      "maswe": "MASWE-0006",
+      "mastg_dynamic": "MASTG-TEST-0216"
+    }
+  ],
+  "negative_controls": [
+    {
+      "id": "F10-N1",
+      "file": "android/app/src/main/AndroidManifest.xml",
+      "lines": [
+        10,
+        15
+      ],
+      "match": "android.intent.category.LAUNCHER",
+      "why_clean": "The launcher activity is exported by design, with the MAIN action and LAUNCHER category; a checker must not report it as exported without a permission."
+    },
+    {
+      "id": "F10-N2",
+      "file": "android/app/src/main/AndroidManifest.xml",
+      "lines": [
+        19,
+        19
+      ],
+      "match": "android:permission=",
+      "why_clean": "An exported service protected by a signature-level permission declared in the same manifest; a checker must not report it."
+    }
+  ]
+}
