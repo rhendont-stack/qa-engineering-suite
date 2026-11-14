@@ -33,7 +33,7 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _MET, _NOT_MET, _NO_EVIDENCE, _NOT_APPLICABLE = "MET", "NOT_MET", "NO_EVIDENCE", "NOT_APPLICABLE"
 _NOT_OPTED_IN = "Project has not opted in (config.gate.overrides)"
 _DISABLED = "Disabled by config.gate.overrides (%s)"
-_SOURCE_CHECKOUT = "kernel manifest applies to vendored copies (milestone 2)"
+_SOURCE_CHECKOUT = "kernel manifest applies to vendored copies"
 _TREE_CHANGED = ("the working tree changed since the execution %s was recorded; "
                  "files a run leaves in the tree count unless they are git-ignored")
 
@@ -42,10 +42,15 @@ _INDEPENDENCE = ("I0", "I1", "I2", "I3")
 _SUITE_ACTIVITY = "test-execution-local"
 _UNRESOLVED_STATES = ("open", "reopened", "fix_submitted")
 _NEEDS = {
-    "security_scans_executed": ("scan and performance skills", 4),
-    "performance_objectives_met": ("scan and performance skills", 4),
-    "migrations_validated": ("database skills", 4), "rollback_validated": ("database skills", 4),
+    "rollback_validated": "a recorded rollback rehearsal; the suite never deploys, so a rehearsal record arrives through "
+                          "`qa ingest` from the project's own pipeline",
 }
+_SCAN_CLASSES = {"secrets": ("gitleaks", "betterleaks", "trufflehog"), "dependencies": ("osv-scanner",),
+                 "sast": ("semgrep", "opengrep", "bandit", "gosec"), "dast-baseline": ("zap",)}
+_DEFAULT_SCAN_CLASSES = ["secrets", "dependencies", "sast"]  # the change profile lists no parameters
+_PASSIVE_DAST = "dast-passive"
+_LOAD_LIMIT = "load_limit_exceeded"
+_CONCLUDED = ("passed", "failed")
 
 # Parameters a criterion reads that no policy file lists: an accepted override sets them (the policy files stay as the profile table).
 _OPTIONAL_PARAMS = {"mutation_score_min": ("paths",)}
@@ -516,11 +521,123 @@ def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     return (_MET if met else _NOT_MET), detail, cited
 
 
+# --------------------------------------------------------------------------- scans, load tests and migrations
+
+def _image_ids() -> Dict[str, str]:
+    """Image digest to its id in container-images.json."""
+    doc = loads((resource_dir("policies") / "container-images.json").read_bytes())
+    return {item["image"].rpartition("@")[2]: item["id"] for item in doc["images"]}
+
+
+def _tool_of(record: dict, images: Dict[str, str]) -> str:
+    """What a run ran: the id of its pinned container image, else the basename of ``argv[0]``."""
+    digest = ((record.get("container") or {}).get("image") or "").rpartition("@")[2]
+    if digest in images:
+        return images[digest]
+    return record["command"]["argv"][0].replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _holds_report(record: dict) -> bool:
+    """A parsed report, not just logs: the run's own report block or measurements, or a structured ingested file (an
+    attested one is a person's file)."""
+    return (record.get("report") is not None or bool(execution.readable_measurements(record))
+            or any(item.get("strength") == "structured" for item in execution.readable_ingested(record)))
+
+
+def _concluded_on_target(record: dict, ctx: GateContext) -> bool:
+    return (record["status"] in _CONCLUDED and ctx.target_commit is not None and _on_target(record, ctx.target_commit)
+            and _on_this_tree(record, ctx))
+
+
+def _passive_dast_granted(st: dict, now: datetime) -> bool:
+    """A non-revoked, unexpired grant of ``dast-passive`` (§10.5's check reads the same fields)."""
+    for grant in st["authorizations"].values():
+        if grant["revoked_at"] is None and _PASSIVE_DAST in grant["activities"]:
+            try:
+                if now < ids.parse_ts(grant["expires_at"]):
+                    return True
+            except QaError:
+                continue
+    return False
+
+
+def _security_scans_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """Every wanted scan class ran on the target and left a report. A scan that found something still ran."""
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    wanted = list(c["params"].get("classes", _DEFAULT_SCAN_CLASSES))
+    if _passive_dast_granted(st, ctx.now) and "dast-baseline" not in wanted:
+        wanted.append("dast-baseline")
+    images = _image_ids()
+    found: Dict[str, str] = {}
+    for record in st["executions"].values():
+        if _concluded_on_target(record, ctx) and _holds_report(record):
+            tool = _tool_of(record, images)
+            for name in wanted:
+                if tool in _SCAN_CLASSES[name]:
+                    found[name] = record["id"]
+    evidence = _in_id_order(set(found.values()))
+    missing = [name for name in wanted if name not in found]
+    if missing:
+        return _NO_EVIDENCE, "scans on commit %s; missing: %s" % (ctx.target_commit, ", ".join(missing)), evidence
+    return _MET, "%s scanned commit %s" % (", ".join(wanted), ctx.target_commit), evidence
+
+
+def _is_k6_run(record: dict) -> bool:
+    declared = record.get("reports") or []
+    return (any(item["format"] in ingest.LOAD_TEST_FORMATS for item in declared)
+            or (record.get("report") or {}).get("format") in ingest.LOAD_TEST_FORMATS
+            or any(item.get("format") in ingest.LOAD_TEST_FORMATS for item in execution.readable_ingested(record)))
+
+
+def _performance_objectives_met(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """k6 runs on the target at or above the minimum environment class. A run past its load limits proves nothing about
+    the system under load, so it does not count; a run below the class measured a simulation."""
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    minimum = _rank(vocab.ENV_CLASSES, c["params"]["min_environment_class"])
+    runs = [record for record in st["executions"].values() if _is_k6_run(record) and _concluded_on_target(record, ctx)]
+    over = [record["id"] for record in runs if _LOAD_LIMIT in record.get("anomalies", ())]
+    counted = [record for record in runs if record["id"] not in over]
+    qualifying = [record for record in counted if _rank(vocab.ENV_CLASSES, record["environment"]["class"]) >= minimum]
+    failed = [record["id"] for record in qualifying if record["status"] == "failed"]
+    if failed:
+        return _NOT_MET, "load test failed at %s or above: %s" % (c["params"]["min_environment_class"], ", ".join(failed)), failed
+    if qualifying:
+        return _MET, "%d load test(s) passed at %s or above" % (len(qualifying), c["params"]["min_environment_class"]), [
+            record["id"] for record in qualifying]
+    notes = []
+    if counted:
+        notes.append("load tests ran only below %s, so their figures are simulated" % c["params"]["min_environment_class"])
+    if over:
+        notes.append("%s went past the load limits and do not count" % ", ".join(over))
+    return _NO_EVIDENCE, "; ".join(notes) or "no load test on commit %s" % ctx.target_commit, []
+
+
+def _migrations_validated(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """The latest run of the migration activity on the target decides. A pass counts only as structured evidence."""
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    activity = c["params"]["activity"]
+    runs = [record for record in st["executions"].values()
+            if record["activity"] == activity and _concluded_on_target(record, ctx)]
+    if not runs:
+        return _NO_EVIDENCE, "no %s run on commit %s" % (activity, ctx.target_commit), []
+    latest = runs[-1]
+    detail, evidence = _described(latest), [latest["id"]]
+    if latest["status"] == "failed":
+        return _NOT_MET, detail, evidence
+    if latest["strength"] != "structured":
+        return _NO_EVIDENCE, "%s, but its report is not structured evidence" % detail, evidence
+    return _MET, detail, evidence
+
+
 _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
     "no_unresolved_findings": _no_unresolved_findings, "suite_executed": _suite_executed, "flaky_rate_max": _flaky_rate_max,
     "test_integrity": _test_integrity, "independence_min": _independence_min,
     "requirements_verified": _requirements_verified, "no_blocked_critical": _no_blocked_critical,
-    "mutation_score_min": _mutation_score_min,
+    "mutation_score_min": _mutation_score_min, "security_scans_executed": _security_scans_executed,
+    "performance_objectives_met": _performance_objectives_met, "migrations_validated": _migrations_validated,
 }
 
 
@@ -556,8 +673,7 @@ def evaluate_criterion(c: dict, st: dict, ctx: GateContext) -> dict:
         return dict(result, outcome=_NOT_APPLICABLE, detail=c["not_applicable"], evidence=[], justification=c["not_applicable"])
     evaluator = _EVALUATORS.get(c["type"])
     if evaluator is None:
-        capability, milestone = _NEEDS[c["type"]]
-        detail = "not evaluable by kernel %s (needs %s, milestone %d)" % (KERNEL_VERSION, capability, milestone)
+        detail = "not evaluable by kernel %s (needs %s)" % (KERNEL_VERSION, _NEEDS[c["type"]])
         return dict(result, outcome=_NO_EVIDENCE, detail=detail, evidence=[])
     judged = evaluator(c, st, ctx)
     if c.get("min_independence") == "I3":

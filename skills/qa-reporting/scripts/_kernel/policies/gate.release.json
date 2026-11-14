@@ -60,7 +60,9 @@
       "blocking": true,
       "min_strength": null,
       "min_independence": null,
-      "params": {},
+      "params": {
+        "classes": ["secrets", "dependencies", "sast"]
+      },
       "opt_in": false
     },
     {
@@ -80,7 +82,9 @@
       "blocking": true,
       "min_strength": null,
       "min_independence": null,
-      "params": {},
+      "params": {
+        "min_environment_class": "staging"
+      },
       "opt_in": false
     },
     {
@@ -89,7 +93,9 @@
       "blocking": true,
       "min_strength": null,
       "min_independence": null,
-      "params": {},
+      "params": {
+        "activity": "db-ephemeral"
+      },
       "opt_in": false
     },
     {
