@@ -67,12 +67,13 @@ def ci_config():
     return cfg
 
 
-def build_tree(root):
+def build_tree(root, cfg=None):
     """``root`` as a CI checkout finds it: one commit holding the project, the launcher and the two shareable .qa/ files."""
     if shutil.which("git") is None:
         pytest.skip("tool missing: git")
     files = {"tests/run_junit.py": RUN_JUNIT.encode("utf-8"), LAUNCHER: LAUNCHER_TEXT.encode("utf-8"),
-             ".qa/.gitignore": workspace.GITIGNORE.encode("utf-8"), ".qa/config.json": workspace.config_bytes(ci_config())}
+             ".qa/.gitignore": workspace.GITIGNORE.encode("utf-8"),
+             ".qa/config.json": workspace.config_bytes(ci_config() if cfg is None else cfg)}
     for rel, data in files.items():
         path = Path(root) / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -337,6 +338,13 @@ def test_ci_pinned_workspace_denies_activities_outside_the_runner_set(pinned):
     assert (rec["status"], rec["reason"]) == ("blocked", "policy_denied")
 
 
+def test_ci_pinned_workspace_runs_db_ephemeral_only_on_a_database_the_suite_created(pinned):
+    """§12.2: db-ephemeral is runner-confined only for a database the suite creates; nothing in 4b records one."""
+    rec = run_in(pinned, env=CI_ENV, actor=RUNNER, activity="db-ephemeral")
+    assert (rec["status"], rec["reason"]) == ("blocked", "policy_denied")
+    assert any("db-ephemeral" in note and "the suite created" in note for note in rec["limitations"])
+
+
 # --------------------------------------------------------------------------- qa ci generate
 
 def test_generated_workflow_matches_the_expected_file(ws_with_run):
@@ -538,6 +546,96 @@ def test_ci_generate_carries_the_recorded_timeout(ws_with_run):
     exe = record_host_run(ws_with_run, timeout_s=42.5, allow_empty=True)
     text = workflow_of(ws_with_run, generate(ws_with_run, [exe]))
     assert ("--report 'junit:{evidence}/junit.xml' --timeout 43 --allow-empty -- python3 tests/run_junit.py") in text
+
+
+# A token shape the shipped redaction patterns catch (github_token), built at runtime so no file holds one.
+TOKEN_SHAPED = "gh" + "p_" + "a1B2c3D4e5" * 3 + "f6G7h8"
+MARKER = re.compile(r"\[REDACTED:github_token:[0-9a-f]{8}\]")
+
+
+def test_ci_generate_skips_records_that_never_ran(ws_with_run, actor):
+    """A blocked record lists only the checks that were allowed, so it is no command to re-run; nor is a not_run one."""
+    denied = run_in(ws_with_run, argv=("git", "push"))  # a command the guard denies
+    unauthorized = run_in(ws_with_run, argv=ARGV + ("https://downloads.example.org/x",))  # a host no environment declares
+    assert (denied["status"], denied["reason"]) == ("blocked", "policy_denied")
+    assert (unauthorized["status"], unauthorized["reason"]) == ("blocked", "not_authorized")
+    assert state.load(ws_with_run)["executions"][unauthorized["execution"]]["activity"] == "test-execution-local"
+    not_run = synthetic_run(ws_with_run, actor, 2, git=clean_git(ws_with_run.root), status="not_run", reason="all_skipped")
+    never = [denied["execution"], unauthorized["execution"], not_run]
+    out = generate(ws_with_run, [FIXED_EXE] + never)
+    assert out["executions"] == [FIXED_EXE]
+    assert out["skipped"] == [{"execution": exe, "reason": "not_executed"} for exe in never]
+    with pytest.raises(QaError) as e:
+        generate(ws_with_run, never, name="other")
+    assert e.value.code == "ci_no_executions"
+    assert e.value.details["skipped"] == [{"execution": exe, "reason": "not_executed"} for exe in never]
+
+
+def test_ci_generate_skips_a_host_run_whose_argument_was_redacted(ws_with_run):
+    """The stored argv holds the marker, not the value that ran; re-run as stored, it would pair with a different command.
+
+    The guard denies an argument a redaction pattern matches, so a host run that ran holds a marker for a value the
+    redactor knows by other means: here, the value of a secret-named environment variable."""
+    value = "fixture-value-2026"
+    exe = record_host_run(ws_with_run, argv=ARGV + ("--label", value), environ=dict(ENVIRON, FIXTURE_TOKEN=value))
+    record = state.load(ws_with_run)["executions"][exe]
+    assert record["status"] == "passed" and value not in json.dumps(record)
+    assert re.fullmatch(r"\[REDACTED:env_value:[0-9a-f]{8}\]", record["command"]["argv"][-1])
+    out = generate(ws_with_run, [FIXED_EXE, exe])
+    assert (out["executions"], out["skipped"]) == ([FIXED_EXE], [{"execution": exe, "reason": "redacted"}])
+
+
+@pytest.mark.parametrize("field", ["argv", "report", "cwd"])
+def test_ci_generate_skips_a_record_holding_redacted_text(ci_ws, actor, field):
+    over = {"argv": dict(command={"argv": ["python3", "run.py", "--label=" + TOKEN_SHAPED], "shell": False, "cwd": "."}),
+            "report": dict(reports=[{"format": "junit", "pattern": "out/%s.xml" % TOKEN_SHAPED, "files": [], "error": None}]),
+            "cwd": dict(command={"argv": ["python3", "run.py"], "shell": False, "cwd": "build/" + TOKEN_SHAPED})}[field]
+    clean = clean_git(ci_ws.root)
+    good = synthetic_run(ci_ws, actor, 1, git=clean)
+    redacted = synthetic_run(ci_ws, actor, 2, git=clean, **over)
+    stored = json.dumps(state.load(ci_ws)["executions"][redacted])
+    assert TOKEN_SHAPED not in stored and MARKER.search(stored)
+    out = generate(ci_ws, [good, redacted])
+    assert (out["executions"], out["skipped"]) == ([good], [{"execution": redacted, "reason": "redacted"}])
+
+
+def test_generated_workflow_sizes_the_job_limit_from_its_steps(ws_with_run):
+    text = workflow_of(ws_with_run, generate(ws_with_run, [FIXED_EXE]))
+    assert "\n    timeout-minutes: 20\n" in text  # ceil((900 s, the configuration's default, + 300 s) / 60)
+    first = record_host_run(ws_with_run, timeout_s=60)
+    second = record_host_run(ws_with_run, timeout_s=120)
+    text = workflow_of(ws_with_run, generate(ws_with_run, [first, second], name="two"))
+    assert "\n    timeout-minutes: 8\n" in text  # ceil((60 + 120 + 300) / 60)
+    at_limit = record_host_run(ws_with_run, timeout_s=21300)
+    text = workflow_of(ws_with_run, generate(ws_with_run, [at_limit], name="three"))
+    assert "\n    timeout-minutes: 360\n" in text  # (21300 + 300) / 60, the GitHub-hosted job limit itself
+
+
+def test_ci_generate_refuses_a_job_past_the_hosted_limit(ws_with_run):
+    exe = record_host_run(ws_with_run, timeout_s=21600)
+    with pytest.raises(QaError) as e:
+        generate(ws_with_run, [FIXED_EXE, exe])
+    assert e.value.code == "ci_time_budget_exceeded"
+    assert (e.value.details["timeout_minutes"], e.value.details["limit_minutes"]) == (380, 360)  # ceil((900+21600+300)/60)
+    assert not list(ws_with_run.root.glob(".qa/work/patches/qa-ci-*")) and not events_of(ws_with_run, "ci.generated")
+
+
+def test_ci_generate_skips_db_ephemeral_runs_as_not_confined(tmp_path, actor):
+    """The ci environment's standing authorization may list db-ephemeral, but a ci environment holds no suite-created database."""
+    cfg = ci_config()
+    cfg["standing_authorizations"][-1]["activities"].append("db-ephemeral")
+    root = build_tree(tmp_path / "project", cfg)
+    ws = workspace.init_workspace(root)[0]
+    config.record_initialized(ws, actor)
+    clean = clean_git(root)
+    good = synthetic_run(ws, actor, 1, git=clean)
+    db = synthetic_run(ws, actor, 2, git=clean, activity="db-ephemeral")
+    via = synthetic_run(ws, actor, 3, git=clean, authorizations=[
+        {"activity": "db-ephemeral", "environment": "local", "authorization": "standing:local"}])
+    out = generate(ws, [good, db, via])
+    assert out["executions"] == [good]
+    assert out["skipped"] == [{"execution": db, "reason": "activity_not_confined"},
+                              {"execution": via, "reason": "activity_not_confined"}]
 
 
 def test_generated_workflow_runs_on_a_fresh_checkout(ws_with_run, tmp_path):

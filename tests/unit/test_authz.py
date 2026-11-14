@@ -174,14 +174,52 @@ def test_ci_pinned_state_allows_a_ci_environment_only_for_runner_activities():
     cfg["standing_authorizations"].append({"environment": "ci", "activities": ["test-execution-local", "db-ephemeral"]})
     st = _ci_pinned_state()
     assert chk(st, cfg, "static-analysis", CI).authorization == "default:static-analysis"
-    for activity in ("test-execution-local", "db-ephemeral"):
-        assert chk(st, cfg, activity, CI).authorization == "standing:ci"
+    assert chk(st, cfg, "test-execution-local", CI).authorization == "standing:ci"
     assert chk(st, cfg, "install-dependencies", CI).reason == "not_authorized"   # confined, but no standing authorization
-    for activity in ("db-write", "load-test", "dast-passive", "write-tests", "device-control", "git-history-scan"):
+    for activity in ("db-write", "load-test", "dast-passive", "write-tests", "device-control", "git-history-scan",
+                     "db-ephemeral"):
         for env in (CI, LOCAL):
             d = chk(st, cfg, activity, env)
             assert (d.allowed, d.reason) == (False, "policy_denied") and "CI-pinned" in d.detail, (activity, env)
     assert chk(st, cfg, "test-execution-local", LOCAL).authorization == "trusted:local"
+
+
+SUITE_DB = {"id": "made", "class": "ephemeral", "ephemeral_basis": "suite-created", "base_urls": []}
+
+
+def test_ci_pinned_state_confines_db_ephemeral_to_a_database_the_suite_created():
+    """§12.2: db-ephemeral "for containers the suite creates". config.json cannot declare that basis on an ephemeral
+    environment, and declaring it on another class proves nothing, so in milestone 4b no CI job runs db-ephemeral."""
+    declared_ci = dict(CI, ephemeral_basis="suite-created")   # config validation checks the basis on ephemeral environments only
+    cfg = _trusting(_cfg(CI, EPH, SUITE_DB))
+    cfg["standing_authorizations"] += [{"environment": env["id"], "activities": ["db-ephemeral"]} for env in (CI, EPH, SUITE_DB)]
+    st = _ci_pinned_state()
+    for env in (CI, declared_ci, EPH, LOCAL):
+        d = chk(st, cfg, "db-ephemeral", env)
+        assert (d.allowed, d.reason) == (False, "policy_denied") and "the suite created" in d.detail, env
+        assert not authz.runner_confined("db-ephemeral", env)
+    assert chk(st, cfg, "db-ephemeral", SUITE_DB).authorization == "standing:made"
+    assert authz.runner_confined("db-ephemeral", SUITE_DB) and authz.runner_confined("test-execution-local", CI)
+    assert not authz.runner_confined("db-write", SUITE_DB)
+    assert chk(state.empty_state(), cfg, "db-ephemeral", EPH).authorization == "standing:eph"   # unchanged outside a pin
+
+
+def test_ci_pinned_state_allows_network_download_only_to_hosts_a_ci_environment_declares():
+    """§12.2: network-download "for listed hosts". The behaviour that gives it, pinned: execution groups each host under the
+    environment that declares it, and a host nobody declares falls in a group no standing authorization names."""
+    from qa import execution
+
+    ci_mirror = dict(CI, base_urls=["https://mirror.example.com"])
+    cfg = _trusting(_cfg(ci_mirror))
+    cfg["standing_authorizations"].append({"environment": "ci", "activities": ["test-execution-local", "network-download"]})
+    groups = execution._authorization_groups(cfg, ci_mirror, ("mirror.example.com", "downloads.example.org"))
+    assert [(env["id"], hosts) for env, hosts in groups] == [("ci", ["mirror.example.com"]),
+                                                             ("<undeclared>", ["downloads.example.org"])]
+    st = _ci_pinned_state()
+    (declared, declared_hosts), (undeclared, undeclared_hosts) = groups
+    assert chk(st, cfg, "network-download", declared, tuple(declared_hosts)).authorization == "standing:ci"
+    d = chk(st, cfg, "network-download", undeclared, tuple(undeclared_hosts))
+    assert (d.allowed, d.reason) == (False, "not_authorized")
 
 
 def test_ci_pinned_state_keeps_the_trust_rule():

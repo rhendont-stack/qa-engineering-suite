@@ -26,15 +26,15 @@ import string
 from pathlib import Path
 from typing import Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
-from . import config, gitinfo, integrity, ledger, redact, resource_dir, schema, state, vocab, workspace
+from . import authz, config, gitinfo, integrity, ledger, redact, resource_dir, schema, state, workspace
 from .canonical import loads, sha256_bytes
 from .errors import QaError
 from .workspace import Workspace
 
 # QaError codes raised here: invalid_config_hash, ci_workspace_not_fresh (begin); ci_platform_unsupported, invalid_name,
-# ci_environment_invalid, config_drift, ci_no_executions, ci_mixed_commits, ci_argv_unrepresentable, ci_root_not_top,
-# ci_launcher_untracked, ci_config_untracked, ci_workflow_exists, ci_patch_exists, invalid_workspace (generate); plus
-# whatever config.load_config and ledger.append raise.
+# ci_environment_invalid, config_drift, ci_no_executions, ci_mixed_commits, ci_argv_unrepresentable,
+# ci_time_budget_exceeded, ci_root_not_top, ci_launcher_untracked, ci_config_untracked, ci_workflow_exists, ci_patch_exists,
+# invalid_workspace (generate); plus whatever config.load_config and ledger.append raise.
 
 RUNNER_FIELDS = ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_WORKFLOW_REF")
 PLATFORMS = ("github-actions",)
@@ -55,6 +55,9 @@ _STATIC = "static-analysis"
 _RUN_DEFAULTS = ("test-execution-local", "functional")  # qa run's own --activity and --category defaults
 _TRACKED_MODES = ("100644", "100755")
 _BUNDLE = '"$RUNNER_TEMP/qa-evidence-bundle.tar.gz"'
+_NEVER_EXECUTED = ("blocked", "not_run")
+JOB_MARGIN_S = 300  # checkout, `qa ci begin`, the bundle and its upload, beyond the steps' own timeouts
+JOB_LIMIT_MINUTES = 360  # the longest job a GitHub-hosted runner runs
 
 
 class CiStep(NamedTuple):
@@ -130,33 +133,50 @@ def load_actions() -> Dict[str, dict]:
     return actions
 
 
-def _covered(cfg: dict, environment: str) -> set:
-    """The activities the ci environment's standing authorizations list; refused unless it is such an environment."""
+def _covered(cfg: dict, environment: str) -> Tuple[dict, set]:
+    """The ci environment and the activities its standing authorizations list; refused unless it is such an environment."""
     env = next((e for e in cfg["environments"] if e["id"] == environment), None)
     covered = {a for s in cfg["standing_authorizations"] if s["environment"] == environment for a in s["activities"]}
     if env is None or env["class"] != "ci" or not covered:
         raise QaError("ci_environment_invalid", "the environment must be a declared ci environment with a standing "
                                                 "authorization in config.json", environment=environment)
-    return covered
+    return env, covered
 
 
-def _skip_reason(st: dict, covered: set, exe: str) -> Optional[str]:
+def _carried_text(record: dict) -> List[str]:
+    """What the job's step would carry from the record as stored: the argv words, the report patterns and the cwd."""
+    command = record["command"]
+    return list(command["argv"]) + [report["pattern"] for report in record["reports"]] + [command["cwd"]]
+
+
+def _skip_reason(st: dict, ci_env: dict, covered: set, exe: str) -> Optional[str]:
     record = st["executions"].get(exe)
     if record is None:
         return "unknown_execution"
+    if record["status"] in _NEVER_EXECUTED:  # a blocked record lists only the checks that passed; it is no re-run
+        return "not_executed"
     if record["isolation"] == "container":  # D22's route needs an image pull on the runner: milestone 5
         return "container_run"
     git = record["git"]
     if git is None or git["dirty"] or not _COMMIT.fullmatch(git["commit"]):
         return "dirty_tree"
     needed = [record["activity"]] + [entry["activity"] for entry in record["authorizations"]]
-    if any(activity not in vocab.RUNNER_CONFINED for activity in needed):
+    if not all(authz.runner_confined(activity, ci_env) for activity in needed):  # as the pinned job's authz.check decides
         return "activity_not_confined"
     if any(activity not in covered for activity in needed if activity != _STATIC):
         return "not_covered"
     if record["env_values"]:  # CI or NODE_ENV the run had; the job sets none
         return "environment_variables"
+    if any(redact.has_marker(text) for text in _carried_text(record)):  # the job would run the marker, not the value
+        return "redacted"
     return None
+
+
+def job_timeout_minutes(steps: Sequence["CiStep"], default_timeout_s: int) -> int:
+    """The job's ``timeout-minutes``: every step running to its timeout (``timeout_s``, else the configuration's default),
+    plus ``JOB_MARGIN_S``, so the job outlasts its steps and still bundles and uploads their evidence."""
+    total = sum(default_timeout_s if step.timeout_s is None else step.timeout_s for step in steps) + JOB_MARGIN_S
+    return int(math.ceil(total / 60.0))
 
 
 def _recorded_request(ws: Workspace, exe: str, record: dict, default_timeout: int) -> Tuple[Optional[int], bool]:
@@ -306,13 +326,14 @@ def generate(ws: Workspace, actor: ledger.Actor, *, platform: str, environment: 
         if config.current_hash(ws) != accepted:
             raise QaError("config_drift", config.DRIFT_REFUSAL)
         cfg = config.load_config(ws)  # read after the check, so the environment is the accepted file's
-        covered = _covered(cfg, environment)
+        ci_env, covered = _covered(cfg, environment)
+        default_timeout = cfg["defaults"]["timeout_seconds"]
         steps: List[CiStep] = []
         skipped: List[Dict[str, str]] = []
         for exe in dict.fromkeys(str(e) for e in executions):
-            reason = _skip_reason(st, covered, exe)
+            reason = _skip_reason(st, ci_env, covered, exe)
             if reason is None:
-                steps.append(_step(ws, exe, st["executions"][exe], cfg["defaults"]["timeout_seconds"]))
+                steps.append(_step(ws, exe, st["executions"][exe], default_timeout))
             else:
                 skipped.append({"execution": exe, "reason": reason})
         if not steps:
@@ -329,6 +350,11 @@ def generate(ws: Workspace, actor: ledger.Actor, *, platform: str, environment: 
         launcher_path = _launcher_path(ws, launcher)
         if launcher_path is not None:
             _refuse_unrepresentable([launcher_path], field="launcher")
+        timeout_minutes = job_timeout_minutes(steps, default_timeout)
+        if timeout_minutes > JOB_LIMIT_MINUTES:  # cancelled at the limit, the job would bundle and upload nothing
+            raise QaError("ci_time_budget_exceeded", "the steps' timeouts add up to a longer job than a GitHub-hosted runner "
+                                                     "runs; generate fewer executions per workflow",
+                          timeout_minutes=timeout_minutes, limit_minutes=JOB_LIMIT_MINUTES)
         session = _git(ws)
         if launcher_path is None or _blob(session, commits[0], launcher_path) is None:
             raise QaError("ci_launcher_untracked", "the job runs the launcher the project tracks; this one is not a file "
@@ -340,7 +366,7 @@ def generate(ws: Workspace, actor: ledger.Actor, *, platform: str, environment: 
         if os.path.lexists(str(ws.root / workflow_path)):
             raise QaError("ci_workflow_exists", "the project already has this workflow", workflow=workflow_path)
         text = render_github_actions(name=name, target_commit=commits[0], config_hash=accepted, environment=environment,
-                                     launcher=launcher_path, steps=steps, actions=actions)
+                                     launcher=launcher_path, steps=steps, actions=actions, timeout_minutes=timeout_minutes)
         digest = sha256_bytes(text.encode("utf-8"))
         patch = "qa-ci-%s.patch" % digest[len("sha256:"):][:12]
         _write_patch(ws, patch, _patch(workflow_path, text))
@@ -395,12 +421,13 @@ def _yaml_text(text: str) -> str:
 
 
 def render_github_actions(*, name: str, target_commit: str, config_hash: str, environment: str, launcher: str,
-                          steps: Sequence[CiStep], actions: Mapping[str, dict]) -> str:
-    """The workflow text: checkout at ``target_commit``, ``qa ci begin``, one step per run, the bundle and its upload."""
+                          steps: Sequence[CiStep], actions: Mapping[str, dict], timeout_minutes: int) -> str:
+    """The workflow text: checkout at ``target_commit``, ``qa ci begin``, one step per run, the bundle and its upload.
+    ``timeout_minutes`` is the job's limit, ``job_timeout_minutes`` of the steps."""
     template = string.Template((resource_dir("templates") / _TEMPLATE).read_text(encoding="utf-8"))
     qa = "python3 " + _program(launcher)
     return template.substitute(
-        name=name, target_commit=target_commit, checkout=_uses(actions["checkout"]),
+        name=name, target_commit=target_commit, timeout_minutes=int(timeout_minutes), checkout=_uses(actions["checkout"]),
         upload_artifact=_uses(actions["upload-artifact"]),
         begin="%s ci begin --config-hash %s" % (qa, shlex.quote(config_hash)),
         steps="".join(_render_step(step, environment, launcher) for step in steps),

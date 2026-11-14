@@ -5,8 +5,9 @@
 1. a never-activity (``credential-use``, ``deploy``) is ``policy_denied``;
 2. ``db-write`` and ``dast-active`` on a ``production`` environment are ``policy_denied``;
 3. a ``ci`` environment outside a CI-pinned workspace (``config.ci_pinned``: ``qa ci begin`` ran there) is
-   ``policy_denied``, and in a CI-pinned workspace so is any activity outside ``vocab.RUNNER_CONFINED``, whatever the
-   environment; nothing reads ``CI=true``;
+   ``policy_denied``, and in a CI-pinned workspace so is any activity ``runner_confined`` refuses, whatever the
+   environment (one outside ``vocab.RUNNER_CONFINED``, or ``db-ephemeral`` on a database the suite did not create);
+   nothing reads ``CI=true``;
 4. ``static-analysis`` is allowed by default;
 5. any other activity runs something on this machine unless the check is ``containerized``, which
    only ``execution`` sets, and only for a run it then hands to the container pipeline (§12.2). So
@@ -80,6 +81,23 @@ UNTRUSTED_IN_WORKTREE = "untrusted project: a run inside a suite worktree needs 
 CI_OUTSIDE_PIN = ("a ci environment is used only in the CI job `qa ci generate` writes, after `qa ci begin` pinned its workspace "
                   "to the accepted configuration; setting CI=true grants nothing")
 _CI_NOT_CONFINED = "%s is not confined to the CI runner, and this workspace is CI-pinned (`qa ci begin`)"
+_CI_DB_NOT_SUITE_CREATED = ("%s is confined to the CI runner only on an ephemeral environment the suite created, and this "
+                            "workspace is CI-pinned (`qa ci begin`)")
+_DB_EPHEMERAL = "db-ephemeral"
+
+
+def runner_confined(activity: str, environment: dict) -> bool:
+    """Whether a CI-pinned workspace may check ``activity`` against ``environment`` (§12.2 "Unattended CI"): an activity of
+    ``vocab.RUNNER_CONFINED``, with ``db-ephemeral`` only "for containers the suite creates", that is on an ``ephemeral``
+    environment whose basis is ``suite-created``. config.json cannot declare that basis there (``config.semantic_errors``),
+    a basis declared on another class proves nothing, and nothing in this milestone records one, so no CI job runs
+    db-ephemeral until the container route (D22) does. ``ci.generate`` skips runs by the same test.
+    """
+    if activity not in vocab.RUNNER_CONFINED:
+        return False
+    if activity == _DB_EPHEMERAL:
+        return environment.get("class") == "ephemeral" and environment.get("ephemeral_basis") == "suite-created"
+    return True
 
 
 def untrusted_host(activity: str) -> str:
@@ -202,8 +220,8 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
     pinned = config.ci_pinned(st)
     if env_class == "ci" and not pinned:
         return _deny("policy_denied", CI_OUTSIDE_PIN)
-    if pinned and activity not in vocab.RUNNER_CONFINED:
-        return _deny("policy_denied", _CI_NOT_CONFINED % activity)
+    if pinned and not runner_confined(activity, environment):
+        return _deny("policy_denied", (_CI_DB_NOT_SUITE_CREATED if activity == _DB_EPHEMERAL else _CI_NOT_CONFINED) % activity)
     if activity == "static-analysis":
         return _allow("default:static-analysis", "static analysis is allowed by default")
     trusted = cfg["project"]["trust"] == "trusted"

@@ -28,6 +28,14 @@ def test_marker_is_keyed_and_deterministic():
     assert redact.marker("k", "s", b"1" * 32) != redact.marker("k", "s", b"2" * 32)
 
 
+def test_has_marker_finds_what_the_redactor_wrote(redactor):
+    out, n = redactor.text(f"--label={GH}")
+    assert n == 1 and redact.has_marker(out) and redact.has_marker(redact.marker("env_value", "s", b"1" * 32))
+    assert redact.has_marker("a/%s/b" % redact.marker("private_term", "s", b"1" * 32))
+    for text in ("", "plain", "[REDACTED]", "[REDACTED:github_token:0123abc]", "[REDACTED:Github:0123abcd]"):
+        assert not redact.has_marker(text), text
+
+
 def test_env_value_redacted_by_name(ws):
     val = "s3cr3t" + "-value-x"   # entropy above the threshold, so built at runtime
     r = redact.load_redactor(ws, {"MY_API_TOKEN": val, "HOME": "/Users/x"})
