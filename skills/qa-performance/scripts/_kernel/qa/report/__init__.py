@@ -2,8 +2,9 @@
 
 ``render_markdown`` and ``render_json`` are pure functions of the state, so the same state gives the same bytes: neither
 file holds the report ID or the time. Every value that comes from the ledger passes through ``md_cell``, except the
-closed values of the verdict line, which ``check_markdown`` must be able to read (T17-R2). ``html.render_html`` writes
-the same sections as one self-contained page; it reads the helpers below, so ``render`` imports it when it is asked for.
+closed values of the verdict line, which ``check_markdown`` must be able to read (T17-R2). What each section says comes
+from ``_rows``; this module formats those blocks as Markdown, and ``html.render_html`` formats the same blocks as one
+self-contained page.
 """
 from __future__ import annotations
 
@@ -14,11 +15,14 @@ from pathlib import Path
 from string import Template
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-from .. import config, doctor, ledger, resource_dir, state, trace
+from .. import config, doctor, ledger, resource_dir, state
 from ..canonical import dumps, sha256_bytes
 from ..errors import QaError
 from ..workspace import Workspace, _not_redirected, write_atomic
+from . import _rows
+from ._rows import EXECUTIVE_ROW_LIMIT, INTEGRITY_ROWS_SHOWN  # both stay importable from qa.report
 from .check import ALIAS, PROJECT_ALIAS, check_markdown
+from .html import render_html
 from .sarif import render_sarif
 
 __all__ = ["check", "check_markdown", "md_cell", "render", "render_executive", "render_json", "render_markdown", "render_sarif"]
@@ -29,28 +33,15 @@ _FORMATS = ("md", "json", "sarif", "executive", "html")
 _DEFAULT_FORMATS = ("md", "json")  # SARIF, the executive one-pager and the HTML page are written only when asked for
 _FILE_NAMES = {"md": "report.md", "json": "report.json", "sarif": "report.sarif", "executive": "executive.md",
                "html": "report.html"}
-_UNRESOLVED = ("open", "reopened", "fix_submitted")  # the lifecycle states the gate counts as unresolved
-_SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL")
-EXECUTIVE_ROW_LIMIT = 10  # the "one page" holds this many recommendations; the rest are counted in one generated line
-_HEADLINE_START = "**Integrity failure:**"
-_STALE_START = "**Recorded verdict, not current:**"
+_HEADLINE_START = "**%s**" % _rows.HEADLINE_LABEL
+_STALE_START = "**%s**" % _rows.STALE_LABEL
+_VERDICT_START = "**%s**" % _rows.VERDICT_LABEL
 _HEADLINE_SHAPE = re.compile(
     re.escape(_HEADLINE_START) + r" ledger verification found ([0-9]+) problems?"
     r"(?:; the state fold recorded [0-9]+ violations?)?(?:; the latest gate evaluation found test integrity NOT_MET)?; see Integrity\.")
-INTEGRITY_ROWS_SHOWN = 20  # a hostile ledger can make verification report any number of problems
-_UNNAMED = "unnamed project"
 _LINE_BREAKS = "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"  # every boundary str.splitlines honors
 _ESCAPES = (("\\", "\\\\"), ("|", "\\|"), ("`", "\\`"), ("*", "\\*"), ("_", "\\_"), ("[", "\\["), ("]", "\\]"),
             ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
-_LIMITS = (  # §12.10, restated in every report
-    "It cannot stop an agent that ignores the skills and runs commands directly. "
-    "It can only refuse to count unrecorded results and flag the gap.",
-    "It cannot verify that a human really approved a grant or a configuration change. "
-    "It records the agent's quote of the approval. The host's own permission prompts remain the authoritative control.",
-    "It cannot make pattern-matching a sandbox.",
-    "It cannot make a single-agent session truly independent.",
-    "It cannot tell that a .qa/ copied in outside git carries approvals nobody here gave.",
-)
 
 
 def md_cell(value: object) -> str:
@@ -59,38 +50,6 @@ def md_cell(value: object) -> str:
     for raw, escaped in _ESCAPES:  # the backslash is first, so no later escape is escaped twice
         text = text.replace(raw, escaped)
     return "".join(" " if ch in _LINE_BREAKS else ch for ch in text)
-
-
-def _number(name: str) -> Tuple[int, str]:
-    return (len(name), name)
-
-
-def _in_id_order(names: Iterable[str]) -> List[str]:
-    return sorted(names, key=_number)
-
-
-def _latest_gate(st: dict) -> Optional[dict]:
-    """The highest GATE number (T17-R3)."""
-    ids = _in_id_order(st["gates"])
-    return st["gates"][ids[-1]] if ids else None
-
-
-def _test_integrity(gate: Optional[dict]) -> Optional[dict]:
-    if gate is None:
-        return None
-    return next((c for c in gate["criteria"] if c["type"] == "test_integrity"), None)
-
-
-def _short_commit(execution: dict) -> Optional[str]:
-    git = execution["git"]
-    return git["commit"][:7] if git else None
-
-
-def _counts(execution: dict) -> list:
-    report = execution["report"]
-    if report is None or report["kind"] != "tests":
-        return [None] * 4
-    return [report["tests"], report["failures"], report["errors"], report["skipped"]]
 
 
 def _row(*cells: object) -> str:
@@ -102,201 +61,119 @@ def _table(header: Iterable[str], rows: List[str]) -> List[str]:
     return [_row(*header), "| " + " | ".join("---" for _ in header) + " |"] + rows
 
 
-def _gate_section(gate: Optional[dict]) -> List[str]:
-    if gate is None:
-        return ["No gate evaluation recorded."]
-    rows = [_row(c["id"], c["outcome"], "blocking" if c["blocking"] else "advisory", c["detail"]) for c in gate["criteria"]]
-    lines = _table(("Criterion", "Outcome", "Kind", "Detail"), rows)
-    if gate["conditions"]:
-        lines += [""] + ["- " + md_cell(condition) for condition in gate["conditions"]]
-    return lines
+def _code(text: str) -> str:
+    return "`%s`" % text
 
 
-def _execution_section(st: dict) -> List[str]:
-    if not st["executions"]:
-        return ["No executions recorded."]
-    rows = []
-    for eid in _in_id_order(st["executions"]):
-        e = st["executions"][eid]
-        rows.append(_row(eid, e["status"], e["reason"], e["strength"], e["scope"], *_counts(e), _short_commit(e)))
-    return _table(("ID", "Status", "Reason", "Strength", "Scope", "Total", "Failures", "Errors", "Skipped", "Commit"), rows)
+def _labelled(block: _rows.Labelled) -> str:
+    return "**%s** %s" % (block.label, block.text)
 
 
-def _finding_section(st: dict) -> List[str]:
-    if not st["findings"]:
-        return ["No findings recorded."]
-    rows = []
-    for fid in _in_id_order(st["findings"]):
-        f = st["findings"][fid]
-        rows.append(_row(fid, f["title"], f["severity"], f["priority"], f["state"], f["verification_status"]))
-    return _table(("ID", "Title", "Severity", "Priority", "State", "Verification"), rows)
+def _block_lines(block: _rows.Block) -> List[str]:
+    """One block as Markdown lines. A sentence and a labelled line are the kernel's own words with closed values, kept as
+    they are; every value in a table, a line, a list or a heading passes through ``md_cell``."""
+    if isinstance(block, str):
+        return [block]
+    if isinstance(block, _rows.Labelled):
+        return [_labelled(block)]
+    if isinstance(block, _rows.Table):
+        return _table(block.header, [_row(*cells) for cells in block.rows])
+    if isinstance(block, _rows.Line):
+        return [_row(*block.cells)]
+    if isinstance(block, _rows.Bullets):
+        return ["- " + md_cell(item) for item in block.items]
+    if isinstance(block, _rows.Heading):
+        return ["#" * block.level + " " + md_cell(block.text)]
+    raise TypeError("not a report block: %r" % (block,))
 
 
-def _traceability_target(st: dict, gate: Optional[dict]) -> Tuple[Optional[str], str]:
-    """The commit the matrix is about and where it came from: the latest gate's target, else the newest execution's."""
-    if gate is not None:
-        commit = (gate.get("target") or {}).get("commit")
-        if isinstance(commit, str) and trace._FULL_COMMIT.match(commit):
-            return commit, "the target of %s" % gate["id"]
-    runs = sorted(st["executions"].values(), key=lambda e: (e["started_at"], e["id"]), reverse=True)
-    commit = next((c for c in ((run["git"] or {}).get("commit") for run in runs) if isinstance(c, str) and trace._FULL_COMMIT.match(c)), None)
-    return commit, "newest execution; %s" % ("no gate recorded" if gate is None else "%s recorded no commit" % gate["id"])
-
-
-def _traceability_section(st: dict, gate: Optional[dict]) -> List[str]:
-    if not (st["requirements"] or st["testcases"]):
-        return ["No requirements or test cases recorded."]
-    target, source = _traceability_target(st, gate)
-    if target is None:
-        return ["No execution on a recorded commit; the matrix needs one."]
-    matrix = trace.matrix(st, target)
-    lines = ["Target commit: %s (%s)" % (target[:12], source), ""]
-    lines += _table(("Gap kind", "Count"), [_row(kind, matrix["counts"][kind]) for kind in trace.GAP_KINDS])
-    if matrix["gaps"]:
-        lines += [""] + _table(("Record", "Gap"), [_row(g["id"], g["kind"]) for g in matrix["gaps"]])
-    return lines
-
-
-def _problem_rows(problems: Sequence[dict]) -> List[str]:
-    rows = [_row(p["kind"], p["where"], p["detail"]) for p in problems[:INTEGRITY_ROWS_SHOWN]]
-    lines = ["Ledger verification found %d problem%s." % (len(problems), "" if len(problems) == 1 else "s"), ""]
-    lines += _table(("Kind", "Where", "Detail"), rows)
-    if len(problems) > INTEGRITY_ROWS_SHOWN:
-        lines += ["", "%d more problems are not listed; run `qa ledger verify`." % (len(problems) - INTEGRITY_ROWS_SHOWN)]
-    return lines + [""]
-
-
-def _integrity_section(st: dict, gate: Optional[dict], problems: Sequence[dict] = ()) -> List[str]:
-    lines: List[str] = _problem_rows(problems) if problems else []
-    if st["violations"]:
-        lines += _table(("Event", "Kind"), [_row(v["event"], v["kind"]) for v in sorted(st["violations"], key=lambda v: v["event"])])
-    else:
-        lines.append("The state fold found no violations.")
-    criterion = _test_integrity(gate)
-    if criterion is not None:
-        lines += ["", _row(criterion["id"], criterion["outcome"], criterion["detail"])]
-    return lines
-
-
-def _limitation_section(st: dict) -> List[str]:
-    lines = ["- " + text for text in _LIMITS]
-    rows = [_row(eid, text) for eid in _in_id_order(st["executions"])
-            for text in st["executions"][eid]["limitations"]]
-    return lines + ([""] + _table(("Execution", "Limitation"), rows) if rows else [])
+def _section(blocks: Sequence[_rows.Block]) -> str:
+    """The blocks as Markdown, with a blank line between each two."""
+    lines: List[str] = []
+    for number, block in enumerate(blocks):
+        if number:
+            lines.append("")
+        lines += _block_lines(block)
+    return "\n".join(lines)
 
 
 def _headline(st: dict, gate: Optional[dict], problems: Sequence[dict] = ()) -> str:
-    causes = []
-    if problems:
-        causes.append("ledger verification found %d problem%s" % (len(problems), "" if len(problems) == 1 else "s"))
-    if st["violations"]:
-        causes.append("the state fold recorded %d violation%s" % (len(st["violations"]), "" if len(st["violations"]) == 1 else "s"))
-    criterion = _test_integrity(gate)
-    if criterion is not None and criterion["outcome"] == "NOT_MET":
-        causes.append("the latest gate evaluation found test integrity NOT_MET")
-    return _HEADLINE_START + " %s; see Integrity.\n" % "; ".join(causes) if causes else ""
+    found = _rows.headline(st, gate, problems)
+    return _labelled(found) + "\n" if found is not None else ""
 
 
 def _verdict_line(gate: Optional[dict], problems: Sequence[dict] = ()) -> str:
-    if gate is None:
-        return "No gate evaluation recorded; no verdict."
-    criterion = _test_integrity(gate)
-    if problems and not (criterion is not None and criterion["outcome"] == "NOT_MET"):
-        # No integrity failure in the recorded gate, yet verification fails now: the gate was computed before the change.
-        # A gate that already found test integrity NOT_MET did see it, so its verdict stands.
-        return ("**Recorded verdict, not current:** %s (%s, profile %s, independence %s, state %s). It was computed before the "
-                "change that ledger verification found and cannot be relied on; repair the ledger and evaluate the gate again."
-                % (gate["verdict"], gate["id"], gate["profile"], gate["independence"], gate["state_hash"]))
-    return "**Verdict:** %s (%s, profile %s, independence %s, state %s)" % (
-        gate["verdict"], gate["id"], gate["profile"], gate["independence"], gate["state_hash"])
+    return _block_lines(_rows.verdict(gate, problems))[0]
 
 
 def render_markdown(st: dict, *, project: Optional[str] = None, problems: Sequence[dict] = ()) -> str:
     template = Template((resource_dir("templates") / "report.md.tmpl").read_text(encoding="utf-8"))
-    gate = _latest_gate(st)
+    gate = _rows.latest_gate(st)
     text = template.substitute(
-        project=md_cell(_UNNAMED if project is None else project), headline=_headline(st, gate, problems), verdict=_verdict_line(gate, problems),
-        gate="\n".join(_gate_section(gate)), executions="\n".join(_execution_section(st)),
-        findings="\n".join(_finding_section(st)), traceability="\n".join(_traceability_section(st, gate)),
-        integrity="\n".join(_integrity_section(st, gate, problems)),
-        limitations="\n".join(_limitation_section(st)))
+        project=md_cell(_rows.UNNAMED if project is None else project), headline=_headline(st, gate, problems),
+        verdict=_verdict_line(gate, problems), gate=_section(_rows.gate_section(gate)),
+        executions=_section(_rows.execution_section(st)), findings=_section(_rows.finding_section(st)),
+        traceability=_section(_rows.traceability_section(st, gate)),
+        integrity=_section(_rows.integrity_section(st, gate, problems, code=_code)),
+        limitations=_section(_rows.limitation_section(st)))
     return text.rstrip("\n") + "\n"
 
 
-def _executive_rows(st: dict) -> List[dict]:
-    """Unresolved findings that need work, most urgent first: priority, then severity, then ID."""
-    rows = [dict(f, id=fid) for fid, f in st["findings"].items() if f["state"] in _UNRESOLVED and f["priority"] != "none"]
-    return sorted(rows, key=lambda f: (f["priority"], _SEVERITY_ORDER.index(f["severity"]), _number(f["id"])))
-
-
 def _executive_summary(st: dict, gate: Optional[dict]) -> List[str]:
-    open_rows = [dict(f, id=fid) for fid, f in st["findings"].items() if f["state"] in _UNRESOLVED]
-    lines = ["- Unresolved findings: %d" % len(open_rows)]
-    by_severity = ["%s %d" % (s, sum(1 for f in open_rows if f["severity"] == s)) for s in _SEVERITY_ORDER
-                   if any(f["severity"] == s for f in open_rows)]
-    if by_severity:
-        lines.append("- By severity: " + ", ".join(by_severity))
-    lines.append("- Executions recorded: %d" % len(st["executions"]))
-    if gate is not None:
-        met = sum(1 for c in gate["criteria"] if c["outcome"] == "MET")
-        lines.append("- %s: %d of %d criteria MET" % (gate["id"], met, len(gate["criteria"])))
-    return lines
+    return ["- %s: %s" % (measure, value) for measure, value in _rows.executive_summary(st, gate).rows]
 
 
 def _executive_recommendations(st: dict) -> List[str]:
-    rows = _executive_rows(st)
-    if not rows:
-        return ["No unresolved findings."]
-    lines = ["%d. %s" % (n, md_cell("%s %s (%s, %s): %s" % (f["priority"], f["id"], f["severity"], f["category"],
-                                                           f["recommendation"] or f["title"])))
-             for n, f in enumerate(rows[:EXECUTIVE_ROW_LIMIT], 1)]
-    if len(rows) > EXECUTIVE_ROW_LIMIT:
-        lines += ["", "%d more unresolved findings are not listed here, lowest priority last; see the full report."
-                  % (len(rows) - EXECUTIVE_ROW_LIMIT)]
+    found, more = _rows.recommendations(st)
+    if isinstance(found, str):
+        return [found]
+    lines = ["%d. %s" % (n, md_cell("%s %s (%s, %s): %s" % (priority, fid, severity, category, text)))
+             for n, priority, fid, severity, category, text in found.rows]
+    if more:
+        lines += ["", _rows.more_findings(more, "the full report")]
     return lines
 
 
 def _executive_follow_up(gate: Optional[dict]) -> List[str]:
-    if gate is None:
-        return ["No gate evaluation recorded."]
-    rows = ["- %s %s: %s (%s)" % (gate["id"], md_cell(c["id"]), c["outcome"], "blocking" if c["blocking"] else "advisory")
-            for c in gate["criteria"] if c["outcome"] not in ("MET", "NOT_APPLICABLE")]
-    return rows or ["Every criterion is met or not applicable."]
+    found = _rows.follow_up(gate)
+    if isinstance(found, str):
+        return [found]
+    return ["- %s %s: %s (%s)" % (gid, md_cell(cid), outcome, kind) for gid, cid, outcome, kind in found.rows]
 
 
 def render_executive(st: dict, *, project: Optional[str] = None, problems: Sequence[dict] = ()) -> str:
     """The one-page summary: verdict, counts, recommendations by priority and what the gate still lacks. A pure function of ``st``."""
     template = Template((resource_dir("templates") / "executive.md.tmpl").read_text(encoding="utf-8"))
-    gate = _latest_gate(st)
+    gate = _rows.latest_gate(st)
     text = template.substitute(
-        project=md_cell(_UNNAMED if project is None else project), headline=_headline(st, gate, problems), verdict=_verdict_line(gate, problems),
+        project=md_cell(_rows.UNNAMED if project is None else project), headline=_headline(st, gate, problems), verdict=_verdict_line(gate, problems),
         summary="\n".join(_executive_summary(st, gate)), recommendations="\n".join(_executive_recommendations(st)),
         follow_up="\n".join(_executive_follow_up(gate)))
     return text.rstrip("\n") + "\n"
 
 
 def render_json(st: dict, *, project: Optional[str] = None, problems: Sequence[dict] = ()) -> dict:
-    gate = _latest_gate(st)
+    gate = _rows.latest_gate(st)
     executions = []
-    for eid in _in_id_order(st["executions"]):
+    for eid in _rows.in_id_order(st["executions"]):
         e = st["executions"][eid]
         executions.append({"id": eid, "status": e["status"], "reason": e["reason"], "strength": e["strength"], "scope": e["scope"],
-                           "report": e["report"], "commit": _short_commit(e), "limitations": list(e["limitations"])})
+                           "report": e["report"], "commit": _rows.short_commit(e), "limitations": list(e["limitations"])})
     findings = []
-    for fid in _in_id_order(st["findings"]):
+    for fid in _rows.in_id_order(st["findings"]):
         f = st["findings"][fid]
         findings.append({"id": fid, "title": f["title"], "severity": f["severity"], "priority": f["priority"],
                          "state": f["state"], "verification_status": f["verification_status"]})
     out = {
-        "project": _UNNAMED if project is None else project,
+        "project": _rows.UNNAMED if project is None else project,
         "state_hash": state.state_hash(st),
         "verdict": gate["verdict"] if gate else None,
         "gate": {k: gate[k] for k in ("id", "profile", "independence", "state_hash", "criteria")} if gate else None,
         "conditions": list(gate["conditions"]) if gate else [],
         "executions": executions,
         "findings": findings,
-        "integrity": {"violations": [dict(v) for v in st["violations"]], "test_integrity": _test_integrity(gate)},
-        "limitations": {"kernel": list(_LIMITS),
+        "integrity": {"violations": [dict(v) for v in st["violations"]], "test_integrity": _rows.integrity_criterion(gate)},
+        "limitations": {"kernel": list(_rows.LIMITS),
                         "executions": [{"id": e["id"], "text": text} for e in executions for text in e["limitations"]]},
     }
     if problems:  # only a ledger that fails verification adds these, so a clean state keeps its bytes
@@ -313,7 +190,6 @@ def render(ws: Workspace, actor: ledger.Actor, *, formats: Tuple[str, ...] = _DE
             or any(f not in _FORMATS for f in formats)):
         raise QaError("invalid_format", "formats is a non-empty subset of md, json, sarif, executive and html", formats=formats)
     wanted = [f for f in _FORMATS if f in formats]
-    from .html import render_html  # html.py imports this module's helpers, so it cannot be imported at the top
     with ws.lock():
         st = state.load(ws)
         problems = doctor.ledger_problems(ws)  # the recorded gate says nothing about a ledger altered after it
@@ -330,7 +206,7 @@ def render(ws: Workspace, actor: ledger.Actor, *, formats: Tuple[str, ...] = _DE
         os.chmod(str(folder), 0o700)
         for name, data in files.items():
             write_atomic(folder / name, data)
-        gate = _latest_gate(st)
+        gate = _rows.latest_gate(st)
         return ledger.append(ws, actor, "report.rendered", {
             "id": rid, "state_hash": state.state_hash(st), "gate": gate["id"] if gate else None,
             "files": {name: sha256_bytes(data) for name, data in files.items()}})
@@ -345,11 +221,11 @@ def _ledger_flaw(st: dict, lines: List[str], count: int) -> bool:
     """True when a report checked while verification fails does not carry what the renderer writes for that case."""
     if len(lines) < 4 or not _generated_headline(lines[2], count):  # the title, a blank line, then the headline
         return True
-    gate = _latest_gate(st)
-    criterion = _test_integrity(gate)
+    gate = _rows.latest_gate(st)
+    criterion = _rows.integrity_criterion(gate)
     if gate is None or (criterion is not None and criterion["outcome"] == "NOT_MET"):
         return False  # the gate saw the problem itself, so the plain verdict line is the renderer's own
-    return not lines[3].startswith(_STALE_START) or any(line.startswith("**Verdict:**") for line in lines)
+    return not lines[3].startswith(_STALE_START) or any(line.startswith(_VERDICT_START) for line in lines)
 
 
 def _open_extra(path: str) -> Tuple[Optional[Workspace], Optional[ledger.Problem]]:

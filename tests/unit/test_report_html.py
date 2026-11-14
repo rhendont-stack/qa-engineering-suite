@@ -13,7 +13,7 @@ import test_trace
 from helpers import KERNEL, base
 from qa import bundle, config, findings, gate, ledger, report, state
 from qa.canonical import sha256_bytes
-from qa.report import EXECUTIVE_ROW_LIMIT, INTEGRITY_ROWS_SHOWN
+from qa.report import EXECUTIVE_ROW_LIMIT, INTEGRITY_ROWS_SHOWN, _rows
 from qa.report.html import html_text, render_html
 from qa.workspace import init_workspace
 from test_compare import _execution, _result
@@ -265,6 +265,31 @@ def test_html_report_sections_in_order_with_the_executive_summary_first(st):
     assert parsed.table("Traceability")[0] == ["Gap kind", "Count"]
     assert "No evidence bundles imported." in parsed.text("Re-execution")
     assert parsed.table("Executions")[1][0] == LOCAL and parsed.table("Executions")[1][-2] == "pytest -q"
+
+
+def _one_pager_section(text, title):
+    """The non-blank lines of one ``## title`` section of executive.md."""
+    lines = text.splitlines()
+    start = lines.index("## " + title) + 1
+    end = next((n for n in range(start, len(lines)) if lines[n].startswith("## ")), len(lines))
+    return [line for line in lines[start:end] if line]
+
+
+def test_the_html_summary_and_the_one_pager_print_the_same_shared_rows(st):
+    gate_record = _rows.latest_gate(st)
+    parsed, one_pager = Page(render_html(st)), report.render_executive(st)
+    summary = _rows.executive_summary(st, gate_record)
+    assert parsed.table("Executive summary") == [list(summary.header)] + summary.rows
+    assert _one_pager_section(one_pager, "Executive summary") == ["- %s: %s" % (measure, value) for measure, value in summary.rows]
+    ranked, more = _rows.recommendations(st)
+    assert more == 0 and parsed.table("Recommendations") == [list(ranked.header)] + [[str(c) for c in row] for row in ranked.rows]
+    assert _one_pager_section(one_pager, "Recommendations") == [
+        "%d. %s" % (row[0], report.md_cell("%s %s (%s, %s): %s" % tuple(row[1:]))) for row in ranked.rows]
+    follow = _rows.follow_up(gate_record)
+    assert isinstance(follow, _rows.Table) and follow.rows  # the fixture's failed run leaves criteria unmet
+    assert parsed.table("Gate follow-up") == [list(follow.header)] + follow.rows
+    assert _one_pager_section(one_pager, "Gate follow-up") == [
+        "- %s %s: %s (%s)" % (gid, report.md_cell(cid), outcome, kind) for gid, cid, outcome, kind in follow.rows]
 
 
 def test_html_report_without_records_says_so(ws):
