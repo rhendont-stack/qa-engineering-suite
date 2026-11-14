@@ -1848,6 +1848,13 @@ def test_security_scan_identified_by_image_digest():
     assert _scans(_scan("EXE-1", "run-scan.sh"), *EVERY_CLASS()[1:])["detail"].endswith("missing: secrets")
 
 
+def test_a_generic_image_does_not_hide_the_tool_run_inside_it():
+    in_python = _scan("EXE-1", "bandit", image="python-3.9")
+    assert _scans(_scan("EXE-2", "gitleaks"), _scan("EXE-3", "osv-scanner"), in_python)["outcome"] == "MET"
+    assert _scans(_scan("EXE-1", "bandit", image="python-3.9"), classes=["sast"])["outcome"] == "MET"
+    assert _scans(_scan("EXE-1", "python3", image="python-3.9"), classes=["sast"])["outcome"] == "NO_EVIDENCE"
+
+
 def test_an_image_digest_outranks_argv0():
     other = _scan("EXE-1", "gitleaks", image="osv-scanner")   # the digest says osv-scanner
     r = _scans(other, EVERY_CLASS()[2])
@@ -1943,12 +1950,43 @@ def test_performance_run_over_its_limits_does_not_count():
     assert _perf(marked_only)["outcome"] == "NO_EVIDENCE"
 
 
-def test_performance_a_k6_summary_ingested_later_counts_and_other_tools_do_not():
-    ingested = dict(_k6("EXE-1"), report=None, reports=[], ingested=[{"format": "k6", "kind": "tests", "strength": "attested"}])
-    assert _perf(ingested)["outcome"] == "MET"
-    junit = _exe("EXE-2", activity="load-test", command={"argv": ["pytest"], "shell": False, "cwd": "."}, environment={"class": "staging"})
+def _summary(failures=0, strength="structured", errors=0):
+    """A k6 summary attached with ``qa ingest``: the ingest event's threshold counts."""
+    return {"format": "k6", "kind": "tests", "strength": strength,
+            "report": {"format": "k6", "kind": "tests", "tests": 2, "failures": failures, "errors": errors, "skipped": 0}}
+
+
+def _plain_run(execution_id, **changes):
+    """A passing run that is not a k6 run (a script that drove the load), on staging."""
+    return _exe(execution_id, activity="load-test", command={"argv": ["sh", "load.sh"], "shell": False, "cwd": "."},
+                environment={"class": "staging"}, anomalies=[], report=None, reports=[], **changes)
+
+
+def test_performance_a_structured_ingested_summary_counts_and_its_thresholds_decide():
+    assert _perf(_plain_run("EXE-1", ingested=[_summary()]))["outcome"] == "MET"
+    r = _perf(_plain_run("EXE-1", ingested=[_summary(failures=1)]))
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-1"])
+    assert _perf(_plain_run("EXE-1", ingested=[_summary(errors=1)]))["outcome"] == "NOT_MET"
+
+
+def test_performance_an_attested_ingested_summary_never_counts():
+    attested = dict(_k6("EXE-1"), report=None, reports=[], ingested=[_summary(strength="attested")])
+    assert _perf(attested)["outcome"] == "NO_EVIDENCE"
+    assert _perf(_plain_run("EXE-2", ingested=[_summary(failures=1, strength="attested")]))["outcome"] == "NO_EVIDENCE"
+
+
+def test_performance_a_passing_non_k6_run_does_not_hide_a_failed_ingested_summary():
+    r = _perf(_plain_run("EXE-1", ingested=[_summary(failures=2)]), _k6("EXE-2"))
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-1"])
+
+
+def test_performance_a_run_status_alone_is_not_a_k6_result():
+    junit = _exe("EXE-1", activity="load-test", command={"argv": ["pytest"], "shell": False, "cwd": "."}, environment={"class": "staging"})
     assert _perf(junit)["outcome"] == "NO_EVIDENCE"
-    assert _perf(_k6("EXE-3", git=dict(GIT, commit=OTHER_COMMIT)))["outcome"] == "NO_EVIDENCE"
+    assert _perf(_plain_run("EXE-2"))["outcome"] == "NO_EVIDENCE"
+    assert _perf(_k6("EXE-3", strength="exit_code"))["outcome"] == "NO_EVIDENCE"   # a pass needs the structured strength
+    assert _perf(_k6("EXE-4", strength="exit_code", status="failed", reason="assertion"))["outcome"] == "NOT_MET"
+    assert _perf(_k6("EXE-5", git=dict(GIT, commit=OTHER_COMMIT)))["outcome"] == "NO_EVIDENCE"
 
 
 def test_performance_min_environment_class_is_a_param():
@@ -1974,6 +2012,16 @@ def test_migrations_latest_ephemeral_run_decides():
     assert (later_pass["outcome"], later_pass["evidence"]) == ("MET", ["EXE-2"])
 
 
+def test_migrations_weaker_runs_are_not_candidates_whatever_their_order():
+    weaker_pass = _migration("EXE-2", strength="exit_code", report=None)
+    weaker_fail = _migration("EXE-3", status="failed", strength="exit_code", reason="nonzero_exit", report=None)
+    after_pass = _migrations(_migration("EXE-1"), weaker_pass)
+    assert (after_pass["outcome"], after_pass["evidence"]) == ("MET", ["EXE-1"])
+    after_fail = _migrations(_migration("EXE-1", status="failed", reason="assertion"), weaker_pass)
+    assert (after_fail["outcome"], after_fail["evidence"]) == ("NOT_MET", ["EXE-1"])
+    assert _migrations(_migration("EXE-1"), weaker_fail)["outcome"] == "MET"
+
+
 def test_migrations_without_a_qualifying_run_is_no_evidence():
     assert _migrations()["outcome"] == "NO_EVIDENCE"
     other = _migration("EXE-1", activity="db-readonly")
@@ -1982,10 +2030,10 @@ def test_migrations_without_a_qualifying_run_is_no_evidence():
     assert _migrations(other, elsewhere, unfinished)["outcome"] == "NO_EVIDENCE"
 
 
-def test_a_migration_pass_without_a_structured_report_is_no_evidence_but_a_failure_still_fails():
+def test_migrations_with_only_weaker_runs_is_no_evidence_even_for_a_failure():
     weak = _migration("EXE-1", strength="exit_code", report=None)
     assert _migrations(weak)["outcome"] == "NO_EVIDENCE"
-    assert _migrations(dict(weak, status="failed", reason="nonzero_exit"))["outcome"] == "NOT_MET"
+    assert _migrations(dict(weak, status="failed", reason="nonzero_exit"))["outcome"] == "NO_EVIDENCE"
 
 
 def test_no_gate_detail_names_a_milestone():
@@ -1997,3 +2045,18 @@ def test_no_gate_detail_names_a_milestone():
     assert "milestone" not in every_detail(_st(), _context())
     assert "milestone" not in every_detail(_st(), _context(kernel={"status": "absent", "source_checkout": True}))
     assert "milestone" not in every_detail(_st(*EVERY_CLASS(), _k6("EXE-9", klass="ephemeral"), _migration("EXE-10")), _context())
+
+
+@pytest.mark.parametrize("profile", ["change", "audit", "release"])
+@pytest.mark.parametrize("value", ["secrets", ["fuzzing"], [], None, [1]], ids=["a_string", "unknown_class", "empty", "null", "not_text"])
+def test_an_invalid_scan_classes_override_is_config_invalid(profile, value):
+    with pytest.raises(QaError) as caught:
+        _crit(profile, "security_scans_executed", security_scans_executed={"params": {"classes": value}})
+    assert caught.value.code == "config_invalid"
+
+
+def test_the_change_profile_takes_a_classes_override_and_defaults_without_one():
+    assert "classes" not in _crit("change", "security_scans_executed")["params"]
+    assert _crit("change", "security_scans_executed", security_scans_executed={"params": {"classes": ["sast"]}})["params"] == {"classes": ["sast"]}
+    r = gate.evaluate_criterion(_crit("change", "security_scans_executed"), _st(*EVERY_CLASS()), _context())
+    assert r["outcome"] == "MET" and "secrets, dependencies, sast" in r["detail"]

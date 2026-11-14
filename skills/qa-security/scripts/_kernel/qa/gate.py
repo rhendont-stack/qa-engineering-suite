@@ -53,7 +53,7 @@ _LOAD_LIMIT = "load_limit_exceeded"
 _CONCLUDED = ("passed", "failed")
 
 # Parameters a criterion reads that no policy file lists: an accepted override sets them (the policy files stay as the profile table).
-_OPTIONAL_PARAMS = {"mutation_score_min": ("paths",)}
+_OPTIONAL_PARAMS = {"mutation_score_min": ("paths",), "security_scans_executed": ("classes",)}
 _DEFAULT_MIN_SCORE = 70
 _MUTATION_FILES_SHOWN = 20
 
@@ -529,10 +529,11 @@ def _image_ids() -> Dict[str, str]:
     return {item["image"].rpartition("@")[2]: item["id"] for item in doc["images"]}
 
 
-def _tool_of(record: dict, images: Dict[str, str]) -> str:
-    """What a run ran: the id of its pinned container image, else the basename of ``argv[0]``."""
+def _tool_of(record: dict, images: Dict[str, str], known: Iterable[str]) -> str:
+    """What a run ran: the id of its pinned image when that is one of the ``known`` tools (a generic language image says
+    nothing about the tool run inside it), else the basename of ``argv[0]``."""
     digest = ((record.get("container") or {}).get("image") or "").rpartition("@")[2]
-    if digest in images:
+    if images.get(digest) in known:
         return images[digest]
     return record["command"]["argv"][0].replace("\\", "/").rsplit("/", 1)[-1]
 
@@ -569,10 +570,11 @@ def _security_scans_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     if _passive_dast_granted(st, ctx.now) and "dast-baseline" not in wanted:
         wanted.append("dast-baseline")
     images = _image_ids()
+    known = {tool for tools in _SCAN_CLASSES.values() for tool in tools}
     found: Dict[str, str] = {}
     for record in st["executions"].values():
         if _concluded_on_target(record, ctx) and _holds_report(record):
-            tool = _tool_of(record, images)
+            tool = _tool_of(record, images, known)
             for name in wanted:
                 if tool in _SCAN_CLASSES[name]:
                     found[name] = record["id"]
@@ -583,53 +585,61 @@ def _security_scans_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     return _MET, "%s scanned commit %s" % (", ".join(wanted), ctx.target_commit), evidence
 
 
-def _is_k6_run(record: dict) -> bool:
-    declared = record.get("reports") or []
-    return (any(item["format"] in ingest.LOAD_TEST_FORMATS for item in declared)
-            or (record.get("report") or {}).get("format") in ingest.LOAD_TEST_FORMATS
-            or any(item.get("format") in ingest.LOAD_TEST_FORMATS for item in execution.readable_ingested(record)))
+def _k6_results(record: dict) -> List[str]:
+    """What a run's k6 evidence says, as ``passed`` or ``failed`` per result; never the run's status alone.
+
+    The run's own k6 report counts when the run parsed one (its status then reflects the thresholds; a pass also needs the
+    strength ``structured``). A k6 summary attached with ``qa ingest`` counts only when it is structured, and its own
+    threshold counts decide: an attested file is a person's, and the run's status says nothing about a summary attached later.
+    """
+    results = []
+    declared = [item for item in record.get("reports") or [] if item["format"] in ingest.LOAD_TEST_FORMATS and item["error"] is None]
+    if declared and record.get("report") is not None and (record["status"] == "failed" or record["strength"] == "structured"):
+        results.append(record["status"])
+    for item in execution.readable_ingested(record):
+        counts = item.get("report") or {}
+        if item.get("format") in ingest.LOAD_TEST_FORMATS and item.get("strength") == "structured" and "failures" in counts:
+            results.append("failed" if counts["failures"] + counts.get("errors", 0) else "passed")
+    return results
 
 
 def _performance_objectives_met(c: dict, st: dict, ctx: GateContext) -> _Outcome:
-    """k6 runs on the target at or above the minimum environment class. A run past its load limits proves nothing about
+    """k6 results on the target at or above the minimum environment class. A run past its load limits proves nothing about
     the system under load, so it does not count; a run below the class measured a simulation."""
     if ctx.target_commit is None:
         return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
-    minimum = _rank(vocab.ENV_CLASSES, c["params"]["min_environment_class"])
-    runs = [record for record in st["executions"].values() if _is_k6_run(record) and _concluded_on_target(record, ctx)]
-    over = [record["id"] for record in runs if _LOAD_LIMIT in record.get("anomalies", ())]
-    counted = [record for record in runs if record["id"] not in over]
-    qualifying = [record for record in counted if _rank(vocab.ENV_CLASSES, record["environment"]["class"]) >= minimum]
-    failed = [record["id"] for record in qualifying if record["status"] == "failed"]
+    named = c["params"]["min_environment_class"]
+    minimum = _rank(vocab.ENV_CLASSES, named)
+    judged: List[Tuple[dict, List[str]]] = [(record, _k6_results(record)) for record in st["executions"].values()
+                                            if _concluded_on_target(record, ctx)]
+    judged = [(record, results) for record, results in judged if results]
+    over = [record["id"] for record, _ in judged if _LOAD_LIMIT in record.get("anomalies", ())]
+    counted = [(record, results) for record, results in judged if record["id"] not in over]
+    qualifying = [(record, results) for record, results in counted if _rank(vocab.ENV_CLASSES, record["environment"]["class"]) >= minimum]
+    failed = [record["id"] for record, results in qualifying if "failed" in results]
     if failed:
-        return _NOT_MET, "load test failed at %s or above: %s" % (c["params"]["min_environment_class"], ", ".join(failed)), failed
+        return _NOT_MET, "load test failed at %s or above: %s" % (named, ", ".join(failed)), failed
     if qualifying:
-        return _MET, "%d load test(s) passed at %s or above" % (len(qualifying), c["params"]["min_environment_class"]), [
-            record["id"] for record in qualifying]
+        return _MET, "%d load test run(s) passed at %s or above" % (len(qualifying), named), [record["id"] for record, _ in qualifying]
     notes = []
     if counted:
-        notes.append("load tests ran only below %s, so their figures are simulated" % c["params"]["min_environment_class"])
+        notes.append("load tests ran only below %s, so their figures are simulated" % named)
     if over:
         notes.append("%s went past the load limits and do not count" % ", ".join(over))
     return _NO_EVIDENCE, "; ".join(notes) or "no load test on commit %s" % ctx.target_commit, []
 
 
 def _migrations_validated(c: dict, st: dict, ctx: GateContext) -> _Outcome:
-    """The latest run of the migration activity on the target decides. A pass counts only as structured evidence."""
+    """The latest structured run of the migration activity on the target decides; weaker runs are not candidates."""
     if ctx.target_commit is None:
         return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
     activity = c["params"]["activity"]
     runs = [record for record in st["executions"].values()
-            if record["activity"] == activity and _concluded_on_target(record, ctx)]
+            if record["activity"] == activity and record["strength"] == "structured" and _concluded_on_target(record, ctx)]
     if not runs:
-        return _NO_EVIDENCE, "no %s run on commit %s" % (activity, ctx.target_commit), []
+        return _NO_EVIDENCE, "no structured %s run on commit %s" % (activity, ctx.target_commit), []
     latest = runs[-1]
-    detail, evidence = _described(latest), [latest["id"]]
-    if latest["status"] == "failed":
-        return _NOT_MET, detail, evidence
-    if latest["strength"] != "structured":
-        return _NO_EVIDENCE, "%s, but its report is not structured evidence" % detail, evidence
-    return _MET, detail, evidence
+    return (_NOT_MET if latest["status"] == "failed" else _MET), _described(latest), [latest["id"]]
 
 
 _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
