@@ -374,6 +374,24 @@
       "match": {"declared_activity": ["static-analysis"], "unless_program": ["semgrep", "opengrep", "bandit", "gosec", "gitleaks", "betterleaks", "osv-scanner", "grype", "syft", "trivy", "hadolint", "conftest", "actionlint", "zizmor", "ruff", "shellcheck", "squawk", "spectral", "oasdiff", "git", "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "file", "stat", "sha256sum", "shasum", "jq", "echo", "true", "pwd"]}
     },
     {
+      "id": "device-control",
+      "effect": "require_grant:device-control",
+      "reason": "Tools that drive a mobile device, an emulator or a simulator need a device-control grant (\u00a712.2).",
+      "match": {"program": ["adb", "emulator", "xcrun", "simctl", "maestro", "appium", "detox"]}
+    },
+    {
+      "id": "zizmor-online",
+      "effect": "require_grant:data-egress",
+      "reason": "zizmor reaches the network unless --offline is given, and what it sends leaves the machine; it needs a data-egress grant (\u00a712.2).",
+      "match": {"program": ["zizmor"], "unless_args": ["--offline"]}
+    },
+    {
+      "id": "lhci-upload",
+      "effect": "require_grant:data-egress",
+      "reason": "Lighthouse CI upload sends its reports to a server; it needs a data-egress grant (\u00a712.2).",
+      "match": {"program": ["lhci"], "args_any": ["upload"]}
+    },
+    {
       "id": "load-test",
       "effect": "require_grant:load-test",
       "reason": "Load-test tools need a load-test grant with VU, RPS and duration limits (§12.2, §12.3).",

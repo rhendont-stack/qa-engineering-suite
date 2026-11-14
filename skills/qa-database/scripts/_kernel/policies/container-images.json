@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "resolved_at": "2026-11-11",
+  "resolved_at": "2026-11-13",
   "images": [
     {
       "id": "python-3.9",
@@ -114,6 +114,33 @@
       "tool_version": "2.3.0",
       "notes": "k6 run takes --no-usage-report (a flag of the run command, not of k6 or version); K6_NO_USAGE_REPORT=true is the environment form. Outbound reports cannot leave a network-none container either way.",
       "size_bytes": 36137604
+    },
+    {
+      "id": "playwright",
+      "tag": "mcr.microsoft.com/playwright:v1.65.1-noble",
+      "image": "mcr.microsoft.com/playwright@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "tool_version": "1.65.1",
+      "notes": "No entrypoint, default command /bin/bash. The Playwright package is not preinstalled; it comes from the runner lockfile in the install step. Chromium: /ms-playwright/chromium-1255/chrome-linux64/chrome (use it as CHROME_PATH). Node is v26.",
+      "size_bytes": 1012675015
+    },
+    {
+      "id": "actionlint",
+      "tag": "rhysd/actionlint:1.7.12",
+      "image": "rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "tool_version": "1.7.12",
+      "notes": "Entrypoint /usr/local/bin/actionlint, image user guest; has sh and busybox tar.",
+      "size_bytes": 25292084
+    },
+    {
+      "id": "zizmor",
+      "tag": "ghcr.io/zizmorcore/zizmor:1.32.0",
+      "image": "ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d",
+      "platforms": ["linux/amd64", "linux/arm64"],
+      "tool_version": "1.32.0",
+      "notes": "Entrypoint /usr/bin/zizmor, image user root; has sh and busybox tar. Run with --offline.",
+      "size_bytes": 17854210
     }
   ]
 }

@@ -310,12 +310,29 @@ def test_every_catalog_image_is_pinned_for_amd64():
         assert "linux/amd64" in entry["platforms"], entry["id"]
     tools = [entry for entry in images if "tool_version" in entry]
     assert {entry["id"] for entry in tools} == {"spectral", "schemathesis", "hurl", "oasdiff", "squawk", "postgres", "semgrep",
-                                                "osv-scanner", "gitleaks", "zap", "k6"}
+                                                "osv-scanner", "gitleaks", "zap", "k6", "playwright", "actionlint", "zizmor"}
     for entry in tools:
         assert isinstance(entry["size_bytes"], int) and entry["size_bytes"] > 0, entry["id"]
         assert entry["tool_version"] and entry["tag"], entry["id"]
         assert not entry["tool_version"].startswith("v"), entry["id"]
         assert not entry["tag"].endswith(":latest") and "latest" not in entry["tag"].split(":")[-1], entry["id"]
+
+
+def test_runner_lock_pins_playwright_to_the_image_version():
+    import json
+    from pathlib import Path
+    root = Path(container.__file__).resolve().parents[3]
+    entry = [e for e in _catalog() if e["id"] == "playwright"][0]
+    assert entry["tag"] == "mcr.microsoft.com/playwright:v%s-noble" % entry["tool_version"]
+    runner = root / "tests" / "corpus" / "producers" / "frontend-runner"
+    manifest = json.loads((runner / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((runner / "package-lock.json").read_text(encoding="utf-8"))
+    assert manifest["dependencies"]["@playwright/test"] == entry["tool_version"]
+    assert lock["packages"][""]["dependencies"] == manifest["dependencies"]
+    for name in ("@playwright/test", "playwright", "playwright-core"):
+        assert lock["packages"]["node_modules/" + name]["version"] == entry["tool_version"]
+    for name in ("@axe-core/playwright", "axe-core", "lighthouse"):
+        assert lock["packages"]["node_modules/" + name]["version"] == manifest["dependencies"][name]
 
 
 def test_the_catalog_names_no_trivy_and_no_unpinned_digest():

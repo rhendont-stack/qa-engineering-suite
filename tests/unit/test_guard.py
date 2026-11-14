@@ -567,6 +567,9 @@ NEW_CASE_IDS = (
     # final-review fix wave: ledger lines 71 and 152
     "schemathesis-phases-option-name-with-trailing-line-feed-is-active", "osv-offline-with-a-dot-segment-path-needs-egress",
     "osv-offline-scan-step-with-environment-prefix-and-absolute-path",
+    # milestone 4b: device control, zizmor, Lighthouse CI upload, the frontend runner
+    "adb-devices", "xcrun-simctl-boot", "maestro-test", "emulator-avd", "zizmor-offline", "zizmor-online", "lhci-upload",
+    "npm-ci-ignore-scripts", "playwright-bin-loopback",
 )
 NEW_CASES = [c for c in CASES if c["id"] in NEW_CASE_IDS]
 # decision, the activities the run needs beyond the declared one, the hosts the command line names
@@ -609,6 +612,15 @@ NEW_EXPECTED = {
     "schemathesis-phases-option-name-with-trailing-line-feed-is-active": ("require_grant", ("dast-active", "dast-passive"), ("127.0.0.1",)),
     "osv-offline-with-a-dot-segment-path-needs-egress": ("require_grant", ("data-egress",), ()),
     "osv-offline-scan-step-with-environment-prefix-and-absolute-path": ("allow", (), ()),
+    "adb-devices": ("require_grant", ("device-control",), ()),
+    "xcrun-simctl-boot": ("require_grant", ("device-control",), ()),
+    "maestro-test": ("require_grant", ("device-control",), ()),
+    "emulator-avd": ("require_grant", ("device-control",), ()),
+    "zizmor-offline": ("allow", (), ()),
+    "zizmor-online": ("require_grant", ("data-egress",), ()),
+    "lhci-upload": ("require_grant", ("data-egress",), ()),
+    "npm-ci-ignore-scripts": ("require_grant", ("install-dependencies",), ()),
+    "playwright-bin-loopback": ("allow", (), ("127.0.0.1",)),
 }
 
 
@@ -649,6 +661,23 @@ def test_new_guard_cases(case, ws):
     assert d.required_activities == (case["activity"],) + adds
     assert d.hosts == hosts
     assert d.rule_id == case["rule_id"]
+
+
+@pytest.mark.parametrize("program", ["adb", "emulator", "xcrun", "simctl", "maestro", "appium", "detox"])
+def test_every_device_tool_needs_a_device_control_grant(program, ws):
+    d = classify([program, "anything"], ws)
+    assert (d.decision, d.rule_id, d.required_activities) == ("require_grant", "device-control", ("test-execution-local", "device-control"))
+
+
+def test_zizmor_is_offline_only_without_a_grant(ws):
+    assert classify(["zizmor", "--offline", "/work"], ws, activity="static-analysis").decision == "allow"
+    d = classify(["zizmor", "/work"], ws, activity="static-analysis")
+    assert (d.decision, d.rule_id, d.required_activities) == ("require_grant", "zizmor-online", ("static-analysis", "data-egress"))
+
+
+def test_lhci_needs_data_egress_only_to_upload(ws):
+    assert classify(["lhci", "upload"], ws).required_activities == ("test-execution-local", "data-egress")
+    assert classify(["lhci", "collect"], ws).rule_id != "lhci-upload"
 
 
 def test_zap_af_plan_target_assignment_is_read_as_a_host(ws):
