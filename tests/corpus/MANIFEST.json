@@ -259,5 +259,38 @@
     "kind": "alerts",
     "normalizations": ["container working directory path"],
     "expected": {"alerts": 12, "runs": 1}
+  },
+  {
+    "file": "axe/axe-core-4.14.0-fixture-page.json",
+    "format": "axe",
+    "producer": "axe-core (@axe-core/playwright 4.14.0, Playwright 1.65.1 Chromium)",
+    "version": "4.14.0",
+    "command": "python3 tests/corpus/producers/axe_sample/generate.py <workspace> tests/corpus/axe/axe-core-4.14.0-fixture-page.json (runs: qa run --container mcr.microsoft.com/playwright@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run 'exec python3 /work/.qa-input/service/page_service.py 8000' --service-user 65534:65534 --install 'npm ci --ignore-scripts --no-audit --no-fund' --input .qa/work/service/page_service.py --input .qa/work/frontend/axe-run.mjs --report axe:{evidence}/axe.json --shell -- sleep 3; node /work/.qa-input/frontend/axe-run.mjs http://127.0.0.1:8000/ /qa-evidence/axe.json; the project root holds the frontend runner's package.json and package-lock.json (tests/corpus/producers/frontend-runner); the install step is the only one with a network; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json); execution EXE-01M7BXYT03JZW18WKNC1JXP5JN, install-dependencies grant AUTH-001, 0 redactions",
+    "date": "2026-11-13",
+    "kind": "alerts",
+    "normalizations": ["timestamp", "EN 301 549 clause tags (the four dotted numbers after EN- written with underscores: they read as an IP address)"],
+    "expected": {
+      "alerts": 3,
+      "runs": 1,
+      "violations": 2,
+      "incomplete": 1,
+      "rules_passed": 16,
+      "rules_inapplicable": 73
+    }
+  },
+  {
+    "file": "lighthouse/lighthouse-13.6.0-fixture-page.json",
+    "format": "lighthouse",
+    "producer": "lighthouse",
+    "version": "13.6.0",
+    "command": "python3 tests/corpus/producers/lighthouse_sample/generate.py <workspace> tests/corpus/lighthouse/lighthouse-13.6.0-fixture-page.json (runs: qa run --container mcr.microsoft.com/playwright@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run 'exec python3 /work/.qa-input/service/page_service.py 8000' --service-user 65534:65534 --install 'npm ci --ignore-scripts --no-audit --no-fund' --input .qa/work/service/page_service.py --report lighthouse:{evidence}/lighthouse.json --shell -- sleep 3; CHROME_PATH=/ms-playwright/chromium-1255/chrome-linux64/chrome node_modules/.bin/lighthouse http://127.0.0.1:8000/ --quiet --output=json --output-path=/qa-evidence/lighthouse.json --only-categories=performance --chrome-flags='--headless=new --no-sandbox --disable-gpu'; the project root holds the frontend runner's package.json and package-lock.json (tests/corpus/producers/frontend-runner); the install step is the only one with a network; the workspace's engine, chosen with qa config set, is the remote engine; image pinned in shared/policies/container-images.json); execution EXE-01M7BXZ6J84NRD55S6EQ50ZCXR, install-dependencies grant AUTH-001",
+    "date": "2026-11-13",
+    "kind": "metrics",
+    "normalizations": ["timestamp", "browser version in the user agent"],
+    "notes": "The stored bytes are the report as the run's evidence holds it, after the kernel's redactor: 13 values carry a redaction (rule password_assignment), at these JSON paths: configSettings/screenEmulation/disabled; configSettings/auditMode; configSettings/gatherMode; configSettings/disableStorageReset; configSettings/debugNavigation; configSettings/usePassiveGathering; configSettings/disableFullPageScreenshot; configSettings/skipAboutBlank; configSettings/ignoreStatusCode; audits/cumulative-layout-shift/details/items/0/newEngineResultDiffered; audits/metrics/details/items/1/lcpInvalidated; i18n/rendererFormattedStrings/passedAuditsGroupTitle; i18n/rendererFormattedStrings/warningAuditsGroupTitle. Every value the parser reads is intact; the normalizer's usual replacements (timestamp, browser version) are the only other change.",
+    "expected": {
+      "count": 7,
+      "metrics": ["category:performance", "first-contentful-paint", "largest-contentful-paint", "total-blocking-time", "cumulative-layout-shift", "speed-index", "interactive"]
+    }
   }
 ]

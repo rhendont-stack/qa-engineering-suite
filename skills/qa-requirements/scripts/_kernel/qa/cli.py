@@ -51,7 +51,7 @@ _INPUT_ERROR = 2
 _INTERNAL_ERROR = 70
 _REPORT_FORMATS = ("md", "json", "sarif", "executive", "html")
 _DEFAULT_REPORT_FORMATS = ("md", "json")
-_INGEST_CATEGORIES = {"sarif": "security", "k6": "performance"}  # `qa ingest`'s default category per format; else functional
+_INGEST_CATEGORIES = {"sarif": "security", "k6": "performance", "axe": "accessibility", "lighthouse": "performance"}  # `qa ingest`'s default category per format; else functional
 
 
 class _HelpRequested(Exception):
@@ -212,10 +212,11 @@ def _add_execution_commands(groups: Dict[str, Any]) -> None:
                      help="with --container: a file under .qa/work/ (relative to the project root), found at /work/.qa-input/ in the container")
     attach = _command(groups, "ingest", "attach a report file to a recorded execution (a k6 summary also records its metrics and "
                                         "is checked against the run's load-test limits), or import an evidence bundle")
-    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6", "bundle"), metavar="FORMAT")
+    attach.add_argument("format", choices=("junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6", "axe", "lighthouse", "bundle"),
+                        metavar="FORMAT")
     attach.add_argument("file", metavar="FILE")
     attach.add_argument("--from", dest="from_execution", metavar="EXE", help="the execution the report belongs to (not for a bundle)")
-    attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, performance for k6, else functional)")
+    attach.add_argument("--category", metavar="C", help="the result category (default: security for sarif, performance for k6 and lighthouse, accessibility for axe, else functional)")
     _group(groups, "result", "change recorded results")
     reclassify = _command(groups, "result reclassify", "change a result's status within the limits, citing evidence")
     reclassify.add_argument("result", metavar="RES")

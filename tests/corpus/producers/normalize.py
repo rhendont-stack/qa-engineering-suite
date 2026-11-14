@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[3]
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?")
 # A four-part browser version in a user agent a scanner sent (ZAP sends Chrome's, four dotted numbers) has the shape
 # of an IPv4 address, which tools/check_repo.py refuses in tests/.
-BROWSER_VERSION = re.compile(r"\b(Chrome|Chromium|Edg|Firefox|Safari)(\\?/)\d+\.\d+\.\d+\.\d+\b")
+BROWSER_VERSION = re.compile(r"(?<![A-Za-z])(?:Headless)?(Chrome|Chromium|Edg|Firefox|Safari)(\\?/)\d+\.\d+\.\d+\.\d+\b")
+# axe-core tags a rule with the EN 301 549 clauses it covers (EN- and four dotted numbers): the shape of an IP address; the dots become underscores.
+EN_CLAUSE = re.compile(r"\b(EN-\d)\.(\d)\.(\d)\.(\d{1,2})\b")
 # HTTP's own date form, as a scanner copies a response's Date header into its report.
 HTTP_DATE = re.compile(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} "
                        r"\d{2}:\d{2}:\d{2} GMT\b")
@@ -88,6 +90,7 @@ def normalize_text(text: str) -> str:
     text = TIMESTAMP.sub("1970-01-01T00:00:00.000+00:00", text)
     text = HTTP_DATE.sub("Thu, 01 Jan 1970 00:00:00 GMT", text)
     text = BROWSER_VERSION.sub(r"\1\2VERSION", text)
+    text = EN_CLAUSE.sub(r"\1_\2_\3_\4", text)
     for _label, pattern, token in sensitive_patterns():
         text = pattern.sub(token, text)
     return text

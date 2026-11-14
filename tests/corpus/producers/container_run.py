@@ -56,7 +56,7 @@ def stage(workspace: Path, files: Dict[str, Path]) -> List[str]:
 
 
 def run(workspace: Path, tool_id: str, script: str, *, inputs: Sequence[str] = (), reports: Sequence[Tuple[str, str]] = (),
-        install: Optional[str] = None, service: bool = False, timeout_s: int = 300) -> dict:
+        install: Optional[str] = None, service: bool = False, service_run: str = SERVICE_RUN, timeout_s: int = 300) -> dict:
     """``qa run --container`` with the tool's pinned image; returns the run's JSON summary, printed as it arrives."""
     argv = [sys.executable, str(LAUNCHER), "--workspace", str(workspace), "run", "--container", image(tool_id),
             "--timeout", str(timeout_s), "--shell"]
@@ -67,7 +67,7 @@ def run(workspace: Path, tool_id: str, script: str, *, inputs: Sequence[str] = (
     if install is not None:
         argv += ["--install", install]
     if service:
-        argv += ["--service", image("python-newest"), "--service-run", SERVICE_RUN, "--service-user", SERVICE_USER]
+        argv += ["--service", image("python-newest"), "--service-run", service_run, "--service-user", SERVICE_USER]
     argv += ["--", script]
     print("$ qa run --container %s ... -- %s" % (tool_id, script), flush=True)
     done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)

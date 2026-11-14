@@ -24,8 +24,29 @@ def test_corpus_matches_tool_console(entry):
     if s.kind == "mutants":
         check_mutants(s, entry)
         return
+    if s.kind == "metrics":
+        check_metrics(s, entry)
+        return
+    if s.format == "axe":
+        check_axe(s, entry)
+        return
     got = {"total": s.total, "passed": s.passed, "failed": s.failed, "errors": s.errors, "skipped": s.skipped} if s.kind == "tests" else {"alerts": len(s.alerts), "runs": s.runs}
     assert got == entry["expected"]
+
+
+def check_axe(s, entry):
+    """The counts axe-core reported for the page: violations and incomplete checks as nodes, passes and inapplicable rules as rules."""
+    notes = sum(1 for a in s.alerts if a.level == "note")
+    got = {"alerts": len(s.alerts), "runs": s.runs, "violations": len(s.alerts) - notes, "incomplete": notes,
+           "rules_passed": s.rules_passed, "rules_inapplicable": s.rules_inapplicable}
+    assert got == entry["expected"]
+    assert s.tool_version == entry["version"]
+
+
+def check_metrics(s, entry):
+    """The metrics Lighthouse wrote for the page: which ones, and that the tool version is the manifest's."""
+    assert sorted(m.name for m in s.metrics) == sorted(entry["expected"]["metrics"])
+    assert len(s.metrics) == entry["expected"]["count"] and s.tool_version == entry["version"]
 
 
 def check_attachment(entry):

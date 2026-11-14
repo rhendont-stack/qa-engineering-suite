@@ -56,7 +56,8 @@ _MIB = 2 ** 20
 _CATEGORY = {"$ref": "defs.schema.json#/$defs/category"}
 _UNDECLARED = {"id": "<undeclared>", "class": "production"}  # not "production": a real environment may hold that id
 _MEDIA_TYPES = {"junit": "application/xml", "ctrf": "application/json", "sarif": "application/sarif+json", "lcov": "text/plain",
-                "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json", "k6": "application/json"}
+                "cobertura": "application/xml", "jacoco": "application/xml", "mutation": "application/json", "k6": "application/json",
+                "axe": "application/json", "lighthouse": "application/json"}
 _FLAKY_KEYS = ("attempts", "passes", "ratio", "flaky", "status", "reproducible")
 _Snapshot = Dict[str, Optional[Tuple[int, str]]]  # {real path: (st_mtime_ns, sha256)}
 _BEFORE_INSTALL = ("volume_create", "copy_in", "prepare", "control_in", None)  # where a failed pipeline stopped when no install had started; None: no step
@@ -840,6 +841,8 @@ def _flags(run_root: Path, summary: ingest.ReportSummary) -> List[str]:
 def _measurement(run: _Run, summary: ingest.ReportSummary, file: str, manifest: Dict[str, dict]) -> dict:
     entry = {"format": summary.format, "kind": summary.kind, "file": file, "sha256": manifest[file]["sha256"],
              "totals": summary.measurement_totals()}
+    if summary.kind == "metrics":  # the lab numbers themselves, labelled: they are the measurement
+        entry.update(metrics=_metric_values(summary), label="measured", tool_version=summary.tool_version)
     flags = _flags(run.ws.root, summary)
     return dict(entry, anomalies=flags) if flags else entry
 
@@ -855,15 +858,28 @@ def readable_ingested(record: dict) -> List[dict]:
     return list(record.get("ingested", [])) if record.get("status") in ("passed", "failed") else []
 
 
+def _metric_values(summary: ingest.ReportSummary) -> Dict[str, Dict[str, float]]:
+    return {m.name: dict(m.values) for m in summary.metrics}
+
+
 def _report_block(summary: Optional[ingest.ReportSummary]) -> Optional[dict]:
     if summary is None:
         return None
     if summary.kind == "alerts":
-        return {"format": summary.format, "kind": "alerts", "alerts": len(summary.alerts), "runs": summary.runs}
+        block = {"format": summary.format, "kind": "alerts", "alerts": len(summary.alerts), "runs": summary.runs}
+        if summary.tool_version is not None:
+            block["tool_version"] = summary.tool_version
+        for name in ("rules_passed", "rules_inapplicable"):
+            if getattr(summary, name) is not None:
+                block[name] = getattr(summary, name)
+        return block
+    if summary.kind == "metrics":
+        return {"format": summary.format, "kind": "metrics", "metrics": _metric_values(summary), "label": "measured",
+                "tool_version": summary.tool_version}
     block = {"format": summary.format, "kind": "tests", "tests": summary.total, "failures": summary.failed,
              "errors": summary.errors, "skipped": summary.skipped}
     if summary.metrics:  # what a load test measured: numbers beside the verdict, never part of it
-        block.update(metrics={m.name: dict(m.values) for m in summary.metrics}, label="measured")
+        block.update(metrics=_metric_values(summary), label="measured")
     return block
 
 
@@ -1202,13 +1218,15 @@ def ingest_file(ws: Workspace, actor: ledger.Actor, fmt: str, path: Path, *, fro
     if ingest.is_measurement(fmt) or metered:  # what the event records derives from the redacted copy, as a run's does: a
         summary = ingest.parse_bytes(fmt, clean)  # path, or a metric name, is a dict key
     total = {"tests": len(summary.cases), "alerts": len(summary.alerts), "coverage": len(summary.files),
-             "mutants": len(summary.mutants)}[summary.kind]
+             "mutants": len(summary.mutants), "metrics": len(summary.metrics)}[summary.kind]
     measured: dict = {}
     if ingest.is_measurement(fmt):  # the numbers are on the event, so a reader need not parse the file again
         measured["totals"] = summary.measurement_totals()
         flags = _flags(ws.root, summary)
         if flags:
             measured["anomalies"] = flags
+    if summary.kind == "metrics":  # Lighthouse: the lab numbers, beside the run and never part of its status
+        measured["report"] = _report_block(summary)
     if metered:  # what the load test measured, and whether it stayed within the grant that covered the run
         measured["report"] = _report_block(summary)
         over = _load_limits_passed(st, record["authorizations"], summary)

@@ -25,7 +25,7 @@
     "container": {"$ref": "#/$defs/container"},
     "evidence_manifest": {"anyOf": [{"$ref": "#/$defs/evidence_manifest"}, {"type": "null"}]},
     "reports": {"type": "array", "items": {"$ref": "#/$defs/declared_report"}},
-    "report": {"anyOf": [{"$ref": "#/$defs/test_report"}, {"$ref": "#/$defs/alert_report"}, {"type": "null"}]},
+    "report": {"anyOf": [{"$ref": "#/$defs/test_report"}, {"$ref": "#/$defs/alert_report"}, {"$ref": "#/$defs/metrics_report"}, {"type": "null"}]},
     "measurements": {"type": "array", "items": {"$ref": "#/$defs/measurement"}, "minItems": 1, "description": "absent, never empty, when no measurement report parsed"},
     "status": {"$ref": "defs.schema.json#/$defs/status"},
     "reason": {"anyOf": [{"$ref": "defs.schema.json#/$defs/reason"}, {"type": "null"}]},
@@ -147,7 +147,7 @@
     "declared_report": {
       "type": "object",
       "properties": {
-        "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6"]},
+        "format": {"enum": ["junit", "ctrf", "sarif", "lcov", "cobertura", "jacoco", "mutation", "k6", "axe", "lighthouse"]},
         "pattern": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
         "error": {"enum": ["report_missing", "report_invalid", null]}
@@ -173,31 +173,58 @@
       "additionalProperties": false
     },
     "alert_report": {
+      "description": "tool_version is the version the tool wrote into its report; rules_passed and rules_inapplicable appear for axe, which counts the rules that passed or did not apply and lists neither.",
       "type": "object",
       "properties": {
-        "format": {"enum": ["junit", "ctrf", "sarif", "mixed"]},
+        "format": {"enum": ["junit", "ctrf", "sarif", "axe", "mixed"]},
         "kind": {"const": "alerts"},
         "alerts": {"type": "integer", "minimum": 0},
-        "runs": {"type": "integer", "minimum": 0}
+        "runs": {"type": "integer", "minimum": 0},
+        "tool_version": {"type": "string"},
+        "rules_passed": {"type": "integer", "minimum": 0},
+        "rules_inapplicable": {"type": "integer", "minimum": 0}
       },
       "required": ["format", "kind", "alerts", "runs"],
       "additionalProperties": false
     },
-    "measurement": {
-      "description": "A measurement report that parsed (coverage or mutation). It never decides the run's status; the totals are those of the stored copy named by file.",
+    "metrics_report": {
+      "description": "What a lab tool measured (Lighthouse): per metric and statistic, labelled measured. It never decides a status.",
       "type": "object",
       "properties": {
-        "format": {"enum": ["lcov", "cobertura", "jacoco", "mutation"]},
-        "kind": {"enum": ["coverage", "mutants"]},
+        "format": {"enum": ["lighthouse"]},
+        "kind": {"const": "metrics"},
+        "metrics": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "number"}}},
+        "label": {"const": "measured"},
+        "tool_version": {"type": "string"}
+      },
+      "required": ["format", "kind", "metrics", "label", "tool_version"],
+      "additionalProperties": false
+    },
+    "measurement": {
+      "description": "A measurement report that parsed (coverage, mutation or Lighthouse metrics). It never decides the run's status; the totals are those of the stored copy named by file. Lighthouse's carry the numbers themselves, labelled measured.",
+      "type": "object",
+      "properties": {
+        "format": {"enum": ["lcov", "cobertura", "jacoco", "mutation", "lighthouse"]},
+        "kind": {"enum": ["coverage", "mutants", "metrics"]},
         "file": {"type": "string"},
         "sha256": {"$ref": "defs.schema.json#/$defs/sha256"},
         "totals": {"$ref": "#/$defs/measurement_totals"},
+        "metrics": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "number"}}},
+        "label": {"const": "measured"},
+        "tool_version": {"type": "string"},
         "anomalies": {"type": "array", "items": {"enum": ["path_outside_project", "partial"]}, "minItems": 1}
       },
       "required": ["format", "kind", "file", "sha256", "totals"],
+      "dependentRequired": {"metrics": ["label", "tool_version"], "label": ["metrics"]},
       "additionalProperties": false
     },
-    "measurement_totals": {"anyOf": [{"$ref": "#/$defs/coverage_totals"}, {"$ref": "#/$defs/mutation_totals"}]},
+    "measurement_totals": {"anyOf": [{"$ref": "#/$defs/coverage_totals"}, {"$ref": "#/$defs/mutation_totals"}, {"$ref": "#/$defs/metrics_totals"}]},
+    "metrics_totals": {
+      "type": "object",
+      "properties": {"metrics": {"type": "integer", "minimum": 0}},
+      "required": ["metrics"],
+      "additionalProperties": false
+    },
     "mutation_totals": {
       "description": "Per file, how many mutants had each status (only the statuses that occur): all a reader needs to score any set of paths. Paths are as the report wrote them.",
       "type": "object",
