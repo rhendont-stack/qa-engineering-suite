@@ -46,7 +46,16 @@ One finding per problem, each written to `.qa/work/frontend/<name>.json` with Wr
 | `email-input-not-typed` | functional | `cwe: ["CWE-20"]`, `wcag_related: ["3.3.1"]` | `FUNC-M2` | the email check of the checks leg |
 | `fixed-width-over-375` | accessibility | `wcag: ["1.4.10"]` | `A11Y-M1` | the overflow check at 375x812 |
 
-The email field's finding is `functional`. The container leg records every result in the run's category, `accessibility`, so its result for that field opens a second finding: link the two with `finding dedupe --confirm <yours>:<the leg's>`.
+## Two records of one problem
+
+The email field's finding is `functional`. The container leg records every result in the run's category, `accessibility`, so its result for that field opens a second finding: the open one with the same rule and file and the anchor `TOOL-PROVISIONAL` (`state show findings`). An axe finding and your static finding for the same problem are two records too.
+
+Keep one record: the one a run confirmed, else yours (it holds the file and the line). Link the other to it in two calls:
+
+1. `finding update <KEEP> --json <file>`: add to KEEP's `evidence` what the other adds (its EXE, your `path:line`). The link itself moves nothing.
+2. `finding state <OTHER> duplicate --reason "<why they are one problem>" --duplicate-of <KEEP>`.
+
+`finding dedupe` links only the pairs it proposes itself (two records with the same file, the same CWE and overlapping lines). It never proposes these pairs and refuses them (`not_a_duplicate`), so do not use it here.
 
 ## Problems only a rendered page shows
 
@@ -63,6 +72,6 @@ Read the page's scripts and styles for these. Each is a `suspected` finding with
 ## Tool results and the findings they open
 
 - The static leg (SARIF): one provisional finding per result, matched to yours by rule and file when you recorded yours first.
-- axe (`axe` report): each violation opens a finding of the run's category, `accessibility`, with the axe rule as `refs.rule` and the page path (`/`) as its place; it carries no WCAG reference of its own. Read the rule's WCAG tags in the stored report (`.qa/evidence/<EXE>/reports/axe.json`), add them with `finding update <FND> --json <file>` (`refs.wcag`, the anchor, `confirmed` with the EXE in `evidence`), and link the static finding for the same problem with `finding dedupe`.
+- axe (`axe` report): each violation opens a finding of the run's category, `accessibility`, with the axe rule as `refs.rule` and the page path (`/`) as its place; it carries no WCAG reference of its own. Read the rule's WCAG tags in the stored report (`.qa/evidence/<EXE>/reports/axe.json`), add them with `finding update <FND> --json <file>` (`refs.wcag`, the anchor, `confirmed` with the EXE and your static finding's `path:line` in `evidence`), then make your static finding for the same problem its duplicate (two records of one problem, above).
 - Playwright (`junit` report): each test case is a result of the run; a failed one names the page, the viewport and what failed. Record one finding per problem (not per viewport), `confirmed` with the EXE and the failed test case names in `evidence`.
 - Lighthouse (`lighthouse` report): the scores and lab metrics are measurements of the run, never findings and never a verdict. A failing audit you report is a finding of its own, `probable` with the EXE.

@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import shlex
 import socket
 import subprocess
@@ -20,7 +21,7 @@ import urllib.request
 import pytest
 
 from helpers import FIXTURES, LAUNCHER, REPO, answer_key
-from qa import ingest
+from qa import container, ingest
 from test_container_live import assert_no_service_left, live, service_run  # noqa: F401 (live is a fixture)
 
 F1 = FIXTURES / "web-frontend"
@@ -296,6 +297,24 @@ STATIC_FINDING = {
     "recommendation": "Give the image an alt text that says what it shows, or alt=\"\" if it is decorative; nothing was changed here.",
     "refs": {"rule": "img-without-alt", "location": "site/index.html", "wcag": ["1.1.1"]},
 }
+EMAIL_FINDING = {
+    "title": "site/index.html:38: the email field is typed text, so it takes an address without @ (CWE-20)",
+    "description": "The input at site/index.html:38 is named email but typed text, so the browser checks nothing it holds; read from "
+                   "the source by the static scan, not shown in a browser.",
+    "category": "functional",
+    "severity_rationale": {"anchor": "FUNC-M2", "modifiers": []},
+    "component": {"path": "site/index.html", "criticality": "normal"},
+    "verification_status": "suspected",
+    "evidence": ["site/index.html:38"],
+    "reproduction_steps": ["read site/index.html:38"],
+    "impact": "A visitor can submit an address without @ and never hear back.",
+    "probable_cause": "site/index.html:38 the input is type=text",
+    "recommendation": "Type the field email and check the value on the server too; nothing was changed here.",
+    "refs": {"rule": "email-input-not-typed", "location": "site/index.html", "cwe": ["CWE-20"], "wcag_related": ["3.3.1"]},
+}
+# The documented link of two records of one problem (references/triage.md, two records of one problem).
+LINK_EVIDENCE = "`finding update <KEEP> --json <file>`"
+LINK_STATE = '`finding state <OTHER> duplicate --reason "<why they are one problem>" --duplicate-of <KEEP>`'
 
 
 def junit_cases(path):
@@ -334,12 +353,15 @@ def test_the_frontend_legs_are_the_documented_ones_with_pinned_images_and_loopba
 @pytest.mark.docker
 def test_f1_static_ui_leg(f1_project):
     project = f1_project
-    # the host scan's finding for one result, recorded first as the skill records it (references/states.md, the finding file)
+    # the host scan's findings for two results, recorded first as the skill records them (references/states.md, the finding file)
     work = project.root / ".qa" / "work" / "frontend"
     work.mkdir(parents=True)
-    (work / "img.json").write_text(json.dumps(STATIC_FINDING), encoding="utf-8")
-    code, added = project.cli("finding", "add", "--json", ".qa/work/frontend/img.json")
-    assert code == 0, added
+    yours = {}
+    for name, body in (("img", STATIC_FINDING), ("email", EMAIL_FINDING)):
+        (work / ("%s.json" % name)).write_text(json.dumps(body), encoding="utf-8")
+        code, added = frontend_cli(project.root, ["finding", "add", "--json", ".qa/work/frontend/%s.json" % name])
+        assert code == 0, added
+        yours[name] = added["id"]
     frontend_script(project.root, "static_ui_scan.py", "--copy-to-work")
     code, out = frontend_cli(project.root, frontend_words("frontend-static")[1])
     print("frontend-static leg:", out["execution"], "exit", code, out["status"], out.get("reason"), out.get("findings"))
@@ -355,11 +377,32 @@ def test_f1_static_ui_leg(f1_project):
                      ("fixed-width-over-375", "site/styles.css", 33), ("img-without-alt", "site/index.html", 19)]
     findings = project.cli("state", "show", "findings")[1]["state"]
     print("frontend-static findings:", sorted((f["refs"]["rule"], f["component"].get("path"), f["category"]) for f in findings.values()))
-    assert sorted((f["refs"]["rule"], f["component"].get("path")) for f in findings.values()) == [
-        ("click-handler-on-non-interactive", "site/index.html"), ("email-input-not-typed", "site/index.html"),
-        ("fixed-width-over-375", "site/styles.css"), ("img-without-alt", "site/index.html")]
+    assert sorted((f["refs"]["rule"], f["component"].get("path"), f["category"]) for f in findings.values()) == [
+        ("click-handler-on-non-interactive", "site/index.html", "accessibility"),
+        ("email-input-not-typed", "site/index.html", "accessibility"), ("email-input-not-typed", "site/index.html", "functional"),
+        ("fixed-width-over-375", "site/styles.css", "accessibility"), ("img-without-alt", "site/index.html", "accessibility")]
     kept = [f for f in findings.values() if f["refs"]["rule"] == "img-without-alt"]
-    assert len(kept) == 1 and kept[0]["refs"]["wcag"] == ["1.1.1"] and kept[0]["verification_status"] == "suspected"
+    assert len(kept) == 1 and kept[0]["id"] == yours["img"] and kept[0]["refs"]["wcag"] == ["1.1.1"]
+    assert kept[0]["verification_status"] == "suspected"
+    # The email field's copy, linked as references/triage.md documents it. The kernel's dedupe never proposes this pair (no
+    # source line, no shared CWE) and refuses it; the duplicate transition takes it.
+    triage = (FRONTEND / "references" / "triage.md").read_text(encoding="utf-8")
+    assert LINK_EVIDENCE in triage and LINK_STATE in triage
+    copy = next(fid for fid, f in findings.items() if f["refs"]["rule"] == "email-input-not-typed" and f["category"] == "accessibility")
+    assert findings[copy]["severity_rationale"]["anchor"] == "TOOL-PROVISIONAL" and findings[copy]["state"] == "open"
+    code, refused = frontend_cli(project.root, ["finding", "dedupe", "--confirm", "%s:%s" % (yours["email"], copy)])
+    assert code != 0 and refused["error"]["code"] == "not_a_duplicate", refused
+    (work / "email-evidence.json").write_text(json.dumps({"evidence": EMAIL_FINDING["evidence"] + [out["execution"]]}), encoding="utf-8")
+    code, updated = frontend_cli(project.root, ["finding", "update", yours["email"], "--json", ".qa/work/frontend/email-evidence.json"])
+    assert code == 0, updated
+    code, linked = frontend_cli(project.root, ["finding", "state", copy, "duplicate", "--reason",
+                                               "the static leg's record of the email field at site/index.html:38", "--duplicate-of",
+                                               yours["email"]])
+    assert (code, linked["state"]) == (0, "duplicate"), linked
+    findings = project.cli("state", "show", "findings")[1]["state"]
+    print("frontend-static link:", copy, "->", findings[copy].get("duplicate_of"), "evidence", findings[yours["email"]]["evidence"])
+    assert findings[copy]["state"] == "duplicate" and findings[copy]["duplicate_of"] == yours["email"]
+    assert findings[yours["email"]]["state"] == "open" and out["execution"] in findings[yours["email"]]["evidence"]
 
 
 # What each browser check that fails on F1 locates, by the check's name: the answer-key entry whose class it shows. The
@@ -472,3 +515,41 @@ def test_frontend_runner_refuses_a_non_loopback_base_url(f1_project):
     assert "qa-frontend: refused" in logs and "no browser was started" in logs and "https://127.0.0.1" not in logs
     assert not (evidence_of(f1_project, out["execution"]) / "reports" / "junit.xml").exists()
     assert not re.search(r"Running \d+ test", logs), logs
+
+
+REFUSAL = b"qa-frontend: refused: QA_BASE_URL must be http:// on 127.0.0.1, [::1] or localhost; no browser was started\n"
+
+
+def load_runner_config(base_url):
+    """The runner configuration loaded by the playwright image's own node, outside ``qa run``: the file on stdin (no mount),
+    no network, a container named ``qa-rtest-<hex>`` that is removed by that name. Returns the engine's outcome."""
+    engine_text = os.environ.get("QA_TEST_CONTAINER_ENGINE")
+    if not engine_text:
+        pytest.skip("tool missing: QA_TEST_CONTAINER_ENGINE is not set")
+    engine = container.Engine(engine_text)
+    name = "qa-rtest-" + secrets.token_hex(6)
+    try:
+        return engine.run(["run", "--rm", "-i", "--pull=never", "--network=none", "--entrypoint=node", "--env=QA_BASE_URL=" + base_url,
+                           "--label=qa.suite.test=frontend-config", "--name=" + name, image_of("playwright"), "--input-type=module"],
+                          stdin_path=FRONTEND / "assets" / "playwright.config.mjs", timeout_s=120, max_bytes=1 << 20)
+    finally:
+        engine.run(["rm", "-f", name], stdin_path=None, timeout_s=60, max_bytes=1 << 16)
+        assert engine.run(["inspect", "--type=container", name], stdin_path=None, timeout_s=60, max_bytes=1 << 16).exit_code != 0
+
+
+@pytest.mark.docker
+@pytest.mark.parametrize("base_url", ["http://192.0.2.10:8080/", "http://shop.example:8080/", "http://qa-user:qa-pass@127.0.0.1:8080/"])
+def test_the_runner_config_refuses_a_base_url_off_loopback_at_load(base_url):
+    # The configuration's own refusal, run directly: a host outside loopback (an address, a name) and a loopback URL that carries
+    # credentials. It exits 2 at load with its one line and nothing else: no browser starts and the value is not printed.
+    done = load_runner_config(base_url)
+    print("config load:", base_url.split("//", 1)[1].split("@")[-1], "exit", done.exit_code, done.stdout[-200:], done.stderr[-300:])
+    assert (done.exit_code, done.stdout, done.stderr) == (2, b"", REFUSAL), done
+    assert b"192.0.2.10" not in done.stderr and b"shop.example" not in done.stderr and b"qa-pass" not in done.stderr
+
+
+@pytest.mark.docker
+def test_the_runner_config_loads_for_the_loopback_base_url():
+    # The control: the base URL of the documented legs loads with no output, so the refusals above come from the host check.
+    done = load_runner_config("http://127.0.0.1:8080")
+    assert (done.exit_code, done.stdout, done.stderr) == (0, b"", b""), done
