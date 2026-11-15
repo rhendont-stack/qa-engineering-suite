@@ -47,6 +47,11 @@ def marker(kind: str, secret: str, key: bytes) -> str:
     return "[REDACTED:%s:%s]" % (kind, digest[:8])
 
 
+def has_marker(text: str) -> bool:
+    """Whether ``text`` holds a marker ``marker`` writes: the stored text is then not the text that was there."""
+    return _MARKER_RE.search(text) is not None
+
+
 def load_patterns() -> List[RedactionPattern]:
     """Patterns of ``redaction.json`` in file order; validated and compiled once."""
     global _PATTERNS

@@ -1,0 +1,13 @@
+{
+  "name": "qa-frontend-runner",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned dependency set of the suite's frontend runner (Playwright, axe-core, Lighthouse).",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.65.1",
+    "axe-core": "4.14.0",
+    "lighthouse": "13.6.0"
+  }
+}

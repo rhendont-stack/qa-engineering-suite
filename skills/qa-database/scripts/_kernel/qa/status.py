@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from qa.ingest import MEASUREMENT_KINDS, ReportSummary
 
@@ -72,14 +72,35 @@ def _decision(inp: StatusInputs, status: str, reason: Optional[str], extra: Tupl
     return StatusDecision(status, reason, _strength(inp) if strength == "auto" else strength, anomalies, classification)
 
 
+# Anomalies that void a pass, first match first. A pass means the tests ran with no network: without proof of that, the
+# run shows nothing either way. A run past its authorized load (its grant's limits) proves nothing about the objective.
+# Any other status keeps its reason, with the anomaly beside it.
+PASS_VOIDING = ("network_not_isolated", "load_limit_exceeded")
+
+
+def _voided(status: str, reason: Optional[str], anomalies: Tuple[str, ...]) -> Tuple[str, Optional[str]]:
+    if status == "passed":
+        for anomaly in PASS_VOIDING:
+            if anomaly in anomalies:
+                return "inconclusive", anomaly
+    return status, reason
+
+
 def decide(inp: StatusInputs) -> StatusDecision:
     if inp.summary is not None and inp.summary.kind in MEASUREMENT_KINDS:
         inp = replace(inp, summary=None)  # a measurement (coverage) never decides: the run reads as if it had no report
     decision = _first_match(inp)
-    # A pass means the tests ran with no network; without proof of that, the run shows nothing either way.
-    if decision.status == "passed" and "network_not_isolated" in decision.anomalies:
-        return replace(decision, status="inconclusive", reason="network_not_isolated")
-    return decision
+    status, reason = _voided(decision.status, decision.reason, decision.anomalies)
+    return decision if status == decision.status else replace(decision, status=status, reason=reason)
+
+
+def with_anomaly(status: str, reason: Optional[str], anomalies: Sequence[str],
+                 anomaly: str) -> Tuple[str, Optional[str], List[str]]:
+    """A recorded status, reason and anomalies once ``anomaly`` is known too (a k6 summary ingested after the run
+    can show ``load_limit_exceeded``): the anomalies in ``ANOMALY_ORDER``, and a pass voided as ``decide`` voids it."""
+    found = set(anomalies) | {anomaly}
+    ordered = [a for a in ANOMALY_ORDER if a in found]
+    return _voided(status, reason, tuple(ordered)) + (ordered,)
 
 
 def _first_match(inp: StatusInputs) -> StatusDecision:

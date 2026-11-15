@@ -35,7 +35,7 @@
         "policy_denied", "not_authorized", "config_drift",
         "tool_missing", "not_executable", "dependency_unavailable",
         "timeout", "report_missing", "report_invalid", "no_tests_collected", "network_not_isolated",
-        "assertion", "error", "all_skipped", "exit_code_mismatch",
+        "load_limit_exceeded", "assertion", "error", "all_skipped", "exit_code_mismatch",
         "nonzero_exit", "environment_error", "skipped"
       ]
     },

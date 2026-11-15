@@ -4,23 +4,30 @@
 
 1. a never-activity (``credential-use``, ``deploy``) is ``policy_denied``;
 2. ``db-write`` and ``dast-active`` on a ``production`` environment are ``policy_denied``;
-3. a ``ci`` environment is ``policy_denied``: ci environments arrive in milestone 4;
+3. a ``ci`` environment outside a CI-pinned workspace (``config.ci_pinned``: ``qa ci begin`` ran there) is
+   ``policy_denied``, and in a CI-pinned workspace so is any activity ``runner_confined`` refuses, whatever the
+   environment (one outside ``vocab.RUNNER_CONFINED``, or ``db-ephemeral`` on a database the suite did not create);
+   nothing reads ``CI=true``;
 4. ``static-analysis`` is allowed by default;
-5. ``test-execution-local`` runs the tests on this machine whatever the environment's class, so
-   an untrusted project is ``not_authorized`` on every class unless the check is ``containerized``,
-   which only ``execution`` sets, and only for a run it then hands to the container pipeline
-   (§12.2). A project that is trusted, or a containerized check, is allowed on a ``local``
-   environment and otherwise goes on to 6 and 7;
-6. a standing authorization in config.json for the environment and the activity allows it;
-7. so does a grant this machine recorded (``authority``; ``state.load`` holds no other) that is not revoked, has not expired (it covers a check while
+5. any other activity runs something on this machine unless the check is ``containerized``, which
+   only ``execution`` sets, and only for a run it then hands to the container pipeline (§12.2). So
+   a check that is not containerized, for a project whose ``project.trust`` is not ``trusted``, is
+   ``not_authorized`` on every class, whatever standing authorization or grant exists; the refusal
+   names the activity and both routes: trust recorded from the user's words, or a container run;
+6. ``test-execution-local`` runs the tests on this machine whatever the environment's class: on a
+   ``local`` environment it is allowed (the project is trusted, or the check is containerized), and
+   on any other class it goes on to 7 and 8;
+7. a standing authorization in config.json for the environment and the activity allows it;
+8. so does a grant this machine recorded (``authority``; ``state.load`` holds no other) that is not revoked, has not expired (it covers a check while
    ``now < expires_at``) and covers the environment, the activity and every host; for a
    per-target activity (``network-download``, ``dast-passive``, ``dast-active``) the check must
    also name at least one host, since §12.2 grants those per target;
-8. anything else is ``not_authorized``.
+9. anything else is ``not_authorized``.
 
 Grants are ``authorization.granted`` events in the Appendix A.4 shape. ``grant`` records them
 (``qa authorize``) and ``revoke`` withdraws them (``qa auth revoke``); editing config.json never
-creates one. A target is stored as given and has one of these forms:
+creates one. A ``ci`` environment takes no grant, only standing authorizations, and a CI-pinned
+workspace records none. A target is stored as given and has one of these forms:
 
 - a URL (text with ``://``): an http(s) URL that names a host and carries no userinfo (§12.5);
 - a bare target: a host name of ASCII letters, digits, ``.``, ``-`` and ``_`` (an IPv4 address
@@ -55,7 +62,7 @@ from .workspace import Workspace
 
 # QaError codes raised here: approval_required, unknown_environment, ci_unsupported,
 # invalid_activity, targets_required, invalid_target, undeclared_target, invalid_limits,
-# invalid_expiry (build_grant, and so grant); invalid_id, invalid_environment, invalid_activity,
+# invalid_expiry (build_grant, and so grant); ci_no_grants, invalid_id, invalid_environment, invalid_activity,
 # invalid_target and invalid_expiry for a field the ledger would redact (grant);
 # unknown_authorization, already_revoked (revoke); plus whatever config.load_config,
 # redact.load_redactor and ledger.append raise.
@@ -67,11 +74,35 @@ _HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
 _BARE_NAME = re.compile(r"([A-Za-z0-9._-]+)(?::[0-9]{1,5})?")
 _BARE_BRACKETED = re.compile(r"\[([^\]]*)\](?::[0-9]{1,5})?")
 _IPV6_TEXT = re.compile(r"[0-9A-Fa-f:.]+(?:%[A-Za-z0-9._-]+)?")
-_UNTRUSTED = ("untrusted project: run it with `qa run --container IMAGE@DIGEST`, "
-              "or approve `qa config set project.trust trusted`")
+_UNTRUSTED_HOST = ("untrusted project: a host run of %s needs trust, recorded from the user's own words with "
+                   "`qa config set project.trust trusted`, or run it in a container with `qa run --container IMAGE@DIGEST`")
 # A run inside a suite worktree cannot be containerised (its archive would hold the main tree), so only trust is offered.
 UNTRUSTED_IN_WORKTREE = "untrusted project: a run inside a suite worktree needs `qa config set project.trust trusted` approved"
-UNTRUSTED = _UNTRUSTED
+CI_OUTSIDE_PIN = ("a ci environment is used only in the CI job `qa ci generate` writes, after `qa ci begin` pinned its workspace "
+                  "to the accepted configuration; setting CI=true grants nothing")
+_CI_NOT_CONFINED = "%s is not confined to the CI runner, and this workspace is CI-pinned (`qa ci begin`)"
+_CI_DB_NOT_SUITE_CREATED = ("%s is confined to the CI runner only on an ephemeral environment the suite created, and this "
+                            "workspace is CI-pinned (`qa ci begin`)")
+_DB_EPHEMERAL = "db-ephemeral"
+
+
+def runner_confined(activity: str, environment: dict) -> bool:
+    """Whether a CI-pinned workspace may check ``activity`` against ``environment`` (§12.2 "Unattended CI"): an activity of
+    ``vocab.RUNNER_CONFINED``, with ``db-ephemeral`` only "for containers the suite creates", that is on an ``ephemeral``
+    environment whose basis is ``suite-created``. config.json cannot declare that basis there (``config.semantic_errors``),
+    a basis declared on another class proves nothing, and nothing in this milestone records one, so no CI job runs
+    db-ephemeral until the container route (D22) does. ``ci.generate`` skips runs by the same test.
+    """
+    if activity not in vocab.RUNNER_CONFINED:
+        return False
+    if activity == _DB_EPHEMERAL:
+        return environment.get("class") == "ephemeral" and environment.get("ephemeral_basis") == "suite-created"
+    return True
+
+
+def untrusted_host(activity: str) -> str:
+    """The detail ``check`` gives when an untrusted project's host run of ``activity`` is refused (rule 5)."""
+    return _UNTRUSTED_HOST % activity
 
 
 def _count(value: Any) -> bool:
@@ -186,18 +217,20 @@ def check(st: dict, cfg: dict, *, activity: str, environment: dict, hosts: Tuple
         return _deny("policy_denied", "%s is never performed by the suite" % activity)
     if env_class == "production" and activity in _NEVER_ON_PRODUCTION:
         return _deny("policy_denied", "%s is never performed on production" % activity)
-    if env_class == "ci":
-        return _deny("policy_denied", "ci environments arrive in milestone 4")
+    pinned = config.ci_pinned(st)
+    if env_class == "ci" and not pinned:
+        return _deny("policy_denied", CI_OUTSIDE_PIN)
+    if pinned and not runner_confined(activity, environment):
+        return _deny("policy_denied", (_CI_DB_NOT_SUITE_CREATED if activity == _DB_EPHEMERAL else _CI_NOT_CONFINED) % activity)
     if activity == "static-analysis":
         return _allow("default:static-analysis", "static analysis is allowed by default")
-    if activity == "test-execution-local":  # on every class: the tests run on this machine
-        trusted = cfg["project"]["trust"] == "trusted"
-        if not trusted and not containerized:
-            return _deny("not_authorized", _UNTRUSTED)
-        if env_class == "local":
-            if trusted:
-                return _allow("trusted:local", "the project is trusted to run its tests on this machine")
-            return _allow("container:local", "an untrusted project may run its tests in a container with no network")
+    trusted = cfg["project"]["trust"] == "trusted"
+    if not trusted and not containerized:  # on every class: a host run executes on this machine
+        return _deny("not_authorized", untrusted_host(activity))
+    if activity == "test-execution-local" and env_class == "local":
+        if trusted:
+            return _allow("trusted:local", "the project is trusted to run its tests on this machine")
+        return _allow("container:local", "an untrusted project may run its tests in a container with no network")
     for standing in cfg["standing_authorizations"]:
         if standing["environment"] == env_id and activity in standing["activities"]:
             return _allow("standing:%s" % env_id, "standing authorization in config.json")
@@ -255,7 +288,8 @@ def build_grant(cfg: dict, *, environment_id: str, targets: List[str], activitie
     if env is None:
         raise QaError("unknown_environment", "config.json declares no such environment", environment=environment_id)
     if env["class"] == "ci":
-        raise QaError("ci_unsupported", "ci environments arrive in milestone 4", environment=environment_id)
+        raise QaError("ci_unsupported", "ci environments take standing authorizations from config.json only",
+                      environment=environment_id)
     _check_activities(env, activities)
     per_target = [a for a in activities if a in vocab.PER_TARGET_ACTIVITIES]
     if per_target and not targets:
@@ -347,6 +381,9 @@ def grant(ws: Workspace, actor: ledger.Actor, *, now: Optional[datetime] = None,
     The approval quote and the limits may still be redacted.
     """
     with ws.lock():
+        if config.ci_pinned(state.load(ws)):  # nobody can answer in a CI job (§12.2), so no approval can be recorded there
+            raise QaError("ci_no_grants", "a CI-pinned workspace records no grants: a CI job uses the standing authorizations "
+                                          "of the configuration it was pinned to")
         if now is None:
             now = ids.now_utc()
         data = build_grant(config.load_config(ws), now=now, **build_grant_kwargs)

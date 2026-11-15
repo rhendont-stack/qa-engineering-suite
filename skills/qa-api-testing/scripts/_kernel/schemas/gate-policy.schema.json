@@ -44,7 +44,13 @@
         "min_score": {"type": "number", "minimum": 0, "maximum": 100},
         "paths": {"type": "array", "items": {"type": "string", "pattern": "\\S"}, "minItems": 1,
                   "description": "mutation_score_min only: globs, relative to the project, of the files whose mutants are scored (* within a segment, ** across segments). Not in the policy files: an accepted override sets it."},
-        "min_priority": {"enum": ["must", "should", "could", "wont"]}
+        "min_priority": {"enum": ["must", "should", "could", "wont"]},
+        "classes": {"type": "array", "items": {"enum": ["secrets", "dependencies", "sast", "dast-baseline"]}, "minItems": 1, "uniqueItems": true,
+                    "description": "security_scans_executed: the scan classes that must have run on the target commit."},
+        "min_environment_class": {"$ref": "defs.schema.json#/$defs/env_class",
+                                  "description": "performance_objectives_met: the lowest environment class whose load-test figures count."},
+        "activity": {"$ref": "defs.schema.json#/$defs/activity",
+                     "description": "migrations_validated: the activity whose latest run on the target commit decides."}
       },
       "additionalProperties": false
     }

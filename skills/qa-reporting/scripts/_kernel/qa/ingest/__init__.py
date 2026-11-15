@@ -1,6 +1,6 @@
-"""Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0, k6 summaries) into counted results and alerts,
-and coverage reports (LCOV, Cobertura, JaCoCo) and mutation reports (mutation-testing-report-schema JSON) into
-measurements. A k6 summary's thresholds are its tests; its metrics travel beside them."""
+"""Turn the reports test tools write (JUnit XML, CTRF JSON, SARIF 2.1.0, axe-core results, k6 summaries) into counted results
+and alerts, and coverage reports (LCOV, Cobertura, JaCoCo), mutation reports (mutation-testing-report-schema JSON) and
+Lighthouse results into measurements. A k6 summary's thresholds are its tests; its metrics travel beside them."""
 from __future__ import annotations
 
 import json
@@ -79,7 +79,7 @@ class Metric:
 @dataclass(frozen=True)
 class ReportSummary:
     format: str
-    kind: str  # tests | alerts | coverage | mutants
+    kind: str  # tests | alerts | coverage | mutants | metrics
     cases: Tuple[CaseResult, ...]
     alerts: Tuple[Alert, ...]
     runs: int
@@ -88,6 +88,9 @@ class ReportSummary:
     mutants: Tuple[Mutant, ...] = ()
     metrics: Tuple[Metric, ...] = ()
     run_duration_ms: Optional[int] = None
+    tool_version: Optional[str] = None  # the version the tool wrote into its own report (axe-core, Lighthouse)
+    rules_passed: Optional[int] = None  # axe: rules that passed and rules that did not apply, counted and never listed
+    rules_inapplicable: Optional[int] = None
 
     @property
     def lines_total(self) -> int:
@@ -118,6 +121,8 @@ class ReportSummary:
         return {"files": len(by_file), "mutants": len(self.mutants), "by_file": by_file}
 
     def measurement_totals(self) -> dict:
+        if self.kind == "metrics":
+            return {"metrics": len(self.metrics)}
         return self.mutation_totals() if self.kind == "mutants" else self.coverage_totals()
 
     @property
@@ -217,6 +222,8 @@ def merge(summaries: List[ReportSummary]) -> ReportSummary:
     for s in summaries:
         for a in s.anomalies:
             add_anomaly(anomalies, a)
+    versions = tuple(sorted({s.tool_version for s in summaries if s.tool_version is not None}))
+    counted = {name: [getattr(s, name) for s in summaries if getattr(s, name) is not None] for name in ("rules_passed", "rules_inapplicable")}
     return ReportSummary(
         format=formats.pop() if len(formats) == 1 else "mixed",
         kind=summaries[0].kind,
@@ -228,6 +235,9 @@ def merge(summaries: List[ReportSummary]) -> ReportSummary:
         mutants=tuple(m for s in summaries for m in s.mutants),
         metrics=tuple(m for s in summaries for m in s.metrics),
         run_duration_ms=max((s.run_duration_ms for s in summaries if s.run_duration_ms is not None), default=None),
+        tool_version=", ".join(versions) if versions else None,
+        rules_passed=sum(counted["rules_passed"]) if counted["rules_passed"] else None,
+        rules_inapplicable=sum(counted["rules_inapplicable"]) if counted["rules_inapplicable"] else None,
     )
 
 
@@ -268,23 +278,27 @@ def mutation_summary(mutants: List[Mutant], anomalies: Optional[List[str]] = Non
 
 # The parsers import the models and helpers above, so they come last.
 from qa.ingest import ctrf as _ctrf  # noqa: E402  (after the models they import)
+from qa.ingest import axe as _axe  # noqa: E402
 from qa.ingest import cobertura as _cobertura  # noqa: E402
 from qa.ingest import jacoco as _jacoco  # noqa: E402
 from qa.ingest import junit as _junit  # noqa: E402
 from qa.ingest import k6 as _k6  # noqa: E402
 from qa.ingest import lcov as _lcov  # noqa: E402
+from qa.ingest import lighthouse as _lighthouse  # noqa: E402
 from qa.ingest import mutation as _mutation  # noqa: E402
 from qa.ingest import sarif as _sarif  # noqa: E402
 
 _PARSERS = {"junit": _junit.parse, "ctrf": _ctrf.parse, "sarif": _sarif.parse, "lcov": _lcov.parse,
-            "cobertura": _cobertura.parse, "jacoco": _jacoco.parse, "mutation": _mutation.parse, "k6": _k6.parse}
+            "cobertura": _cobertura.parse, "jacoco": _jacoco.parse, "mutation": _mutation.parse, "k6": _k6.parse,
+            "axe": _axe.parse, "lighthouse": _lighthouse.parse}
 # What each format counts, so a request mixing kinds is refused before anything runs.
 FORMAT_KINDS = {"junit": "tests", "ctrf": "tests", "sarif": "alerts", "lcov": "coverage", "cobertura": "coverage",
-                "jacoco": "coverage", "mutation": "mutants", "k6": "tests"}
+                "jacoco": "coverage", "mutation": "mutants", "k6": "tests", "axe": "alerts", "lighthouse": "metrics"}
 # Load-test summaries: their thresholds decide the run, but a load test is not the project's suite (gate.py).
 LOAD_TEST_FORMATS = ("k6",)
-# Measurement reports are numbers a tool measured. They are recorded beside a run and never decide its status.
-MEASUREMENT_KINDS = ("coverage", "mutants")
+# Measurement reports are numbers a tool measured (Lighthouse's are lab metrics). They are recorded beside a run and never
+# decide its status.
+MEASUREMENT_KINDS = ("coverage", "mutants", "metrics")
 
 
 def is_measurement(fmt: str) -> bool:

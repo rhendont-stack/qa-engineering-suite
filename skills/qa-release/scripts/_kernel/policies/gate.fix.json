@@ -1,0 +1,78 @@
+{
+  "profile": "fix",
+  "criteria": [
+    {
+      "id": "no_unresolved_high",
+      "type": "no_unresolved_findings",
+      "blocking": true,
+      "min_strength": null,
+      "min_independence": null,
+      "params": {
+        "min_severity": "HIGH"
+      },
+      "opt_in": false
+    },
+    {
+      "id": "requirements_verified",
+      "type": "requirements_verified",
+      "blocking": false,
+      "min_strength": null,
+      "min_independence": null,
+      "params": {},
+      "opt_in": false
+    },
+    {
+      "id": "suite_executed",
+      "type": "suite_executed",
+      "blocking": true,
+      "min_strength": "exit_code",
+      "min_independence": null,
+      "params": {
+        "scope": "targeted",
+        "clean_tree": false,
+        "require_passed": true
+      },
+      "opt_in": false
+    },
+    {
+      "id": "no_blocked_critical",
+      "type": "no_blocked_critical",
+      "blocking": false,
+      "min_strength": null,
+      "min_independence": null,
+      "params": {},
+      "opt_in": false
+    },
+    {
+      "id": "flaky_rate_max",
+      "type": "flaky_rate_max",
+      "blocking": false,
+      "min_strength": null,
+      "min_independence": null,
+      "params": {
+        "max_ratio": 0.02
+      },
+      "opt_in": false
+    },
+    {
+      "id": "test_integrity",
+      "type": "test_integrity",
+      "blocking": true,
+      "min_strength": null,
+      "min_independence": null,
+      "params": {},
+      "opt_in": false
+    },
+    {
+      "id": "independence_min",
+      "type": "independence_min",
+      "blocking": false,
+      "min_strength": null,
+      "min_independence": null,
+      "params": {
+        "min": "I1"
+      },
+      "opt_in": false
+    }
+  ]
+}

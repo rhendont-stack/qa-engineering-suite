@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "bundle.compared event data",
+  "description": "One local execution set beside the imported execution that ran the same command at the same commit. matching is true only when the two agree on status and on every test, so a matching comparison is what lets a criterion that needs I3 count the local execution.",
+  "type": "object",
+  "properties": {
+    "bundle": {"type": "string", "pattern": "^BUNDLE-[0-9]{3,}$"},
+    "local": {"$ref": "defs.schema.json#/$defs/exe_id"},
+    "remote": {"$ref": "defs.schema.json#/$defs/exe_id"},
+    "commit": {"type": "string", "minLength": 1},
+    "matching": {"type": "boolean"},
+    "differences": {
+      "type": "object",
+      "additionalProperties": {"type": ["integer", "boolean", "string", "null"]}
+    }
+  },
+  "required": ["bundle", "local", "remote", "commit", "matching", "differences"],
+  "additionalProperties": false
+}

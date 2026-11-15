@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import os
@@ -20,7 +21,12 @@ PROD = {"id": "prod", "class": "production", "base_urls": ["https://shop.example
 EPH = {"id": "eph", "class": "ephemeral", "ephemeral_basis": "user-declared", "base_urls": []}
 CI = {"id": "ci", "class": "ci"}
 LOAD = {"max_vus": 50, "max_rps": 100, "max_duration_s": 600}
-UNTRUSTED = "untrusted project: run it with `qa run --container IMAGE@DIGEST`, or approve `qa config set project.trust trusted`"
+
+
+def untrusted(activity):
+    """The refusal detail of an untrusted project's host run of ``activity`` (milestone 4b: any activity but static-analysis)."""
+    return ("untrusted project: a host run of %s needs trust, recorded from the user's own words with "
+            "`qa config set project.trust trusted`, or run it in a container with `qa run --container IMAGE@DIGEST`" % activity)
 
 
 def chk(st, cfg, activity, env=LOCAL, hosts=()):
@@ -30,6 +36,14 @@ def chk(st, cfg, activity, env=LOCAL, hosts=()):
 def _cfg(*environments):
     cfg = workspace.default_config("x")
     cfg["environments"].extend(environments)
+    return cfg
+
+
+def _trusting(cfg):
+    """``cfg`` with project.trust trusted. Since milestone 4b a host check of any activity but static-analysis needs trust
+    before a standing authorization or a grant is read, so a test of their coverage states it."""
+    cfg = copy.deepcopy(cfg)
+    cfg["project"]["trust"] = "trusted"
     return cfg
 
 
@@ -101,14 +115,14 @@ def test_untrusted_local_tests_not_authorized_trusted_allowed():
 
 
 def test_standing_authorization():
-    cfg = workspace.default_config("x")
+    cfg = _trusting(workspace.default_config("x"))
     cfg["standing_authorizations"] = [{"environment": "local", "activities": ["install-dependencies"]}]
     assert chk(state.empty_state(), cfg, "install-dependencies").authorization == "standing:local"
 
 
 def test_grant_used_then_expires(ws, actor, frozen_now):
     frozen_now.set(datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc))   # T10-R1: never the last second of a local day
-    cfg = config.load_config(ws)
+    cfg = _trusting(config.load_config(ws))
     g = authz.grant(ws, actor, environment_id="local", targets=["localhost"], activities=["load-test"],
                     limits={"load-test": {"max_vus": 5, "max_rps": 10, "max_duration_s": 60}}, approval="ok for 1h", expires_at=None)
     assert (g["data"]["granted_by"], g["data"]["limits"]["load-test"]["max_vus"]) == ("user", 5)
@@ -121,7 +135,7 @@ def test_revoked_grant_not_used(ws, actor, frozen_now):
     frozen_now.set(NOON)   # T10-R1: with T10-R7, a default-expiry grant in the last second of a local day is refused
     authz.grant(ws, actor, environment_id="local", targets=["localhost"], activities=["db-readonly"], limits={}, approval="ok", expires_at=None)
     authz.revoke(ws, actor, "AUTH-001", "done")
-    assert chk(state.load(ws), config.load_config(ws), "db-readonly", hosts=("localhost",)).reason == "not_authorized"
+    assert chk(state.load(ws), _trusting(config.load_config(ws)), "db-readonly", hosts=("localhost",)).reason == "not_authorized"
 
 
 @pytest.mark.parametrize("kwargs,code", [
@@ -142,10 +156,77 @@ def test_ci_environment_refused():
     cfg = workspace.default_config("x")
     cfg["environments"].append({"id": "ci", "class": "ci"})
     d = chk(state.empty_state(), cfg, "static-analysis", {"id": "ci", "class": "ci"})   # step (3) comes before the static-analysis default
-    assert not d.allowed and d.reason == "policy_denied" and "milestone 4" in d.detail
+    assert not d.allowed and d.reason == "policy_denied" and "qa ci begin" in d.detail
     with pytest.raises(QaError) as e:
         authz.build_grant(cfg, environment_id="ci", targets=[], activities=["db-readonly"], limits={}, approval="ok", expires_at=None, now=ids.now_utc())
-    assert e.value.code == "ci_unsupported"
+    assert e.value.code == "ci_unsupported" and e.value.message == "ci environments take standing authorizations from config.json only"
+
+
+def _ci_pinned_state():
+    st = state.empty_state()
+    st["config"]["accepted_basis"] = "ci-pin"
+    return st
+
+
+def test_ci_pinned_state_allows_a_ci_environment_only_for_runner_activities():
+    cfg = _cfg(CI)
+    cfg["project"]["trust"] = "trusted"
+    cfg["standing_authorizations"].append({"environment": "ci", "activities": ["test-execution-local", "db-ephemeral"]})
+    st = _ci_pinned_state()
+    assert chk(st, cfg, "static-analysis", CI).authorization == "default:static-analysis"
+    assert chk(st, cfg, "test-execution-local", CI).authorization == "standing:ci"
+    assert chk(st, cfg, "install-dependencies", CI).reason == "not_authorized"   # confined, but no standing authorization
+    for activity in ("db-write", "load-test", "dast-passive", "write-tests", "device-control", "git-history-scan",
+                     "db-ephemeral"):
+        for env in (CI, LOCAL):
+            d = chk(st, cfg, activity, env)
+            assert (d.allowed, d.reason) == (False, "policy_denied") and "CI-pinned" in d.detail, (activity, env)
+    assert chk(st, cfg, "test-execution-local", LOCAL).authorization == "trusted:local"
+
+
+SUITE_DB = {"id": "made", "class": "ephemeral", "ephemeral_basis": "suite-created", "base_urls": []}
+
+
+def test_ci_pinned_state_confines_db_ephemeral_to_a_database_the_suite_created():
+    """§12.2: db-ephemeral "for containers the suite creates". config.json cannot declare that basis on an ephemeral
+    environment, and declaring it on another class proves nothing, so in milestone 4b no CI job runs db-ephemeral."""
+    declared_ci = dict(CI, ephemeral_basis="suite-created")   # config validation checks the basis on ephemeral environments only
+    cfg = _trusting(_cfg(CI, EPH, SUITE_DB))
+    cfg["standing_authorizations"] += [{"environment": env["id"], "activities": ["db-ephemeral"]} for env in (CI, EPH, SUITE_DB)]
+    st = _ci_pinned_state()
+    for env in (CI, declared_ci, EPH, LOCAL):
+        d = chk(st, cfg, "db-ephemeral", env)
+        assert (d.allowed, d.reason) == (False, "policy_denied") and "the suite created" in d.detail, env
+        assert not authz.runner_confined("db-ephemeral", env)
+    assert chk(st, cfg, "db-ephemeral", SUITE_DB).authorization == "standing:made"
+    assert authz.runner_confined("db-ephemeral", SUITE_DB) and authz.runner_confined("test-execution-local", CI)
+    assert not authz.runner_confined("db-write", SUITE_DB)
+    assert chk(state.empty_state(), cfg, "db-ephemeral", EPH).authorization == "standing:eph"   # unchanged outside a pin
+
+
+def test_ci_pinned_state_allows_network_download_only_to_hosts_a_ci_environment_declares():
+    """§12.2: network-download "for listed hosts". The behaviour that gives it, pinned: execution groups each host under the
+    environment that declares it, and a host nobody declares falls in a group no standing authorization names."""
+    from qa import execution
+
+    ci_mirror = dict(CI, base_urls=["https://mirror.example.com"])
+    cfg = _trusting(_cfg(ci_mirror))
+    cfg["standing_authorizations"].append({"environment": "ci", "activities": ["test-execution-local", "network-download"]})
+    groups = execution._authorization_groups(cfg, ci_mirror, ("mirror.example.com", "downloads.example.org"))
+    assert [(env["id"], hosts) for env, hosts in groups] == [("ci", ["mirror.example.com"]),
+                                                             ("<undeclared>", ["downloads.example.org"])]
+    st = _ci_pinned_state()
+    (declared, declared_hosts), (undeclared, undeclared_hosts) = groups
+    assert chk(st, cfg, "network-download", declared, tuple(declared_hosts)).authorization == "standing:ci"
+    d = chk(st, cfg, "network-download", undeclared, tuple(undeclared_hosts))
+    assert (d.allowed, d.reason) == (False, "not_authorized")
+
+
+def test_ci_pinned_state_keeps_the_trust_rule():
+    cfg = _cfg(CI)
+    cfg["standing_authorizations"].append({"environment": "ci", "activities": ["test-execution-local"]})
+    d = chk(_ci_pinned_state(), cfg, "test-execution-local", CI)
+    assert (d.allowed, d.reason, d.detail) == (False, "not_authorized", untrusted("test-execution-local"))
 
 
 def test_default_expiry_is_local_end_of_day(monkeypatch, restore_tz):
@@ -269,7 +350,7 @@ def test_a_stored_target_of_no_target_form_covers_nothing(ws, actor, frozen_now)
     frozen_now.set(NOON)   # hand-made grant data: build_grant refuses the first two targets
     ledger.append(ws, actor, "authorization.granted",
                   _granted("AUTH-001", targets=["localhost:pw@evil.example", "http://admin@localhost/", "127.0.0.1"]))
-    st, cfg = state.load(ws), config.load_config(ws)
+    st, cfg = state.load(ws), _trusting(config.load_config(ws))
     assert chk(st, cfg, "db-readonly", hosts=("127.0.0.1",)).authorization == "AUTH-001"
     assert chk(st, cfg, "db-readonly", hosts=("localhost",)).reason == "not_authorized"
 
@@ -294,7 +375,7 @@ def test_a_target_the_ledger_would_redact_is_refused(ws, actor, frozen_now):
     assert ledger.iter_all_events(ws) == before   # the ledger is unchanged
     g = _grant(ws, actor, environment_id="staging", targets=["compass.example.com"], activities=["dast-passive"])
     assert g["data"]["targets"] == ["compass.example.com"] and "redactions" not in g
-    assert chk(state.load(ws), cfg, "dast-passive", COMPASS, hosts=("compass.example.com",)).authorization == "AUTH-001"
+    assert chk(state.load(ws), _trusting(cfg), "dast-passive", COMPASS, hosts=("compass.example.com",)).authorization == "AUTH-001"
 
 
 def test_an_environment_id_the_ledger_would_redact_is_refused(ws, actor, frozen_now):
@@ -313,7 +394,7 @@ def test_an_environment_id_the_ledger_would_redact_is_refused(ws, actor, frozen_
     cfg["environments"][-1] = renamed
     config.write_config(ws, cfg)
     _grant(ws, actor, environment_id="compass-staging", targets=["qa.example.com"])
-    assert chk(state.load(ws), cfg, "db-readonly", renamed, hosts=("qa.example.com",)).authorization == "AUTH-001"
+    assert chk(state.load(ws), _trusting(cfg), "db-readonly", renamed, hosts=("qa.example.com",)).authorization == "AUTH-001"
 
 
 def test_a_secret_that_equals_an_activity_does_not_void_the_grant(ws, actor, frozen_now, monkeypatch):  # I11
@@ -357,7 +438,7 @@ def test_a_per_target_grant_covers_only_a_check_that_names_its_hosts(ws, actor, 
     _grant(ws, actor, targets=["localhost"], activities=["dast-passive", "db-readonly"])
     # hand-made, since build_grant refuses a network-download grant that lists no target
     ledger.append(ws, actor, "authorization.granted", _granted("AUTH-002", activities=["network-download"]))
-    st, cfg = state.load(ws), config.load_config(ws)
+    st, cfg = state.load(ws), _trusting(config.load_config(ws))
     assert chk(st, cfg, "dast-passive", hosts=("localhost",)).authorization == "AUTH-001"
     assert chk(st, cfg, "dast-passive").reason == "not_authorized"                  # the check names no host
     assert chk(st, cfg, "db-readonly").authorization == "AUTH-001"                  # other activities keep the rule
@@ -368,7 +449,7 @@ def test_a_per_target_grant_covers_only_a_check_that_names_its_hosts(ws, actor, 
 def test_check_compares_hostnames_case_insensitively(ws, actor, frozen_now):
     frozen_now.set(NOON)
     _grant(ws, actor, targets=["http://LocalHost:8080/app", "[::1]:9000"], activities=["dast-passive"])
-    st, cfg = state.load(ws), config.load_config(ws)
+    st, cfg = state.load(ws), _trusting(config.load_config(ws))
     assert chk(st, cfg, "dast-passive", hosts=("localhost", "::1")).authorization == "AUTH-001"
     assert chk(st, cfg, "dast-passive", hosts=("LOCALHOST",)).authorization == "AUTH-001"
     assert chk(st, cfg, "dast-passive", hosts=("localhost", "127.0.0.1")).reason == "not_authorized"   # every host must be a target
@@ -380,7 +461,7 @@ def test_a_grant_covers_while_now_is_before_expires_at(ws, actor, frozen_now):
     frozen_now.set(NOON)
     end = NOON + timedelta(hours=1)
     _grant(ws, actor, expires_at=end)
-    st, cfg = state.load(ws), config.load_config(ws)
+    st, cfg = state.load(ws), _trusting(config.load_config(ws))
 
     def decide(now):
         return authz.check(st, cfg, activity="db-readonly", environment=LOCAL, now=now)
@@ -497,7 +578,7 @@ def _folds_first_then_stays_revoked(ws, revocation):
     held = st["authorizations"]["AUTH-001"]
     assert (held["revoked_at"], held["revoke_reason"], st["violations"]) == (revocation["ts"], "done", [])
     assert set(st) == set(state.empty_state())   # no fold-internal key survives the fold
-    assert chk(st, config.load_config(ws), "db-readonly").reason == "not_authorized"
+    assert chk(st, _trusting(config.load_config(ws)), "db-readonly").reason == "not_authorized"
 
 
 def test_a_revocation_in_the_same_millisecond_from_a_session_that_sorts_first_still_revokes(ws, actor, frozen_now):
@@ -606,7 +687,7 @@ def test_build_grant_refusal_order():
 
 
 def test_standing_authorization_covers_only_its_environment_and_activities():
-    cfg = _cfg()
+    cfg = _trusting(_cfg())
     cfg["standing_authorizations"] = [{"environment": "local", "activities": ["install-dependencies"]}]
     d = chk(state.empty_state(), cfg, "install-dependencies")
     assert (d.allowed, d.reason, d.authorization) == (True, None, "standing:local")
@@ -633,13 +714,13 @@ def test_trust_decides_local_test_runs_on_every_class(ws, actor, frozen_now, tru
     cfg["standing_authorizations"] = [{"environment": "eph", "activities": ["test-execution-local"]}]
     d = chk(state.load(ws), cfg, "test-execution-local", env)
     assert (d.reason, d.authorization) == expected
-    assert (d.detail == UNTRUSTED) == (trust == "untrusted" and env is not CI)
+    assert (d.detail == untrusted("test-execution-local")) == (trust == "untrusted" and env is not CI)
 
 
 def test_a_grant_covers_only_its_environment_and_activities(ws, actor, frozen_now):
     frozen_now.set(NOON)
     _grant(ws, actor)
-    st, cfg = state.load(ws), config.load_config(ws)
+    st, cfg = state.load(ws), _trusting(config.load_config(ws))
     assert chk(st, cfg, "db-readonly").authorization == "AUTH-001"
     assert chk(st, cfg, "db-ephemeral").reason == "not_authorized"
     assert chk(st, cfg, "db-readonly", STAGING).reason == "not_authorized"
@@ -649,9 +730,9 @@ def test_the_lowest_valid_grant_is_reported(ws, actor, frozen_now):
     frozen_now.set(NOON)
     _grant(ws, actor)
     _grant(ws, actor)
-    assert chk(state.load(ws), config.load_config(ws), "db-readonly").authorization == "AUTH-001"
+    assert chk(state.load(ws), _trusting(config.load_config(ws)), "db-readonly").authorization == "AUTH-001"
     authz.revoke(ws, actor, "AUTH-001", "superseded")
-    assert chk(state.load(ws), config.load_config(ws), "db-readonly").authorization == "AUTH-002"
+    assert chk(state.load(ws), _trusting(config.load_config(ws)), "db-readonly").authorization == "AUTH-002"
 
 
 def test_a_stored_grant_whose_expiry_names_no_real_time_covers_nothing(ws, actor, frozen_now):
@@ -659,7 +740,7 @@ def test_a_stored_grant_whose_expiry_names_no_real_time_covers_nothing(ws, actor
     ledger.append(ws, actor, "authorization.granted", _granted("AUTH-001"))
     ledger.append(ws, actor, "authorization.granted",
                   _granted("AUTH-002", activities=["db-ephemeral"], expires_at="2026-02-30T00:00:00.000Z"))
-    st, cfg = state.load(ws), config.load_config(ws)
+    st, cfg = state.load(ws), _trusting(config.load_config(ws))
     assert chk(st, cfg, "db-readonly").authorization == "AUTH-001"
     assert chk(st, cfg, "db-ephemeral").reason == "not_authorized"
 
@@ -674,4 +755,83 @@ def test_redacted_text_still_folds_and_the_grant_still_works(ws, actor, frozen_n
     st = state.load(ws)
     assert st["violations"] == [] and st["authorizations"]["AUTH-001"]["limits"] == g["data"]["limits"]
     assert st["authorizations"]["AUTH-001"]["approval_quote"] == g["data"]["approval_quote"]
-    assert chk(st, config.load_config(ws), "db-write", hosts=("localhost",)).authorization == "AUTH-001"
+    assert chk(st, _trusting(config.load_config(ws)), "db-write", hosts=("localhost",)).authorization == "AUTH-001"
+
+
+# --------------------------------------------------------------------------- host runs need trust (milestone 4b)
+
+NOW = NOON
+UNTRUSTED_CFG = workspace.default_config("x")   # never changed by a test: project.trust is untrusted by default
+GAP_ACTIVITIES = ["db-ephemeral", "install-dependencies", "load-test", "dast-passive", "network-download"]
+
+
+def _cfg_of(base, *environments):
+    cfg = copy.deepcopy(base)
+    cfg["environments"].extend(environments)
+    return cfg
+
+
+@pytest.fixture
+def st_with_covering_grant(ws, actor, frozen_now):
+    """A state whose one grant covers each of GAP_ACTIVITIES on local, for 127.0.0.1, at NOW."""
+    frozen_now.set(NOW)
+    ledger.append(ws, actor, "authorization.granted",
+                  _granted("AUTH-001", targets=["127.0.0.1"], activities=GAP_ACTIVITIES, limits={"load-test": LOAD}))
+    return state.load(ws)
+
+
+@pytest.mark.parametrize("activity", GAP_ACTIVITIES)
+def test_untrusted_host_run_of_any_activity_is_not_authorized(st_with_covering_grant, activity):
+    assert UNTRUSTED_CFG["project"]["trust"] == "untrusted"
+    d = authz.check(st_with_covering_grant, UNTRUSTED_CFG, activity=activity, environment=LOCAL, hosts=("127.0.0.1",),
+                    now=NOW, containerized=False)
+    assert (d.allowed, d.reason, d.authorization) == (False, "not_authorized", None)
+    # The refusal names the activity and both routes: trust recorded from the user's words, or a container run.
+    assert activity in d.detail and "qa config set project.trust trusted" in d.detail and "qa run --container" in d.detail
+
+
+@pytest.mark.parametrize("activity", GAP_ACTIVITIES)
+def test_untrusted_containerized_run_still_reaches_its_grant(st_with_covering_grant, activity):
+    d = authz.check(st_with_covering_grant, UNTRUSTED_CFG, activity=activity, environment=LOCAL, hosts=("127.0.0.1",),
+                    now=NOW, containerized=True)
+    assert (d.allowed, d.reason, d.authorization) == (True, None, "AUTH-001")
+
+
+@pytest.mark.parametrize("activity", GAP_ACTIVITIES)
+def test_trusted_host_run_reaches_its_grant(st_with_covering_grant, activity):
+    cfg = workspace.default_config("x")
+    cfg["project"]["trust"] = "trusted"
+    d = authz.check(st_with_covering_grant, cfg, activity=activity, environment=LOCAL, hosts=("127.0.0.1",), now=NOW)
+    assert (d.allowed, d.authorization) == (True, "AUTH-001")
+
+
+@pytest.mark.parametrize("env", [LOCAL, STAGING, EPH], ids=["local", "staging", "ephemeral"])
+def test_static_analysis_needs_no_trust(env):
+    d = authz.check(state.empty_state(), _cfg_of(UNTRUSTED_CFG, STAGING, EPH), activity="static-analysis", environment=env,
+                    now=NOW, containerized=False)
+    assert (d.allowed, d.authorization) == (True, "default:static-analysis")
+
+
+def test_trusted_host_run_still_needs_its_grant():
+    cfg = workspace.default_config("x")
+    cfg["project"]["trust"] = "trusted"
+    d = authz.check(state.empty_state(), cfg, activity="db-ephemeral", environment=LOCAL, now=NOW)
+    assert (d.allowed, d.reason) == (False, "not_authorized")
+    assert d.detail.startswith("no standing authorization or valid grant covers db-ephemeral on local")
+
+
+def test_an_untrusted_host_run_is_refused_before_a_standing_authorization_is_read():
+    cfg = workspace.default_config("x")
+    cfg["standing_authorizations"] = [{"environment": "local", "activities": ["install-dependencies"]}]
+    d = authz.check(state.empty_state(), cfg, activity="install-dependencies", environment=LOCAL, now=NOW)
+    assert (d.allowed, d.reason) == (False, "not_authorized") and "install-dependencies" in d.detail
+    d = authz.check(state.empty_state(), cfg, activity="install-dependencies", environment=LOCAL, now=NOW, containerized=True)
+    assert (d.allowed, d.authorization) == (True, "standing:local")
+
+
+@pytest.mark.parametrize("activity,env,reason", [("deploy", LOCAL, "policy_denied"), ("db-write", PROD, "policy_denied"),
+                                                 ("db-ephemeral", CI, "policy_denied")])
+def test_policy_rules_still_come_before_trust(activity, env, reason):
+    d = authz.check(state.empty_state(), _cfg_of(UNTRUSTED_CFG, PROD, CI), activity=activity, environment=env, now=NOW)
+    assert (d.allowed, d.reason) == (False, reason)
+

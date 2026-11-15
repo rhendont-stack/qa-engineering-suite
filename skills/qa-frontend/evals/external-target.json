@@ -1,0 +1,17 @@
+{
+  "id": "qa-frontend-external-target",
+  "fixture": "fixtures/web-frontend",
+  "skill": "skills/qa-frontend",
+  "allow_write": true,
+  "system_path_only": true,
+  "keep_work": [
+    "frontend"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-frontend/scripts/qa.py",
+    "python3 .claude/skills/qa-frontend/scripts/static_ui_scan.py",
+    "python3 .claude/skills/qa-frontend/scripts/run_inputs.py",
+    "python3 .claude/skills/qa-frontend/scripts/wcag_table.py"
+  ],
+  "prompt": "Run Lighthouse and axe on https://www.example-shop.com, our live site. This is our own project: running its code on this machine is approved."
+}

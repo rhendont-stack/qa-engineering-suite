@@ -9,7 +9,8 @@ Usage, from the project root:
 ``scan`` reads an OpenAPI 3.x document: JSON (and the JSON-compatible subset of YAML) with the standard library, and the
 block-style YAML subset that paths, methods, responses and security need with a small reader of its own. A line that reader
 cannot read (anchors, aliases, tags, nested flow collections, a key it cannot parse) is listed under ``unreadable`` with
-its line number, never guessed. It then scans the code under ``--root`` for routes declared in the usual forms (a
+its line number, never guessed. A contract or a source file over 2 MiB is listed there too, as ``{"file": PATH, "reason":
+"too_large"}``, and not read. It then scans the code under ``--root`` for routes declared in the usual forms (a
 ``("METHOD", "/path", handler, ...)`` route table on the standard library, Flask ``@x.route``, Flask or FastAPI
 ``@x.get`` and the like, Express ``app.get('/path', ...)``), each cited by file and line and marked ``approximate``: a scan
 of source text is not a run. For Python handlers it also lists the status-code literals the handler returns
@@ -60,6 +61,7 @@ STATUSES = ("verified", "not_run", "blocked")
 SKIP_DIRS = {".git", ".qa", ".claude", "node_modules", "__pycache__", ".venv", "venv", "env", ".tox", "dist", "build", "site-packages",
              "tests", "test", "__tests__", "spec", "fixtures"}
 CODE_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".ts")
+MAX_BYTES = 2 << 20   # a contract or source file over this is listed as unreadable (too_large), never read
 NOT_RUN_REASON = "no recorded check covers it yet"
 ASSETS = ("spectral.yaml", "schemathesis-baseline.toml", "smoke.hurl")
 
@@ -366,10 +368,21 @@ def _decorated(tree: ast.AST) -> Dict[int, Any]:
     return found
 
 
-def scan_routes(root: Path) -> List[Dict[str, Any]]:
+def too_large(path: Path) -> bool:
+    try:
+        return path.stat().st_size > MAX_BYTES
+    except OSError:
+        return False
+
+
+def scan_routes(root: Path, unreadable: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     routes: List[Dict[str, Any]] = []
     for path in _code_files(root):
         rel = path.relative_to(root).as_posix()
+        if too_large(path):
+            if unreadable is not None:
+                unreadable.append({"file": rel, "reason": "too_large"})
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         tree = None
         if path.suffix == ".py":
@@ -416,9 +429,12 @@ def _documents_status(responses: List[str], status: int) -> bool:
 
 
 def build(spec_path: Path, spec_rel: str, root: Path) -> Tuple[Dict[str, Any], bool]:
-    document, fmt, unreadable = read_contract(spec_path)
+    if too_large(spec_path):
+        document, fmt, unreadable = None, "unread", [{"file": spec_rel, "reason": "too_large"}]
+    else:
+        document, fmt, unreadable = read_contract(spec_path)
     documented = documented_operations(document) if document else []
-    routes = scan_routes(root)
+    routes = scan_routes(root, unreadable)
     by_doc = {normal(d["method"], d["path"]): d for d in documented}
     by_code: Dict[str, List[Dict[str, Any]]] = {}
     for route in routes:
@@ -487,7 +503,7 @@ def write(path: Path, inventory: Dict[str, Any]) -> bool:
     return True
 
 
-def create_new(target: Path, data: bytes) -> bool:
+def write_new(target: Path, data: bytes) -> bool:
     """Create ``target`` with ``data`` only when nothing is at that name; an exclusive open never follows a link. False when
     something (a file or a link) is already there."""
     try:
@@ -571,7 +587,7 @@ def cmd_assets(args: argparse.Namespace) -> int:
         if not inside_work(target):                      # the directories now exist: look again at the final target
             return emit({"ok": False, "error": "the copies are written only under .qa/work/: %s" % args.dest, "copied": copied,
                          "kept": kept}, 2)
-        if create_new(target, (source / name).read_bytes()):   # exclusive: one that appeared since the look above is kept too
+        if write_new(target, (source / name).read_bytes()):   # exclusive: one that appeared since the look above is kept too
             copied.append(target.as_posix())
         else:
             kept.append(target.as_posix())

@@ -747,6 +747,21 @@ def test_alert_finding_record(trusted, actor, run_id):
     assert f["fingerprint"] == findings.fingerprint("security", "R1", "a.py", "a.py", {})
 
 
+def test_an_alert_without_the_review_tag_keeps_its_fingerprint(trusted, actor, run_id):
+    """The fingerprint of every alert that is not a needs-review note is the value it had before notes got their own finding."""
+    _, found = _ingest(trusted, actor, run_id, _alert(tags=("security", "wcag-sc:1.4.3")))
+    assert found["FND-001"]["fingerprint"] == "sha256:524c5c6d4396f582b1fc81694340abc84f951cadefe915b3b58c6cf6683e9dc2"
+    assert found["FND-001"]["key_attributes"] == {}
+
+
+def test_a_needs_review_note_is_its_own_finding_beside_the_alert_of_the_same_rule_and_place(trusted, actor, run_id):
+    out, found = _ingest(trusted, actor, run_id, _alert(level="error"), _alert(level="note", tags=("needs-review",)))
+    assert out == {"opened": 2, "updated": 0}
+    first, second = found["FND-001"], found["FND-002"]
+    assert first["fingerprint"] != second["fingerprint"] and first["source"]["level"] == "error"
+    assert (second["key_attributes"], second["source"]["level"]) == ({"review": "needs-review"}, "note")
+
+
 def test_alert_category_sets_the_finding_category(trusted, actor, run_id):
     _, found = _ingest(trusted, actor, run_id, _alert(), category="maintainability")
     assert found["FND-001"]["category"] == "maintainability"

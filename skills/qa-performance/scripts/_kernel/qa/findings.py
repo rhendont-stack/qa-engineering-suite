@@ -619,6 +619,8 @@ def _alert_finding(ws: Workspace, actor: ledger.Actor, alert: Alert, execution_i
     elif isinstance(alert.path, str) and alert.path.strip():
         source["uri"] = alert.path
         key_attributes["uri"] = alert.path  # different paths nobody can place stay different findings
+    if "needs-review" in alert.tags:  # a check a person must judge is not the violation of the same rule in the same place
+        key_attributes["review"] = "needs-review"
     return {
         "title": first[:_TITLE_CHARS].strip() or rule, "description": message or rule,
         "category": category, "severity": _alert_severity(alert),

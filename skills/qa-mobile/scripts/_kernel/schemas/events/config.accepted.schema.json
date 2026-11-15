@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "config.accepted event data",
+  "description": "The user approved config.json as it stands, or, with basis ci-pin, qa ci begin found the file a CI job checked out to be the one its workflow names (basis absent means user). The approval quote carries no pattern because it may hold redaction markers. authority_mac is the machine-bound MAC ledger.append adds; an event without a valid one confers no authority.",
+  "type": "object",
+  "properties": {
+    "hash": {"$ref": "defs.schema.json#/$defs/sha256"},
+    "approval": {"type": "string", "minLength": 1},
+    "basis": {"enum": ["user", "ci-pin"]},
+    "authority_mac": {"$ref": "defs.schema.json#/$defs/authority_mac"}
+  },
+  "required": ["hash", "approval"],
+  "additionalProperties": false
+}

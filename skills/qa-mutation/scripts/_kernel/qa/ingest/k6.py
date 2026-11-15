@@ -22,7 +22,7 @@ def _name(value: str, what: str) -> str:
     return value
 
 
-def _number(value: object, what: str) -> float:
+def number(value: object, what: str) -> float:
     """A finite JSON number; a boolean, a string or a null is not one, nor an integer literal past float range (the loader
     keeps those as ``int``, and every limit compared with them is a float)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -41,7 +41,7 @@ def _metric(name: str, raw: object) -> Metric:
         raise ReportInvalid("invalid_metric_value", what="metric", metric=name)
     values: Dict[str, float] = {}
     for stat, value in raw["values"].items():
-        values[_name(stat, "statistic")] = _number(value, "statistic")
+        values[_name(stat, "statistic")] = number(value, "statistic")
     return Metric(name, raw["type"], values)
 
 
@@ -69,7 +69,7 @@ def _duration_ms(doc: dict) -> Optional[int]:
     state = doc.get("state")
     if not isinstance(state, dict) or "testRunDurationMs" not in state:
         return None
-    return int(math.ceil(_number(state["testRunDurationMs"], "testRunDurationMs")))
+    return int(math.ceil(number(state["testRunDurationMs"], "testRunDurationMs")))
 
 
 def parse(data: bytes) -> ReportSummary:

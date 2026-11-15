@@ -4,10 +4,13 @@
     "qa-api-testing",
     "qa-codebase-intelligence",
     "qa-database",
+    "qa-frontend",
+    "qa-mobile",
     "qa-mutation",
     "qa-orchestrator",
     "qa-performance",
     "qa-regression-guard",
+    "qa-release",
     "qa-reporting",
     "qa-requirements",
     "qa-security",
@@ -79,6 +82,30 @@
     {
       "key": "measure-performance-under-load",
       "owner": "qa-performance"
+    },
+    {
+      "key": "validate-web-ui",
+      "owner": "qa-frontend"
+    },
+    {
+      "key": "check-web-accessibility",
+      "owner": "qa-frontend"
+    },
+    {
+      "key": "validate-mobile-app",
+      "owner": "qa-mobile"
+    },
+    {
+      "key": "validate-release-pipeline",
+      "owner": "qa-release"
+    },
+    {
+      "key": "define-release-criteria",
+      "owner": "qa-release"
+    },
+    {
+      "key": "generate-ci-reexecution",
+      "owner": "qa-release"
     }
   ]
 }

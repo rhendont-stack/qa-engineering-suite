@@ -184,7 +184,11 @@ def _granted(auth_id="AUTH-001", **over):
 
 
 def _allows(ws):
-    return authz.check(state.load(ws), config.load_config(ws), activity="db-readonly", environment=LOCAL, now=ids.now_utc())
+    """Whether ``ws``'s grants cover db-readonly on local, with trust stated: since milestone 4b an untrusted project's host
+    check is refused before any grant is read, and these tests are about the grants' authority."""
+    cfg = config.load_config(ws)
+    cfg["project"]["trust"] = "trusted"
+    return authz.check(state.load(ws), cfg, activity="db-readonly", environment=LOCAL, now=ids.now_utc())
 
 
 def _grant(ws, actor):

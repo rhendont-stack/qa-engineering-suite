@@ -22,8 +22,9 @@ from .findings import SEVERITIES
 from .ingest import mutation
 from .workspace import Workspace, read_config, write_atomic
 
-# QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, unknown_criterion,
-# invalid_override, blank_rationale, approval_required, unknown_proposal, already_accepted; plus ledger.append's.
+# QaError codes raised here: unknown_profile, invalid_target, config_invalid, config_drift, ci_no_verdict, unknown_criterion,
+# invalid_override, blank_rationale, approval_required, ci_config_pinned, unknown_proposal, already_accepted; plus
+# ledger.append's.
 
 _POLICY_SCHEMA = "gate-policy.schema.json"
 _PARAMS = {"$ref": _POLICY_SCHEMA + "#/$defs/params"}
@@ -33,7 +34,7 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _MET, _NOT_MET, _NO_EVIDENCE, _NOT_APPLICABLE = "MET", "NOT_MET", "NO_EVIDENCE", "NOT_APPLICABLE"
 _NOT_OPTED_IN = "Project has not opted in (config.gate.overrides)"
 _DISABLED = "Disabled by config.gate.overrides (%s)"
-_SOURCE_CHECKOUT = "kernel manifest applies to vendored copies (milestone 2)"
+_SOURCE_CHECKOUT = "kernel manifest applies to vendored copies"
 _TREE_CHANGED = ("the working tree changed since the execution %s was recorded; "
                  "files a run leaves in the tree count unless they are git-ignored")
 
@@ -42,13 +43,18 @@ _INDEPENDENCE = ("I0", "I1", "I2", "I3")
 _SUITE_ACTIVITY = "test-execution-local"
 _UNRESOLVED_STATES = ("open", "reopened", "fix_submitted")
 _NEEDS = {
-    "security_scans_executed": ("scan and performance skills", 4),
-    "performance_objectives_met": ("scan and performance skills", 4),
-    "migrations_validated": ("database skills", 4), "rollback_validated": ("database skills", 4),
+    "rollback_validated": "a recorded rollback rehearsal; the suite never deploys, so a rehearsal record arrives through "
+                          "`qa ingest` from the project's own pipeline",
 }
+_SCAN_CLASSES = {"secrets": ("gitleaks", "betterleaks", "trufflehog"), "dependencies": ("osv-scanner",),
+                 "sast": ("semgrep", "opengrep", "bandit", "gosec"), "dast-baseline": ("zap",)}
+_DEFAULT_SCAN_CLASSES = ["secrets", "dependencies", "sast"]  # the change profile lists no parameters
+_PASSIVE_DAST = "dast-passive"
+_LOAD_LIMIT = "load_limit_exceeded"
+_CONCLUDED = ("passed", "failed")
 
 # Parameters a criterion reads that no policy file lists: an accepted override sets them (the policy files stay as the profile table).
-_OPTIONAL_PARAMS = {"mutation_score_min": ("paths",)}
+_OPTIONAL_PARAMS = {"mutation_score_min": ("paths",), "security_scans_executed": ("classes",)}
 _DEFAULT_MIN_SCORE = 70
 _MUTATION_FILES_SHOWN = 20
 
@@ -516,11 +522,133 @@ def _mutation_score_min(c: dict, st: dict, ctx: GateContext) -> _Outcome:
     return (_MET if met else _NOT_MET), detail, cited
 
 
+# --------------------------------------------------------------------------- scans, load tests and migrations
+
+def _image_ids() -> Dict[str, str]:
+    """Image digest to its id in container-images.json."""
+    doc = loads((resource_dir("policies") / "container-images.json").read_bytes())
+    return {item["image"].rpartition("@")[2]: item["id"] for item in doc["images"]}
+
+
+def _tool_of(record: dict, images: Dict[str, str], known: Iterable[str]) -> str:
+    """What a run ran: the id of its pinned image when that is one of the ``known`` tools (a generic language image says
+    nothing about the tool run inside it), else the basename of ``argv[0]``."""
+    digest = ((record.get("container") or {}).get("image") or "").rpartition("@")[2]
+    if images.get(digest) in known:
+        return images[digest]
+    return record["command"]["argv"][0].replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _holds_report(record: dict) -> bool:
+    """A parsed report, not just logs: the run's own report block or measurements, or a structured ingested file (an
+    attested one is a person's file)."""
+    return (record.get("report") is not None or bool(execution.readable_measurements(record))
+            or any(item.get("strength") == "structured" for item in execution.readable_ingested(record)))
+
+
+def _concluded_on_target(record: dict, ctx: GateContext) -> bool:
+    return (record["status"] in _CONCLUDED and ctx.target_commit is not None and _on_target(record, ctx.target_commit)
+            and _on_this_tree(record, ctx))
+
+
+def _passive_dast_granted(st: dict, now: datetime) -> bool:
+    """A non-revoked, unexpired grant of ``dast-passive`` (§10.5's check reads the same fields)."""
+    for grant in st["authorizations"].values():
+        if grant["revoked_at"] is None and _PASSIVE_DAST in grant["activities"]:
+            try:
+                if now < ids.parse_ts(grant["expires_at"]):
+                    return True
+            except QaError:
+                continue
+    return False
+
+
+def _security_scans_executed(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """Every wanted scan class ran on the target and left a report. A scan that found something still ran."""
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    wanted = list(c["params"].get("classes", _DEFAULT_SCAN_CLASSES))
+    if _passive_dast_granted(st, ctx.now) and "dast-baseline" not in wanted:
+        wanted.append("dast-baseline")
+    images = _image_ids()
+    known = {tool for tools in _SCAN_CLASSES.values() for tool in tools}
+    found: Dict[str, str] = {}
+    for record in st["executions"].values():
+        if _concluded_on_target(record, ctx) and _holds_report(record):
+            tool = _tool_of(record, images, known)
+            for name in wanted:
+                if tool in _SCAN_CLASSES[name]:
+                    found[name] = record["id"]
+    evidence = _in_id_order(set(found.values()))
+    missing = [name for name in wanted if name not in found]
+    if missing:
+        return _NO_EVIDENCE, "scans on commit %s; missing: %s" % (ctx.target_commit, ", ".join(missing)), evidence
+    return _MET, "%s scanned commit %s" % (", ".join(wanted), ctx.target_commit), evidence
+
+
+def _k6_results(record: dict) -> List[str]:
+    """What a run's k6 evidence says, as ``passed`` or ``failed`` per result; never the run's status alone.
+
+    The run's own k6 report counts when the run parsed one (its status then reflects the thresholds; a pass also needs the
+    strength ``structured``). A k6 summary attached with ``qa ingest`` counts only when it is structured, and its own
+    threshold counts decide: an attested file is a person's, and the run's status says nothing about a summary attached later.
+    """
+    results = []
+    declared = [item for item in record.get("reports") or [] if item["format"] in ingest.LOAD_TEST_FORMATS and item["error"] is None]
+    if declared and record.get("report") is not None and (record["status"] == "failed" or record["strength"] == "structured"):
+        results.append(record["status"])
+    for item in execution.readable_ingested(record):
+        counts = item.get("report") or {}
+        if item.get("format") in ingest.LOAD_TEST_FORMATS and item.get("strength") == "structured" and "failures" in counts:
+            results.append("failed" if counts["failures"] + counts.get("errors", 0) else "passed")
+    return results
+
+
+def _performance_objectives_met(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """k6 results on the target at or above the minimum environment class. A run past its load limits proves nothing about
+    the system under load, so it does not count; a run below the class measured a simulation."""
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    named = c["params"]["min_environment_class"]
+    minimum = _rank(vocab.ENV_CLASSES, named)
+    judged: List[Tuple[dict, List[str]]] = [(record, _k6_results(record)) for record in st["executions"].values()
+                                            if _concluded_on_target(record, ctx)]
+    judged = [(record, results) for record, results in judged if results]
+    over = [record["id"] for record, _ in judged if _LOAD_LIMIT in record.get("anomalies", ())]
+    counted = [(record, results) for record, results in judged if record["id"] not in over]
+    qualifying = [(record, results) for record, results in counted if _rank(vocab.ENV_CLASSES, record["environment"]["class"]) >= minimum]
+    failed = [record["id"] for record, results in qualifying if "failed" in results]
+    if failed:
+        return _NOT_MET, "load test failed at %s or above: %s" % (named, ", ".join(failed)), failed
+    if qualifying:
+        return _MET, "%d load test run(s) passed at %s or above" % (len(qualifying), named), [record["id"] for record, _ in qualifying]
+    notes = []
+    if counted:
+        notes.append("load tests ran only below %s, so their figures are simulated" % named)
+    if over:
+        notes.append("%s went past the load limits and do not count" % ", ".join(over))
+    return _NO_EVIDENCE, "; ".join(notes) or "no load test on commit %s" % ctx.target_commit, []
+
+
+def _migrations_validated(c: dict, st: dict, ctx: GateContext) -> _Outcome:
+    """The latest structured run of the migration activity on the target decides; weaker runs are not candidates."""
+    if ctx.target_commit is None:
+        return _NO_EVIDENCE, "no target commit (%s)" % ctx.git_limitation, []
+    activity = c["params"]["activity"]
+    runs = [record for record in st["executions"].values()
+            if record["activity"] == activity and record["strength"] == "structured" and _concluded_on_target(record, ctx)]
+    if not runs:
+        return _NO_EVIDENCE, "no structured %s run on commit %s" % (activity, ctx.target_commit), []
+    latest = runs[-1]
+    return (_NOT_MET if latest["status"] == "failed" else _MET), _described(latest), [latest["id"]]
+
+
 _EVALUATORS: Dict[str, Callable[[dict, dict, GateContext], _Outcome]] = {
     "no_unresolved_findings": _no_unresolved_findings, "suite_executed": _suite_executed, "flaky_rate_max": _flaky_rate_max,
     "test_integrity": _test_integrity, "independence_min": _independence_min,
     "requirements_verified": _requirements_verified, "no_blocked_critical": _no_blocked_critical,
-    "mutation_score_min": _mutation_score_min,
+    "mutation_score_min": _mutation_score_min, "security_scans_executed": _security_scans_executed,
+    "performance_objectives_met": _performance_objectives_met, "migrations_validated": _migrations_validated,
 }
 
 
@@ -556,8 +684,7 @@ def evaluate_criterion(c: dict, st: dict, ctx: GateContext) -> dict:
         return dict(result, outcome=_NOT_APPLICABLE, detail=c["not_applicable"], evidence=[], justification=c["not_applicable"])
     evaluator = _EVALUATORS.get(c["type"])
     if evaluator is None:
-        capability, milestone = _NEEDS[c["type"]]
-        detail = "not evaluable by kernel %s (needs %s, milestone %d)" % (KERNEL_VERSION, capability, milestone)
+        detail = "not evaluable by kernel %s (needs %s)" % (KERNEL_VERSION, _NEEDS[c["type"]])
         return dict(result, outcome=_NO_EVIDENCE, detail=detail, evidence=[])
     judged = evaluator(c, st, ctx)
     if c.get("min_independence") == "I3":
@@ -613,6 +740,9 @@ def evaluate(ws: Workspace, actor: ledger.Actor, *, profile: Optional[str] = Non
         raise QaError("invalid_target", "a target commit is the full 40-character hash", target=target_commit)
     with ws.lock():
         st = state.load(ws)
+        if config.ci_pinned(st):  # §12.2: the verdict comes from wherever the job's bundle is imported
+            raise QaError("ci_no_verdict", "a CI job computes no verdict: import its evidence bundle with `qa ingest bundle` "
+                                           "and evaluate the gate there")
         cfg = config.load_config(ws)
         policy, policy_hash = load_policy(cfg["gate"]["profile"] if profile is None else profile, cfg)
         _refuse_drift(ws, st)
@@ -658,6 +788,8 @@ def accept(ws: Workspace, actor: ledger.Actor, proposal_event_id: str, approval:
         raise QaError("approval_required", "accepting a gate override needs the user's approval quote")
     with ws.lock():
         st = state.load(ws)
+        if config.ci_pinned(st):  # it rewrites config.json, which a CI job's workspace never changes
+            raise QaError("ci_config_pinned", config.CI_PINNED_REFUSAL)
         _refuse_drift(ws, st)
         history = st["config"]["history"]
         proposal = next((h for h in history if h["kind"] == "gate_policy_proposed" and h["event"] == proposal_event_id), None)

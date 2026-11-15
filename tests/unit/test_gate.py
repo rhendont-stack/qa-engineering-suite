@@ -78,8 +78,8 @@ def test_accepted_risk_conditions_then_expiry(repo_ws, actor, py, frozen_now):
     assert gate.evaluate(repo_ws, actor, profile="change")["data"]["verdict"] == "NOT_READY"
 def test_unevaluable_criteria_say_why(repo_ws, actor):
     g = gate.evaluate(repo_ws, actor, profile="release")["data"]
-    sc = next(x for x in g["criteria"] if x["type"] == "security_scans_executed")
-    assert sc["outcome"] == "NO_EVIDENCE" and "milestone 4" in sc["detail"]
+    rb = next(x for x in g["criteria"] if x["type"] == "rollback_validated")
+    assert rb["outcome"] == "NO_EVIDENCE" and "needs a recorded rollback rehearsal" in rb["detail"]
 def test_opt_in_criterion_off_is_not_applicable(trusted, actor):
     g = gate.evaluate(trusted, actor, profile="release")["data"]
     m = next(x for x in g["criteria"] if x["type"] == "mutation_score_min")
@@ -208,6 +208,9 @@ SUITE = {"change": ("targeted", False, "exit_code"), "fix": ("targeted", False, 
 INDEPENDENCE = {"change": "I1", "fix": "I1", "audit": "I2", "release": "I2"}
 PLAIN_PARAMS = {"no_unresolved_high": {"min_severity": "HIGH"}, "flaky_rate_max": {"max_ratio": 0.02},
                 "mutation_score_min": {"min_score": 70}}
+NEW_PARAMS = {"performance_objectives_met": {"min_environment_class": "staging"},
+              "security_scans_executed": {"classes": ["secrets", "dependencies", "sast"]},
+              "migrations_validated": {"activity": "db-ephemeral"}}
 
 
 def _file(profile):
@@ -217,6 +220,8 @@ def _file(profile):
 def _expected(criterion_id, profile, blocking):
     scope, clean_tree, strength = SUITE[profile]
     params = PLAIN_PARAMS.get(criterion_id, {})
+    if criterion_id in NEW_PARAMS and profile in ("audit", "release"):
+        params = NEW_PARAMS[criterion_id]
     if criterion_id == "suite_executed":
         params = {"scope": scope, "clean_tree": clean_tree, "require_passed": True}
     elif criterion_id == "independence_min":
@@ -374,17 +379,14 @@ def test_every_detail_is_a_string_and_only_not_applicable_is_justified(trusted, 
             assert x["detail"] == x["justification"]
 
 
-@pytest.mark.parametrize("ctype,capability,milestone", [
-    ("security_scans_executed", "scan and performance skills", 4),
-    ("performance_objectives_met", "scan and performance skills", 4),
-    ("migrations_validated", "database skills", 4),
-    ("rollback_validated", "database skills", 4),
-])
-def test_an_unevaluable_type_names_what_it_needs(ctype, capability, milestone):
-    criterion = {"id": ctype, "type": ctype, "blocking": True, "min_strength": None, "min_independence": None, "params": {}, "opt_in": False}
+def test_rollback_needs_a_rehearsal_record_and_names_no_milestone():
+    criterion = {"id": "rollback_validated", "type": "rollback_validated", "blocking": True, "min_strength": None,
+                 "min_independence": None, "params": {}, "opt_in": False}
     r = gate.evaluate_criterion(criterion, _st(), _context())
-    assert (r["outcome"], r["detail"], r["evidence"]) == (
-        "NO_EVIDENCE", "not evaluable by kernel %s (needs %s, milestone %d)" % (KERNEL_VERSION, capability, milestone), [])
+    assert (r["outcome"], r["evidence"]) == ("NO_EVIDENCE", [])
+    assert r["detail"] == ("not evaluable by kernel %s (needs a recorded rollback rehearsal; the suite never deploys, so a "
+                           "rehearsal record arrives through `qa ingest` from the project's own pipeline)" % KERNEL_VERSION)
+    assert not set(gate._NEEDS) - {"rollback_validated"}
 
 
 # --------------------------------------------------------------------------- mutation_score_min (milestone 3)
@@ -1115,7 +1117,7 @@ def test_kernel_status(kernel, outcome):
 
 def test_a_source_checkout_is_met_with_the_limitation():
     r = _integrity(kernel={"status": "absent", "source_checkout": True})
-    assert (r["outcome"], r["detail"]) == ("MET", "kernel manifest applies to vendored copies (milestone 2)")
+    assert (r["outcome"], r["detail"]) == ("MET", "kernel manifest applies to vendored copies")
 
 
 def test_the_detail_names_every_failure():
@@ -1796,3 +1798,265 @@ def test_the_met_detail_of_no_blocked_critical_holds_no_bare_status_word(trusted
     _trace_run(trusted, actor, "A", "passed")
     r = _critical(trusted)
     assert (r["outcome"], r["detail"]) == ("MET", "1 critical test case with a passing last result on commit %s" % COMMIT)
+
+
+# --------------------------------------------------------------------------- security scans, performance and migrations
+
+def _images():
+    return {i["id"]: i["image"] for i in json.loads((resource_dir("policies") / "container-images.json").read_text(encoding="utf-8"))["images"]}
+
+
+def _scan(execution_id, tool, *, status="passed", image=None, report=True, **changes):
+    """A run of ``tool``: from its pinned image when ``image`` is an id of container-images.json, else by ``argv[0]``."""
+    record = _exe(execution_id, status=status, activity="static-analysis", command={"argv": [tool], "shell": False, "cwd": "."},
+                  report={"kind": "alerts"} if report else None, environment={"class": "local"}, **changes)
+    if image is not None:
+        record["container"] = {"image": _images()[image], "image_id": None, "engine_kind": "ssh", "daemon_version": None,
+                               "network_mode": "none", "install_ran": False}
+    return record
+
+
+def _scans(*executions, grants=None, context=None, **params):
+    st = _st(*executions)
+    st["authorizations"] = dict(grants or {})
+    override = {"security_scans_executed": {"params": params}} if params else {}
+    return gate.evaluate_criterion(_crit("release", "security_scans_executed", **override), st, context or _context())
+
+
+def _grant(activity="dast-passive", expires="2036-01-01T00:00:00.000Z", revoked=None):
+    return {"AUTH-1": {"id": "AUTH-1", "environment": "local", "activities": [activity], "targets": [], "expires_at": expires,
+                       "revoked_at": revoked, "revoke_reason": None}}
+
+
+EVERY_CLASS = lambda: [_scan("EXE-1", "gitleaks"), _scan("EXE-2", "osv-scanner"), _scan("EXE-3", "semgrep")]  # noqa: E731
+
+
+def test_security_scans_met_when_every_class_ran_at_target():
+    r = _scans(*EVERY_CLASS())
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-1", "EXE-2", "EXE-3"])
+    assert _crit("release", "security_scans_executed")["params"] == {"classes": ["secrets", "dependencies", "sast"]}
+
+
+def test_security_scans_names_missing_classes():
+    r = _scans(_scan("EXE-1", "osv-scanner"))
+    assert r["outcome"] == "NO_EVIDENCE" and r["detail"].endswith("missing: secrets, sast")
+
+
+def test_security_scan_identified_by_image_digest():
+    renamed = _scan("EXE-1", "run-scan.sh", image="gitleaks")
+    assert _scans(renamed, *EVERY_CLASS()[1:])["outcome"] == "MET"
+    assert _scans(_scan("EXE-1", "run-scan.sh"), *EVERY_CLASS()[1:])["detail"].endswith("missing: secrets")
+
+
+def test_a_generic_image_does_not_hide_the_tool_run_inside_it():
+    in_python = _scan("EXE-1", "bandit", image="python-3.9")
+    assert _scans(_scan("EXE-2", "gitleaks"), _scan("EXE-3", "osv-scanner"), in_python)["outcome"] == "MET"
+    assert _scans(_scan("EXE-1", "bandit", image="python-3.9"), classes=["sast"])["outcome"] == "MET"
+    assert _scans(_scan("EXE-1", "python3", image="python-3.9"), classes=["sast"])["outcome"] == "NO_EVIDENCE"
+
+
+def test_an_image_digest_outranks_argv0():
+    other = _scan("EXE-1", "gitleaks", image="osv-scanner")   # the digest says osv-scanner
+    r = _scans(other, EVERY_CLASS()[2])
+    assert r["outcome"] == "NO_EVIDENCE" and r["detail"].endswith("missing: secrets")
+
+
+@pytest.mark.parametrize("change", [
+    {"status": "blocked"}, {"status": "inconclusive"}, {"status": "not_run"}, {"report": None},
+    {"git": dict(GIT, commit=OTHER_COMMIT)}, {"git": None},
+], ids=["blocked", "inconclusive", "not_run", "no_report", "another_commit", "no_git"])
+def test_a_scan_run_that_does_not_qualify_does_not_count(change):
+    r = _scans(dict(_scan("EXE-1", "gitleaks"), **change), *EVERY_CLASS()[1:])
+    assert r["outcome"] == "NO_EVIDENCE" and r["detail"].endswith("missing: secrets")
+
+
+def test_a_failed_scan_still_counts_as_executed():
+    assert _scans(_scan("EXE-1", "gitleaks", status="failed"), *EVERY_CLASS()[1:])["outcome"] == "MET"
+
+
+def test_a_scan_with_only_measurements_or_a_structured_ingest_holds_a_report():
+    measured = dict(_scan("EXE-1", "gitleaks", report=False), measurements=[{"format": "sarif", "kind": "alerts"}])
+    ingested = dict(_scan("EXE-2", "osv-scanner", report=False), ingested=[{"strength": "structured", "format": "sarif"}])
+    attested = dict(_scan("EXE-3", "semgrep", report=False), ingested=[{"strength": "attested", "format": "sarif"}])
+    r = _scans(measured, ingested, attested)
+    assert r["detail"].endswith("missing: sast")
+
+
+def test_a_run_with_no_target_commit_is_no_evidence():
+    r = _scans(*EVERY_CLASS(), context=_context(target_commit=None, git_limitation="not a repository"))
+    assert r["outcome"] == "NO_EVIDENCE" and "no target commit" in r["detail"]
+
+
+def test_dast_baseline_required_only_under_a_passive_grant():
+    zap = _scan("EXE-4", "zap")
+    assert _scans(*EVERY_CLASS())["outcome"] == "MET"
+    r = _scans(*EVERY_CLASS(), grants=_grant())
+    assert r["outcome"] == "NO_EVIDENCE" and r["detail"].endswith("missing: dast-baseline")
+    assert _scans(*EVERY_CLASS(), zap, grants=_grant())["outcome"] == "MET"
+    for inert in (_grant(revoked="2026-11-01T00:00:00.000Z"), _grant(expires="2026-11-01T00:00:00.000Z"), _grant("dast-active")):
+        assert _scans(*EVERY_CLASS(), grants=inert)["outcome"] == "MET"
+
+
+def test_missing_classes_come_in_policy_order_with_dast_last():
+    r = _scans(grants=_grant())
+    assert r["detail"].endswith("missing: secrets, dependencies, sast, dast-baseline")
+
+
+def test_the_scan_classes_param_is_validated():
+    with pytest.raises(QaError):
+        _crit("release", "security_scans_executed", security_scans_executed={"params": {"classes": ["fuzzing"]}})
+    assert _scans(_scan("EXE-1", "gitleaks"), classes=["secrets"])["outcome"] == "MET"
+
+
+def _k6(execution_id, *, klass="staging", status="passed", **changes):
+    record = dict(activity="load-test", command={"argv": ["k6", "run"], "shell": False, "cwd": "."}, environment={"class": klass},
+                  reports=_declared("k6"), anomalies=[], report={"format": "k6", "kind": "tests", "tests": 1, "failures": 0, "errors": 0, "skipped": 0})
+    return _exe(execution_id, status=status, **dict(record, **changes))
+
+
+def _perf(*executions, **overrides):
+    return gate.evaluate_criterion(_crit("release", "performance_objectives_met", **overrides), _st(*executions), _context())
+
+
+def test_performance_params_default_to_staging():
+    assert _crit("release", "performance_objectives_met")["params"] == {"min_environment_class": "staging"}
+    assert _crit("audit", "performance_objectives_met")["params"] == {"min_environment_class": "staging"}
+
+
+def test_performance_at_staging_met():
+    r = _perf(_k6("EXE-1"), _k6("EXE-2", klass="production"))
+    assert (r["outcome"], r["evidence"]) == ("MET", ["EXE-1", "EXE-2"])
+
+
+def test_performance_below_staging_is_no_evidence_simulated():
+    r = _perf(_k6("EXE-1", klass="ephemeral"))
+    assert r["outcome"] == "NO_EVIDENCE" and "their figures are simulated" in r["detail"]
+    none = _perf()
+    assert none["outcome"] == "NO_EVIDENCE" and "simulated" not in none["detail"]
+
+
+def test_performance_failed_threshold_at_staging_is_not_met():
+    r = _perf(_k6("EXE-1"), _k6("EXE-2", status="failed", reason="assertion"))
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-2"])
+
+
+def test_performance_run_over_its_limits_does_not_count():
+    over = _k6("EXE-1", status="inconclusive", reason="load_limit_exceeded", anomalies=["load_limit_exceeded"])
+    failed_over = _k6("EXE-2", status="failed", reason="nonzero_exit", anomalies=["load_limit_exceeded"])
+    r = _perf(over, failed_over)
+    assert r["outcome"] == "NO_EVIDENCE" and r["evidence"] == []
+    assert _perf(failed_over, _k6("EXE-3"))["outcome"] == "MET"
+    marked_only = _k6("EXE-4", anomalies=["load_limit_exceeded"])   # a pass that still carries the anomaly
+    assert _perf(marked_only)["outcome"] == "NO_EVIDENCE"
+
+
+def _summary(failures=0, strength="structured", errors=0):
+    """A k6 summary attached with ``qa ingest``: the ingest event's threshold counts."""
+    return {"format": "k6", "kind": "tests", "strength": strength,
+            "report": {"format": "k6", "kind": "tests", "tests": 2, "failures": failures, "errors": errors, "skipped": 0}}
+
+
+def _plain_run(execution_id, **changes):
+    """A passing run that is not a k6 run (a script that drove the load), on staging."""
+    return _exe(execution_id, activity="load-test", command={"argv": ["sh", "load.sh"], "shell": False, "cwd": "."},
+                environment={"class": "staging"}, anomalies=[], report=None, reports=[], **changes)
+
+
+def test_performance_a_structured_ingested_summary_counts_and_its_thresholds_decide():
+    assert _perf(_plain_run("EXE-1", ingested=[_summary()]))["outcome"] == "MET"
+    r = _perf(_plain_run("EXE-1", ingested=[_summary(failures=1)]))
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-1"])
+    assert _perf(_plain_run("EXE-1", ingested=[_summary(errors=1)]))["outcome"] == "NOT_MET"
+
+
+def test_performance_an_attested_ingested_summary_never_counts():
+    attested = dict(_k6("EXE-1"), report=None, reports=[], ingested=[_summary(strength="attested")])
+    assert _perf(attested)["outcome"] == "NO_EVIDENCE"
+    assert _perf(_plain_run("EXE-2", ingested=[_summary(failures=1, strength="attested")]))["outcome"] == "NO_EVIDENCE"
+
+
+def test_performance_a_passing_non_k6_run_does_not_hide_a_failed_ingested_summary():
+    r = _perf(_plain_run("EXE-1", ingested=[_summary(failures=2)]), _k6("EXE-2"))
+    assert (r["outcome"], r["evidence"]) == ("NOT_MET", ["EXE-1"])
+
+
+def test_performance_a_run_status_alone_is_not_a_k6_result():
+    junit = _exe("EXE-1", activity="load-test", command={"argv": ["pytest"], "shell": False, "cwd": "."}, environment={"class": "staging"})
+    assert _perf(junit)["outcome"] == "NO_EVIDENCE"
+    assert _perf(_plain_run("EXE-2"))["outcome"] == "NO_EVIDENCE"
+    assert _perf(_k6("EXE-3", strength="exit_code"))["outcome"] == "NO_EVIDENCE"   # a pass needs the structured strength
+    assert _perf(_k6("EXE-4", strength="exit_code", status="failed", reason="assertion"))["outcome"] == "NOT_MET"
+    assert _perf(_k6("EXE-5", git=dict(GIT, commit=OTHER_COMMIT)))["outcome"] == "NO_EVIDENCE"
+
+
+def test_performance_min_environment_class_is_a_param():
+    assert _perf(_k6("EXE-1", klass="ephemeral"), performance_objectives_met={"params": {"min_environment_class": "ephemeral"}})["outcome"] == "MET"
+    assert _perf(_k6("EXE-1", klass="staging"), performance_objectives_met={"params": {"min_environment_class": "production"}})["outcome"] == "NO_EVIDENCE"
+
+
+def _migration(execution_id, status="passed", strength="structured", activity="db-ephemeral", **changes):
+    record = dict(report={"kind": "tests"}, command={"argv": ["psql"], "shell": False, "cwd": "."}, environment={"class": "ephemeral"})
+    return _exe(execution_id, status=status, strength=strength, activity=activity, **dict(record, **changes))
+
+
+def _migrations(*executions, profile="release"):
+    return gate.evaluate_criterion(_crit(profile, "migrations_validated"), _st(*executions), _context())
+
+
+def test_migrations_latest_ephemeral_run_decides():
+    assert _crit("release", "migrations_validated")["params"] == {"activity": "db-ephemeral"}
+    assert _migrations(_migration("EXE-1"))["outcome"] == "MET"
+    later_fail = _migrations(_migration("EXE-1"), _migration("EXE-2", status="failed", reason="assertion"))
+    assert (later_fail["outcome"], later_fail["evidence"]) == ("NOT_MET", ["EXE-2"])
+    later_pass = _migrations(_migration("EXE-1", status="failed", reason="assertion"), _migration("EXE-2"))
+    assert (later_pass["outcome"], later_pass["evidence"]) == ("MET", ["EXE-2"])
+
+
+def test_migrations_weaker_runs_are_not_candidates_whatever_their_order():
+    weaker_pass = _migration("EXE-2", strength="exit_code", report=None)
+    weaker_fail = _migration("EXE-3", status="failed", strength="exit_code", reason="nonzero_exit", report=None)
+    after_pass = _migrations(_migration("EXE-1"), weaker_pass)
+    assert (after_pass["outcome"], after_pass["evidence"]) == ("MET", ["EXE-1"])
+    after_fail = _migrations(_migration("EXE-1", status="failed", reason="assertion"), weaker_pass)
+    assert (after_fail["outcome"], after_fail["evidence"]) == ("NOT_MET", ["EXE-1"])
+    assert _migrations(_migration("EXE-1"), weaker_fail)["outcome"] == "MET"
+
+
+def test_migrations_without_a_qualifying_run_is_no_evidence():
+    assert _migrations()["outcome"] == "NO_EVIDENCE"
+    other = _migration("EXE-1", activity="db-readonly")
+    elsewhere = _migration("EXE-2", git=dict(GIT, commit=OTHER_COMMIT))
+    unfinished = _migration("EXE-3", status="blocked", reason="not_authorized")
+    assert _migrations(other, elsewhere, unfinished)["outcome"] == "NO_EVIDENCE"
+
+
+def test_migrations_with_only_weaker_runs_is_no_evidence_even_for_a_failure():
+    weak = _migration("EXE-1", strength="exit_code", report=None)
+    assert _migrations(weak)["outcome"] == "NO_EVIDENCE"
+    assert _migrations(dict(weak, status="failed", reason="nonzero_exit"))["outcome"] == "NO_EVIDENCE"
+
+
+def test_no_gate_detail_names_a_milestone():
+    def every_detail(st, ctx):
+        out = []
+        for profile in vocab.PROFILES:
+            out.extend(gate.evaluate_criterion(x, st, ctx) for x in _policy(profile)["criteria"])
+        return json.dumps(out)
+    assert "milestone" not in every_detail(_st(), _context())
+    assert "milestone" not in every_detail(_st(), _context(kernel={"status": "absent", "source_checkout": True}))
+    assert "milestone" not in every_detail(_st(*EVERY_CLASS(), _k6("EXE-9", klass="ephemeral"), _migration("EXE-10")), _context())
+
+
+@pytest.mark.parametrize("profile", ["change", "audit", "release"])
+@pytest.mark.parametrize("value", ["secrets", ["fuzzing"], [], None, [1]], ids=["a_string", "unknown_class", "empty", "null", "not_text"])
+def test_an_invalid_scan_classes_override_is_config_invalid(profile, value):
+    with pytest.raises(QaError) as caught:
+        _crit(profile, "security_scans_executed", security_scans_executed={"params": {"classes": value}})
+    assert caught.value.code == "config_invalid"
+
+
+def test_the_change_profile_takes_a_classes_override_and_defaults_without_one():
+    assert "classes" not in _crit("change", "security_scans_executed")["params"]
+    assert _crit("change", "security_scans_executed", security_scans_executed={"params": {"classes": ["sast"]}})["params"] == {"classes": ["sast"]}
+    r = gate.evaluate_criterion(_crit("change", "security_scans_executed"), _st(*EVERY_CLASS()), _context())
+    assert r["outcome"] == "MET" and "secrets, dependencies, sast" in r["detail"]

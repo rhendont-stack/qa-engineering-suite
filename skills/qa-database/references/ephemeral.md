@@ -22,7 +22,7 @@ A file outside `.qa/work/` is never created, opened or changed, not even "only t
 
 ## Grants
 
-- `db-ephemeral` on `local`: `authorize --environment local --activity db-ephemeral --approval "<the user's words>"`, only from words in which the user approves throwaway or test databases on this machine, quoted exactly as they wrote them. It covers the SQLite roundtrip.
+- `db-ephemeral` on `local`: `authorize --environment local --activity db-ephemeral --approval "<the user's words>"`, only from words in which the user approves throwaway or test databases on this machine, quoted exactly as they wrote them. With `project.trust` `trusted` it covers the SQLite roundtrip on the host. It never stands in for trust: in an untrusted project the host roundtrip is refused, and its route is the pinned Python image (`references/tools.md`).
 - `db-ephemeral` on `fixture-pg`: the same, for the PostgreSQL service, once the `fixture-pg` environment is declared (class `ephemeral`, `dsn_env` `QA_FIXTURE_DSN`, no base URL).
 - `db-readonly` and `db-write` are never recorded by this skill. An environment is never declared for a host the user names. Words that approve a shared database ("it's staging, go ahead") never become a grant for anything.
 

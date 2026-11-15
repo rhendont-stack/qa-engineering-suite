@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Command guard rules (shared/policies/command-guard.json)",
+  "description": "Rules that map command patterns to deny, require_grant:<activity> or allow (§12.3). Every matcher in a rule's match must hold for the rule to apply. Any deny wins (the first deny rule in file order is reported), then require_grant (activities accumulate), then allow. The guard module also checks what this schema cannot: unique rule IDs, the activity named by require_grant, and that every regex compiles.",
+  "type": "object",
+  "properties": {
+    "version": {"const": 1},
+    "rules": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/rule"}}
+  },
+  "required": ["version", "rules"],
+  "additionalProperties": false,
+  "$defs": {
+    "words": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "regex": {"type": "string", "minLength": 1},
+    "rule": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+        "effect": {
+          "description": "deny, allow, or require_grant:<activity> with an activity from defs.schema.json.",
+          "type": "string",
+          "pattern": "^(deny|allow|require_grant:[a-z]+(-[a-z]+)*)$"
+        },
+        "reason": {"description": "Why the rule exists; the decision's reason starts with it.", "type": "string", "minLength": 1},
+        "match": {"$ref": "#/$defs/match"}
+      },
+      "required": ["id", "effect", "reason", "match"],
+      "additionalProperties": false
+    },
+    "match": {
+      "type": "object",
+      "properties": {
+        "program": {"description": "Glob patterns (fnmatch) for the program's lower-cased base name, after wrappers are stripped.", "$ref": "#/$defs/words"},
+        "unless_program": {"description": "There is a program, and it is not one of these globs given as a bare name found on the PATH.", "$ref": "#/$defs/words"},
+        "declared_activity": {"description": "The command declares one of these activities.", "$ref": "#/$defs/words"},
+        "subcommand": {"description": "The first argument that is not an option is one of these. The values of git's global options that take one (-C, -c, --git-dir, --work-tree, --namespace, --super-prefix, --config-env, --attr-source) are skipped. Arguments after the subcommand become the arguments the args_* matchers see.", "$ref": "#/$defs/words"},
+        "unless_subcommand": {"description": "There is a subcommand and it is none of these.", "$ref": "#/$defs/words"},
+        "args_all": {"description": "Every one of these is an argument (exact match).", "$ref": "#/$defs/words"},
+        "args_any": {"description": "At least one of these is an argument (exact match).", "$ref": "#/$defs/words"},
+        "unless_args": {"description": "None of these is an argument (exact match).", "$ref": "#/$defs/words"},
+        "no_args": {"description": "The program has no arguments after it, once wrappers are stripped. true is the only value.", "const": true},
+        "args_regex": {"description": "Some argument matches this Python regex (re.search).", "$ref": "#/$defs/regex"},
+        "args_regex_on_stdin": {"description": "args_regex also reads what the program is fed on stdin: the arguments of the commands before it in its pipe, and here-string and here-document bodies. true is the only value.", "const": true},
+        "shell_regex": {"description": "The command comes from a shell string that matches this Python regex (re.search) as a whole.", "$ref": "#/$defs/regex"},
+        "check": {
+          "description": "A named check implemented by the guard module.",
+          "enum": [
+            "delete_outside_qa", "protected_config_write", "shell_without_flag", "secret_in_argv",
+            "url_host", "privilege_escalation", "destructive_sql", "sql_write", "migration"
+          ]
+        }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  }
+}

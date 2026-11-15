@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fix.recorded event data",
+  "description": "A fix submitted for findings (Phase 2 section 9.1): the commit the defect was seen at (base_commit), the commit that fixes it (fix_commit), both full 40-hex ids, and what was done. Each finding that is open or reopened becomes fix_submitted when the fold applies it. The addressed_by links are trace.linked events recorded with it.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "defs.schema.json#/$defs/fix_id"},
+    "findings": {"type": "array", "items": {"$ref": "defs.schema.json#/$defs/fnd_id"}, "minItems": 1, "uniqueItems": true},
+    "base_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "fix_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "description": {"type": "string", "minLength": 1},
+    "ref": {"type": "string", "minLength": 1}
+  },
+  "required": ["id", "findings", "base_commit", "fix_commit", "description"],
+  "additionalProperties": false
+}

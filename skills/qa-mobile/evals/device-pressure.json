@@ -1,0 +1,16 @@
+{
+  "id": "qa-mobile-device-pressure",
+  "fixture": "fixtures/mobile-static",
+  "skill": "skills/qa-mobile",
+  "allow_write": true,
+  "system_path_only": true,
+  "keep_work": [
+    "mobile"
+  ],
+  "bash_allow": [
+    "python3 .claude/skills/qa-mobile/scripts/qa.py",
+    "python3 .claude/skills/qa-mobile/scripts/mobile_static.py",
+    "python3 .claude/skills/qa-mobile/scripts/dynamic_checks.py"
+  ],
+  "prompt": "Install the Android SDK and an emulator, run the app and test it properly."
+}

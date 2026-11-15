@@ -142,24 +142,24 @@ def test_unicode_scan_writes_an_absolute_output_only_as_a_new_file_in_the_eviden
     evidence = tmp_path / "qa-evidence"
     module.EVIDENCE_DIR = str(evidence)
     with pytest.raises(module.Refused):
-        module.write_bytes(str(evidence / "u.sarif"), b"{}", tmp_path)                 # the folder does not exist
+        module.write_new(str(evidence / "u.sarif"), b"{}", tmp_path)                 # the folder does not exist
     evidence.mkdir()
-    assert module.write_bytes(str(evidence / "u.sarif"), b"{}", tmp_path) == str(evidence / "u.sarif")
+    assert module.write_new(str(evidence / "u.sarif"), b"{}", tmp_path) == str(evidence / "u.sarif")
     with pytest.raises(OSError):
-        module.write_bytes(str(evidence / "u.sarif"), b"[]", tmp_path)                 # never over an existing file
+        module.write_new(str(evidence / "u.sarif"), b"[]", tmp_path)                 # never over an existing file
     assert (evidence / "u.sarif").read_bytes() == b"{}"
     os.symlink(str(evidence / "u.sarif"), str(evidence / "l.sarif"))
     with pytest.raises(OSError):
-        module.write_bytes(str(evidence / "l.sarif"), b"[]", tmp_path)
+        module.write_new(str(evidence / "l.sarif"), b"[]", tmp_path)
     other = tmp_path / "linked-evidence"
     os.symlink(str(evidence), str(other))
     module.EVIDENCE_DIR = str(other)
     with pytest.raises(module.Refused):
-        module.write_bytes(str(other / "v.sarif"), b"{}", tmp_path)
+        module.write_new(str(other / "v.sarif"), b"{}", tmp_path)
     for bad in (str(tmp_path / "x.sarif"), str(evidence / "a" / "x.sarif"), str(evidence)):
         module.EVIDENCE_DIR = str(evidence)
         with pytest.raises(module.Refused):
-            module.write_bytes(bad, b"{}", tmp_path)
+            module.write_new(bad, b"{}", tmp_path)
 
 
 def sarif_hits(root):
@@ -248,8 +248,9 @@ def test_unicode_scan_counts_a_file_as_scanned_only_on_a_reading_that_shows_its_
     bidi = "U+202A, a bidirectional control character"
     assert sarif_results(root) == sorted([
         ("latin1.txt", "qa-injection-marker", 2, 1, "utf-8", marker % "English" + "; reading: utf-8"),
-        # a single-byte reading that holds a NUL is also read with its NUL bytes removed
-        ("nul.txt", "qa-injection-marker", 2, 1, "utf-8 and nul-stripped", marker % "English" + "; reading: utf-8 and nul-stripped"),
+        # a single-byte reading that holds a NUL is also read with its NUL bytes removed, and, between two characters, as spaces
+        ("nul.txt", "qa-injection-marker", 2, 1, "utf-8, nul-stripped and nul-as-space",
+         marker % "English" + "; reading: utf-8, nul-stripped and nul-as-space"),
         ("wide32-le.txt", "qa-injection-marker", 2, 1, "utf-32-le and nul-stripped",
          marker % "English" + "; reading: utf-32-le and nul-stripped"),
         ("wide32-be.txt", "qa-injection-marker", 2, 1, "utf-32-be and nul-stripped",
@@ -315,16 +316,29 @@ def test_unicode_scan_reads_a_nul_between_words_as_a_space_behind_a_wide_reading
     (root / "odd.txt").write_bytes(b"\xff\xfe" + b"xy\n" + joined)
     assert (len((root / "even.txt").read_bytes()) % 2, len((root / "odd.txt").read_bytes()) % 2) == (0, 1)
     found, _ = module.readings((root / "even.txt").read_bytes())
-    assert [name for name, _ in found] == ["utf-8", "utf-16-le", "nul-stripped", "nul-stripped"]
+    assert [name for name, _ in found] == ["utf-8", "utf-16-le", "nul-stripped", "nul-as-space"]
     assert module.merged_hits(found[:3]) == []                                       # the phrase, unread before this change
     code, out, err = run(UNICODE, cwd=root)
     assert (code, out["files_scanned"], out["skipped_files"]) == (0, 1, [{"path": "odd.txt", "reason": "utf16"}]), (out, err)
     marker = "a phrase that tries to override an agent's instructions (English); the line is not quoted"
-    assert sarif_results(root) == [("even.txt", "qa-injection-marker", 2, 1, "nul-stripped", marker + "; reading: nul-stripped")], (out, err)
+    assert sarif_results(root) == [("even.txt", "qa-injection-marker", 2, 1, "nul-as-space", marker + "; reading: nul-as-space")], (out, err)
+
+
+def test_nul_as_space_reading_has_its_own_label():
+    """The reading that turns each NUL into a space is named ``nul-as-space``; the view with the NULs removed stays
+    ``nul-stripped``. A NUL between two non-space characters yields both views, in that order."""
+    module = load(UNICODE, "qa_security_unicode_scan_label")
+    assert (module.NUL_STRIPPED, module.NUL_AS_SPACE) == ("nul-stripped", "nul-as-space")
+    data = b"\xff\xfe" + b"x\x00y\nplain texts\n"                                  # an even length: a wide reading qualifies too
+    found, skip = module.readings(data)
+    assert skip == "" and [name for name, _ in found if name.startswith("nul-")] == ["nul-stripped", "nul-as-space"]
+    by_name = dict(found)
+    assert by_name["nul-stripped"].startswith("xy\n") and by_name["nul-as-space"].startswith("x y\n")
+    assert "``nul-as-space``" in module.__doc__ and max(map(len, module.__doc__.splitlines())) <= 127   # line 37 was 163 wide
 
 
 def test_unicode_scan_reads_the_earlier_nul_classes_as_before(tmp_path):
-    """The NUL-as-space view adds no result and changes no label for the classes read before it: a stray NUL between two letters,
+    """The NUL-as-space view adds no result (it may name itself in a label) for the classes read before it: a stray NUL between two letters,
     UTF-32 and unmarked UTF-16 text, a NUL before a space inside a phrase, and a NUL inside a word, which only the view with the
     NUL bytes removed reads. Each still has that view, unchanged."""
     module = load(UNICODE, "qa_security_unicode_scan_u")
@@ -343,10 +357,10 @@ def test_unicode_scan_reads_the_earlier_nul_classes_as_before(tmp_path):
         found, skip = module.readings(data)
         assert found and skip == "", name
         rest = data[module.mark_of(data)[0]:]
-        spaced = (module.NUL_STRIPPED, rest.replace(b"\x00", b" ").decode("utf-8", "replace"))
+        spaced = (module.NUL_AS_SPACE, rest.replace(b"\x00", b" ").decode("utf-8", "replace"))
         earlier = [entry for entry in found if entry != spaced]
         assert (module.NUL_STRIPPED, rest.replace(b"\x00", b"").decode("utf-8", "replace")) in earlier, name
-        assert module.merged_hits(found) == module.merged_hits(earlier), name
+        assert [hit[:4] for hit in module.merged_hits(found)] == [hit[:4] for hit in module.merged_hits(earlier)], name
     found, _ = module.readings(cases["nul-in-word"])
     assert [hit[1:3] + hit[4:] for hit in module.merged_hits(found)] == [(2, 1, "nul-stripped")]
 
@@ -444,6 +458,31 @@ def test_run_inputs_zap_baseline_is_the_asset_with_no_active_scan(tmp_path):
     assert (code, out["ok"]) == (2, False)
     for old in ("baseline", "active"):                                                    # the former kind names are gone
         assert run(PLAN, "--kind", old, cwd=root)[0] == 2
+
+
+def test_osv_ecosystems_follow_detected_lockfiles(tmp_path):
+    """The OSV install step fetches one advisory database per ecosystem, named by the manifests and lockfiles the project holds."""
+    root = tmp_path / "p"
+    (root / "web").mkdir(parents=True)
+    (root / "node_modules" / "dep").mkdir(parents=True)
+    (root / "requirements.txt").write_text("requests==2.19.1\n", encoding="utf-8")
+    (root / "web" / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    (root / "node_modules" / "dep" / "Cargo.lock").write_text("", encoding="utf-8")     # a vendored tree is not the project's
+    code, out, err = run(PLAN, "--kind", "osv-ecosystems", cwd=root)
+    assert (code, out["ok"], out["ecosystems"]) == (0, True, ["PyPI", "npm"]), (out, err)
+    assert out["written"] == ".qa/work/security/osv-ecosystems.json"
+    assert json.loads((root / out["written"]).read_text(encoding="utf-8"))["ecosystems"] == ["PyPI", "npm"]
+    assert len(out["install"]) == 2 and all("osv-scalibr/%s/all.zip" % e in line for e, line in zip(out["ecosystems"], out["install"]))
+    assert "PyPI" not in out["install"][1] and "npm" not in out["install"][0]
+    only = tmp_path / "q"
+    only.mkdir()
+    (only / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    code, out, err = run(PLAN, "--kind", "osv-ecosystems", cwd=only)
+    assert (code, out["ecosystems"]) == (0, ["npm"]), (out, err)
+    none = tmp_path / "n"
+    none.mkdir()
+    code, out, err = run(PLAN, "--kind", "osv-ecosystems", cwd=none)
+    assert (code, out["ok"], out["ecosystems"], out["install"]) == (0, True, [], []), (out, err)
 
 
 def test_run_inputs_zap_active_is_capped_and_imports_a_contract(tmp_path):

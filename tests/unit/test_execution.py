@@ -314,7 +314,8 @@ def test_report_format_without_a_parser_is_refused(trusted, actor, py, tmp_path)
 def test_format_kinds_name_every_parser():
     assert set(ingest.FORMAT_KINDS) == set(ingest._PARSERS)
     assert ingest.FORMAT_KINDS == {"junit": "tests", "ctrf": "tests", "sarif": "alerts", "lcov": "coverage", "cobertura": "coverage",
-                                   "jacoco": "coverage", "mutation": "mutants", "k6": "tests"}
+                                   "jacoco": "coverage", "mutation": "mutants", "k6": "tests", "axe": "alerts",
+                                   "lighthouse": "metrics"}
 
 
 def test_string_without_the_shell_flag_goes_to_the_guard(trusted, actor):
@@ -1135,7 +1136,8 @@ def test_results_follow_the_execution_event(trusted, actor, py):
 @pytest.mark.parametrize("name", ["execution.recorded", "result.recorded", "result.reclassified", "command.blocked", "report.ingested"])
 def test_event_schemas_are_closed(name):
     doc = schema.load_schema("events/%s.schema.json" % name)
-    optional = {"container", "measurements"} if name == "execution.recorded" else {"totals", "anomalies"} if name == "report.ingested" else set()
+    optional = ({"container", "measurements"} if name == "execution.recorded"
+                else {"totals", "anomalies", "report", "limitations"} if name == "report.ingested" else set())
     assert doc["additionalProperties"] is False and set(doc["required"]) == set(doc["properties"]) - optional
 
 
@@ -1164,6 +1166,19 @@ def test_ingest_folded_before_its_execution_still_applies(ws, actor, frozen_now)
     assert ledger.iter_all_events(ws)[0]["type"] == "report.ingested"
     st = state.load(ws)
     assert st["violations"] == [] and st["executions"][EXE_A]["ingested"] == [dict(_ingested(EXE_A), event=event["id"])]
+
+
+def test_an_ingest_past_the_load_limits_turns_a_recorded_pass_inconclusive():
+    # Milestone 4b: the status rule for load_limit_exceeded, applied when a k6 summary ingested later shows it.
+    over = dict(_ingested(EXE_A), format="k6", anomalies=["load_limit_exceeded"],
+                limitations=["load_limit_exceeded: vus_max.max 12 > max_vus 10 of AUTH-001"])
+    st = _fold(("report.ingested", over), _exe(EXE_A), _exe(EXE_B, status="failed", reason="nonzero_exit"),
+               _exe(EXE_C), ("report.ingested", dict(over, execution=EXE_B)), ("report.ingested", _ingested(EXE_C)))
+    a, b, c = (st["executions"][e] for e in (EXE_A, EXE_B, EXE_C))
+    assert (a["status"], a["reason"], a["anomalies"]) == ("inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])
+    assert (b["status"], b["reason"], b["anomalies"]) == ("failed", "nonzero_exit", ["load_limit_exceeded"])
+    assert (c["status"], c["reason"], c["anomalies"]) == ("passed", None, [])   # an ingest without the anomaly changes nothing
+    assert st["violations"] == [] and a["ingested"][0]["limitations"] == over["limitations"]
 
 
 def test_result_folded_before_its_execution_is_kept_and_counted(ws, actor, frozen_now):

@@ -178,8 +178,9 @@ def test_load_limit_exceeded_is_an_anomaly(trusted, actor, tmp_path, metrics, du
     passing = dict(metrics, latency_ms={"type": "trend", "values": {"avg": 5}, "thresholds": {"avg<10": {"ok": True}}})
     result, record = k6_run(trusted, actor, tmp_path, summary(passing, duration_ms=duration_ms))
     assert {"activity": "load-test", "environment": "local", "authorization": grant["data"]["id"]} in record["authorizations"]
-    assert (result["status"], result["anomalies"]) == ("passed", ["load_limit_exceeded"])
-    assert record["anomalies"] == ["load_limit_exceeded"]
+    # Milestone 4b: a run past its authorized load proves nothing about the objective, so the would-be pass is inconclusive.
+    assert (result["status"], result["reason"], result["anomalies"]) == ("inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])
+    assert (record["status"], record["reason"], record["anomalies"]) == ("inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])
     assert [text for text in record["limitations"] if text.startswith("load_limit_exceeded: ")] == [
         "load_limit_exceeded: %s of %s" % (passed, grant["data"]["id"])]
     schema.validate({key: value for key, value in record.items() if key != "ingested"}, "events/execution.recorded.schema.json")
@@ -211,3 +212,124 @@ def test_cli_runs_and_ingests_k6_summaries(trusted, actor, tmp_path, qa_cli):
     code, attached = qa_cli("ingest", "k6", str(CORPUS), "--from", ran["execution"])
     # The same bytes the run stored under its manifest: attaching them again is structured evidence.
     assert (code, attached["kind"], attached["total"], attached["strength"]) == (0, "tests", 2, "structured")
+    # Milestone 4b: the reply carries the metrics the summary recorded and the execution's status as it now reads.
+    assert (attached["report"]["label"], attached["status"], attached["reason"]) == ("measured", "failed", "assertion")
+    assert attached["report"]["metrics"]["qa_sample_ms"]["avg"] == 50
+
+
+def test_a_failed_threshold_past_the_limits_stays_failed(trusted, actor, tmp_path):
+    load_test_grant(trusted, actor)
+    metrics = {"vus_max": {"type": "gauge", "values": {"value": 12, "min": 12, "max": 12}},
+               "latency_ms": {"type": "trend", "values": {"avg": 50}, "thresholds": {"avg<10": {"ok": False}}}}
+    result, record = k6_run(trusted, actor, tmp_path, summary(metrics, duration_ms=1000.0), exit_code=99)
+    assert (result["status"], result["reason"], result["anomalies"]) == ("failed", "assertion", ["load_limit_exceeded"])
+    assert (record["status"], record["reason"]) == ("failed", "assertion")
+
+
+# --------------------------------------------------------------------------- qa ingest k6 --from (milestone 4b)
+
+PASSING_SUMMARY_VUS_12 = summary({"vus_max": {"type": "gauge", "values": {"value": 12, "min": 12, "max": 12}},
+                                  "latency_ms": {"type": "trend", "values": {"avg": 5}, "thresholds": {"avg<10": {"ok": True}}}},
+                                 duration_ms=1000.0)
+PASSING_SUMMARY_VUS_10 = summary({"vus_max": {"type": "gauge", "values": {"value": 10, "min": 10, "max": 10}},
+                                  "latency_ms": {"type": "trend", "values": {"avg": 5}, "thresholds": {"avg<10": {"ok": True}}}},
+                                 duration_ms=1000.0)
+
+
+class _Run:
+    def __init__(self, ws, actor, tmp_path, execution_id, grant=None):
+        self.ws, self.actor, self.tmp_path, self.execution, self.grant = ws, actor, tmp_path, execution_id, grant
+
+
+def bare_run(ws, actor, tmp_path, exit_code=0, stub_name="k6"):
+    """A host run of a stand-in that declares no report, so its status comes from the exit code alone. Named k6, it is a
+    load tool to the guard, and a covering load-test grant joins the run's authorizations."""
+    program = tmp_path / stub_name
+    program.write_text("#!/bin/sh\nexit %d\n" % exit_code)
+    program.chmod(0o755)
+    ran = execution.execute(ws, actor, execution.RunRequest(command=[str(program), "run"]))
+    return _Run(ws, actor, tmp_path, ran["execution"]), ran
+
+
+@pytest.fixture
+def ws_run_with_grant(trusted, actor, tmp_path):
+    """A trusted workspace, a load-test grant with max_vus 10, and one passed run of k6 under it that declared no report."""
+    grant = load_test_grant(trusted, actor)
+    run, ran = bare_run(trusted, actor, tmp_path)
+    assert ran["status"] == "passed"
+    run.grant = grant["data"]["id"]
+    return run
+
+
+def ingest_k6(run, doc, name="k6-summary.json"):
+    path = run.tmp_path / name
+    path.write_text(json.dumps(doc))
+    return execution.ingest_file(run.ws, run.actor, "k6", path, from_execution=run.execution, category="performance")
+
+
+def test_ingest_k6_from_records_metrics_and_checks_limits(ws_run_with_grant):   # vus_max 12 over max_vus 10
+    rec = ingest_k6(ws_run_with_grant, PASSING_SUMMARY_VUS_12)
+    assert rec["report"]["metrics"] and "load_limit_exceeded" in rec["anomalies"] and rec["status"] == "inconclusive"
+    assert (rec["reason"], rec["anomalies"], rec["report"]["label"]) == ("load_limit_exceeded", ["load_limit_exceeded"], "measured")
+    assert rec["report"]["metrics"]["vus_max"] == {"value": 12, "min": 12, "max": 12}
+    assert (rec["report"]["format"], rec["report"]["tests"], rec["report"]["failures"]) == ("k6", 1, 0)
+    assert rec["limitations"] == ["load_limit_exceeded: vus_max.max 12 > max_vus 10 of %s" % ws_run_with_grant.grant]
+    record = state.load(ws_run_with_grant.ws)["executions"][ws_run_with_grant.execution]
+    assert (record["status"], record["reason"], record["anomalies"]) == ("inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])
+    item = record["ingested"][-1]
+    assert (item["event"], item["report"], item["anomalies"], item["limitations"]) == (
+        rec["event"], rec["report"], ["load_limit_exceeded"], rec["limitations"])
+    schema.validate({key: value for key, value in item.items() if key != "event"}, "events/report.ingested.schema.json")
+
+
+def test_ingest_k6_within_the_grant_records_metrics_and_keeps_the_pass(ws_run_with_grant):
+    rec = ingest_k6(ws_run_with_grant, PASSING_SUMMARY_VUS_10)
+    assert (rec["status"], rec["reason"], rec["anomalies"]) == ("passed", None, [])
+    assert "limitations" not in rec and rec["report"]["metrics"]["vus_max"]["max"] == 10
+    item = state.load(ws_run_with_grant.ws)["executions"][ws_run_with_grant.execution]["ingested"][-1]
+    assert "anomalies" not in item and "limitations" not in item and item["report"]["label"] == "measured"
+
+
+def test_ingest_k6_past_the_limits_keeps_a_failed_run_failed(trusted, actor, tmp_path):
+    load_test_grant(trusted, actor)
+    run, ran = bare_run(trusted, actor, tmp_path, exit_code=1)
+    assert (ran["status"], ran["reason"]) == ("failed", "nonzero_exit")
+    rec = ingest_k6(run, PASSING_SUMMARY_VUS_12)
+    assert (rec["status"], rec["reason"], rec["anomalies"]) == ("failed", "nonzero_exit", ["load_limit_exceeded"])
+
+
+def test_ingest_k6_into_a_run_no_load_test_grant_covered_checks_no_limit(trusted, actor, tmp_path):
+    run, ran = bare_run(trusted, actor, tmp_path, stub_name="loadtool")   # not a load tool to the guard
+    assert not any(entry["activity"] == "load-test" for entry in state.load(trusted)["executions"][run.execution]["authorizations"])
+    rec = ingest_k6(run, PASSING_SUMMARY_VUS_12)
+    assert (rec["status"], rec["anomalies"], rec["report"]["metrics"]["vus_max"]["max"]) == ("passed", [], 12)
+
+
+def test_a_second_ingest_past_the_limits_records_the_anomaly_once(ws_run_with_grant):
+    ingest_k6(ws_run_with_grant, PASSING_SUMMARY_VUS_12, "first.json")
+    rec = ingest_k6(ws_run_with_grant, PASSING_SUMMARY_VUS_12, "second.json")
+    assert (rec["status"], rec["reason"], rec["anomalies"]) == ("inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])
+
+
+def test_ingested_k6_metrics_come_from_the_redacted_copy(ws_run_with_grant, monkeypatch):
+    secret = "k6probe" + "Zq81xV" * 4
+    monkeypatch.setenv("QA_PROBE_TOKEN", secret)
+    rec = ingest_k6(ws_run_with_grant, summary({secret: {"type": "counter", "values": {"count": 1, "rate": 1.0}}}))
+    assert len(rec["report"]["metrics"]) == 1 and secret not in json.dumps(rec)
+    assert secret not in json.dumps(state.load(ws_run_with_grant.ws)["executions"][ws_run_with_grant.execution])
+
+
+def test_cli_ingest_k6_lists_the_limits_passed_among_its_limitations(trusted, actor, tmp_path, qa_cli):
+    grant = load_test_grant(trusted, actor)
+    program = tmp_path / "k6"
+    program.write_text("#!/bin/sh\nexit 0\n")
+    program.chmod(0o755)
+    code, ran = qa_cli("run", "--", str(program), "run")
+    assert (code, ran["status"]) == (0, "passed")
+    source = tmp_path / "over.json"
+    source.write_text(json.dumps(PASSING_SUMMARY_VUS_12))
+    code, attached = qa_cli("ingest", "k6", str(source), "--from", ran["execution"])
+    assert (code, attached["status"], attached["reason"], attached["anomalies"]) == (
+        0, "inconclusive", "load_limit_exceeded", ["load_limit_exceeded"])
+    assert "load_limit_exceeded: vus_max.max 12 > max_vus 10 of %s" % grant["data"]["id"] in attached["limitations"]
+    assert attached["report"]["metrics"]["vus_max"]["max"] == 12
