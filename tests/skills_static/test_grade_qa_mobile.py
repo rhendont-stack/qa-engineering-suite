@@ -435,6 +435,7 @@ def test_negative_controls_by_location_title_or_cause_but_not_by_context():
     (good_table({"MASTG-TEST-0218": {"remediation": "Needs a device-control grant; attach with qa ingest."}}), "MASTG-TEST-0218: remediation"),
     ({"checks": good_table()["checks"] + [{"test": "MASTG-TEST-0238", "status": "passed"}]}, "MASTG-TEST-0238: passed"),
 ])
+@needs_git
 def test_table_violations_fail(tmp_path, table, why):
     evidence = evidence_for(tmp_path, table=table)
     criterion = grade.table_criterion(evidence)

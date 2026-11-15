@@ -324,6 +324,7 @@ def test_one_finding_cannot_stand_for_two_entries():
     (good_table({"1.1.1": {"status": "failed"}}), "1.1.1: status 'failed'"),
     ({"criteria": good_table()["criteria"] + [{"criterion": "1.4.6", "status": "passed"}]}, "1.4.6: passed"),
 ])
+@needs_git
 def test_table_violations_fail(tmp_path, table, why):
     evidence = evidence_for(tmp_path, table=table)
     criterion = grade.table_criterion(evidence)
