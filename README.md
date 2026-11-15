@@ -80,7 +80,7 @@ Milestone 4b adds the following. Its run IDs, evidence IDs, grader changes and l
 | Evaluations of the three new skills, three counted runs per scenario | `qa-frontend`, `qa-mobile` and `qa-release` 9 of 9 each on their final texts, each after a confirmation set; `qa-database`, re-run after the trust rule, 6 of 6 after one loophole round |
 | Kernel mutation score, `gate`, one container run | `gate` 85.07 over 2211 mutants (1873 killed, 8 timed out, 277 survived, 53 without tests), after the criteria milestones 4a and 4b added to it; `ci` unmeasured, because the mutation tool has no `ci` module |
 | Kernel tests on Linux x86_64 in containers through the kernel, 3.9 and 3.15 | The first leg (3.9) failed 16 tests, all test-side (two parametrized grader tests without a `git` guard); after a test-only fix both legs passed (7205 tests: 5947 pass, 1258 skip, 0 fail; 1176 of the skips need `git`, which the images lack) |
-| Kernel tests on macOS arm64 for milestone 4b | Not run locally; left to the macOS CI job |
+| Kernel tests on macOS arm64 for milestone 4b | Not run locally. The macOS CI job on the pull request, at `2ed31ec`, concluded `success` on 3.9 and 3.15 (7177 pass, 88 skip, 0 fail each) |
 
 GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
 
