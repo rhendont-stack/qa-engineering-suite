@@ -386,6 +386,12 @@
       "match": {"program": ["zizmor"], "unless_args": ["--offline"]}
     },
     {
+      "id": "zizmor-other-argument",
+      "effect": "require_grant:data-egress",
+      "reason": "Only the exact arguments of the suite's offline zizmor legs run without data-egress; any other argument (an end-of-options marker, any other option or an option with its value joined to it, a format other than sarif or json, an input other than . or a path under .github or /work, a path with a . or .. segment) can hide the offline flag or reach the network, so it needs a data-egress grant (§12.2).",
+      "match": {"program": ["zizmor"], "args_regex": "^(?!(--offline|--no-progress|--format|sarif|json|\\.|(/work|\\.github)(/(?!\\.\\.?(?:/|\\Z))[A-Za-z0-9._-]+)*)\\Z)"}
+    },
+    {
       "id": "lhci-upload",
       "effect": "require_grant:data-egress",
       "reason": "Lighthouse CI sends its reports to a server or to public storage through the upload and all-in-one subcommands, whose configuration file can name the target, and through any upload or server option; it needs a data-egress grant (\u00a712.2).",

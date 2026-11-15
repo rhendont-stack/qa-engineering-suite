@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import socket
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from helpers import CORPUS, finishes
+from helpers import CORPUS, REPO, finishes
 from qa import guard, workspace
 from qa.errors import QaError
 
@@ -573,6 +575,10 @@ NEW_CASE_IDS = (
     # fix round 1: the all-in-one subcommand and the upload-target arguments
     "lhci-collect-only", "lhci-autorun", "lhci-autorun-with-config-file", "lhci-upload-target-equals-form",
     "lhci-upload-target-separate-value", "lhci-upload-server-base-url", "lhci-public-storage-value-alone",
+    # milestone 4b final-review fix wave: rule zizmor-other-argument
+    "zizmor-offline-release-leg-as-written", "zizmor-offline-json-on-one-workflow-file",
+    "zizmor-offline-after-end-of-options-needs-egress", "zizmor-offline-as-the-value-of-another-option-needs-egress",
+    "zizmor-offline-with-a-dot-segment-path-needs-egress",
 )
 NEW_CASES = [c for c in CASES if c["id"] in NEW_CASE_IDS]
 # decision, the activities the run needs beyond the declared one, the hosts the command line names
@@ -631,6 +637,11 @@ NEW_EXPECTED = {
     "lhci-upload-target-separate-value": ("require_grant", ("data-egress",), ()),
     "lhci-upload-server-base-url": ("require_grant", ("data-egress",), ("192.0.2.7",)),
     "lhci-public-storage-value-alone": ("require_grant", ("data-egress",), ()),
+    "zizmor-offline-release-leg-as-written": ("allow", (), ()),
+    "zizmor-offline-json-on-one-workflow-file": ("allow", (), ()),
+    "zizmor-offline-after-end-of-options-needs-egress": ("require_grant", ("data-egress",), ()),
+    "zizmor-offline-as-the-value-of-another-option-needs-egress": ("require_grant", ("data-egress",), ()),
+    "zizmor-offline-with-a-dot-segment-path-needs-egress": ("require_grant", ("data-egress",), ()),
 }
 
 
@@ -683,6 +694,52 @@ def test_zizmor_is_offline_only_without_a_grant(ws):
     assert classify(["zizmor", "--offline", "/work"], ws, activity="static-analysis").decision == "allow"
     d = classify(["zizmor", "/work"], ws, activity="static-analysis")
     assert (d.decision, d.rule_id, d.required_activities) == ("require_grant", "zizmor-online", ("static-analysis", "data-egress"))
+
+
+def zizmor_leg():
+    """(declared activity, shell text) of the zizmor leg in qa-release's references/tools.md, as the skill writes it."""
+    text = (REPO / "skills" / "qa-release" / "references" / "tools.md").read_text(encoding="utf-8")
+    [line] = re.findall(r"^```qa-leg zizmor [^\n]*\n(.*?)\n```$", text, re.M | re.S)
+    words = shlex.split(line.strip())
+    shell = words.index("--shell")
+    assert words[shell + 1] == "--" and len(words) == shell + 3, words[shell:]
+    return words[words.index("--activity") + 1], words[shell + 2]
+
+
+def test_the_zizmor_leg_of_qa_release_needs_no_grant_as_written(ws):
+    """Final review Important 1: rule zizmor-other-argument admits the skill's own leg, read from the shipped text."""
+    activity, shell = zizmor_leg()
+    d = classify(shell, ws, shell=True, activity=activity)
+    assert (activity, d.decision, d.rule_id, d.required_activities) == ("static-analysis", "allow", None, ("static-analysis",))
+
+
+@pytest.mark.parametrize("argv", [
+    ["zizmor", "--offline", "--no-progress", "--format", "json", ".github/workflows/qa-reexecution.yml"],  # the CI-workflow live test
+    ["zizmor", "--offline", "--no-progress", "--format", "json", ".github/workflows/control.yml"],
+    ["zizmor", "--offline", "--format", "sarif", "/work"], ["zizmor", "--offline", "/work"],
+    ["zizmor", "--offline", "--no-progress", "--format", "sarif", "/work/.github/workflows"],
+    ["zizmor", "--offline", ".github/.hidden/x..yml"],
+], ids=["generated-workflow-file", "control-workflow-file", "corpus-form", "work-root", "work-subtree", "names-with-dots"])
+def test_the_suites_zizmor_forms_need_no_grant(argv, ws):
+    d = classify(argv, ws, activity="static-analysis")
+    assert (d.decision, d.rule_id, d.required_activities) == ("allow", None, ("static-analysis",))
+
+
+@pytest.mark.parametrize("argv", [
+    ["zizmor", "--", "--offline", "/work"], ["zizmor", "--config", "--offline", "/work"],
+    ["zizmor", "--offline", "--format=sarif", "/work"], ["zizmor", "--offline", "--format", "plain", "/work"],
+    ["zizmor", "--offline", "/work/.."], ["zizmor", "--offline", "/work/./x"], ["zizmor", "--offline", ".github/../x"],
+    ["zizmor", "--offline", "src/workflows"], ["zizmor", "--offline", ".githubx"], ["zizmor", "--offline", "/workx"],
+    ["zizmor", "--offline", "/work\n"],
+], ids=["end-of-options-marker", "offline-as-another-options-value", "value-joined-to-its-option", "other-format",
+        "dot-dot-segment", "dot-segment", "relative-dot-dot-segment", "input-outside-the-named-trees", "github-prefix-only",
+        "work-prefix-only", "trailing-line-feed"])
+def test_any_other_zizmor_argument_needs_data_egress(argv, ws):
+    """Final review Important 1: with the offline token present, rule zizmor-other-argument needs data-egress for every
+    argument outside the suite's zizmor leg words, by input class."""
+    d = classify(argv, ws, activity="static-analysis")
+    assert (d.decision, d.rule_id, d.required_activities) == (
+        "require_grant", "zizmor-other-argument", ("static-analysis", "data-egress"))
 
 
 def test_lhci_collect_alone_is_allowed_under_the_declared_activity(ws):
