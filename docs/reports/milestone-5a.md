@@ -106,7 +106,22 @@ The evaluation harness turns hooks off for the evaluated agent, so no pilot or s
 
 Frontmatter and the reference validator: the final whole-branch review parsed the frontmatter of the 16 skills and the 3 agents with strict YAML and found ten plain values holding `: `, which a strict parser, the reference validator's among them, reads as a nested mapping: the description of `qa-api-testing`, `qa-frontend`, `qa-mobile`, `qa-mutation`, `qa-performance`, `qa-release`, `qa-security` and `qa-test-strategy`, `qa-release`'s compatibility, and the description of `agents/qa-evaluator.md` (`final-review.md`, I1). `b5b75c3` double-quotes the ten with their text unchanged (`qa-performance`'s inner double quotes take `\"`). The kernel's frontmatter reader decodes `\"` and `\\` in a double-quoted value and ignores one with any other backslash sequence, a bare quote inside or no closing quote, instead of guessing; `tools/validate_skills.py` rejects a plain value holding `: ` or ` #` in the frontmatter of skills and agents; and `tests/skills_static/test_frontmatter_values.py` holds every frontmatter reader (the kernel, its 17 vendored copies and the agents test) to the ten values' pre-fix text. Neither test image has a strict YAML parser installed (`final-fix-yaml-probe.txt`), so the strict parse itself is left to the reference validator in CI.
 
-Result: measured on the pull request. This row is filled from the pull request's checks after the final fix wave, by the controller; nothing here is a CI result.
+Result, read from the pull request's GitHub Actions runs once each had completed (`gh run view`, job logs); each commit ran twice, once for the push and once for the pull request:
+
+- `c2fc30a` (runs 43938129362 and 43938270143): `l0` stopped at the `skills-ref` step on `skills/qa-api-testing/SKILL.md` (I1 above). Both Ubuntu `l1` legs concluded `success`. Both macOS `l1` legs concluded `failure` on 2 tests each (push run: 7527 and 7526 tests pass, 88 and 89 skipped): `test_benchmark_grades_and_aggregates_each_run` and `test_verify_install_never_uses_the_callers_config`. The child environment the fake CLI recorded held `__CF_USER_TEXT_ENCODING`, a name macOS adds inside that process. Both tools build the child environment from scratch (`tools/verify_install.py:86`, `tools/run_skill_eval.py:895`), and three other tests already tolerated the name. The test images are Linux, so the remote runs could not show it.
+- `6f393f3` (runs 43955784778 and 43955791294): `l0` concluded `success`, so `skills-ref` accepted all 16 skills. The Ubuntu legs concluded `success`; the macOS legs concluded `failure` on the same 2 tests.
+- `10cc0c9` adds the name to those two tests' tolerated sets. Its runs 43960761382 and 43960768113 concluded `success` on every job:
+  - `l0` validated the 16 skills with `skills-ref` and ran the six repository checks.
+  - `l1` on the push run (tests pass, skipped, 0 fail each):
+
+    | Leg | Tests pass | Skipped |
+    |---|---|---|
+    | macOS, Python 3.9 | 7555 | 89 |
+    | macOS, Python 3.15 | 7556 | 88 |
+    | ubuntu-24.04, Python 3.9 | 7558 | 86 |
+    | ubuntu-latest, Python 3.15 | 7558 | 86 |
+
+This text's own commit changes only this report and the README; GitHub's required checks measure it again before the merge.
 
 ## Launcher paths, re-measured (Task 5)
 
@@ -501,6 +516,8 @@ Rulings of the task ledger, in order (each with its cost if wrong in the ledger,
 - Final review, I2: the four fixture-specific examples stay in the skill text in 5a; the CHANGELOG says what the staged copy leaves out, the confound disclosure names the four places beside `workload-model.md`, and 5b's list takes, before the next with-suite run, their generalisation, the scan's extension to answer-key `path:line` locations and the phrase widening.
 - Final review, minors: m1 and m2 are fixed in wording; m3 is disclosed here and its grader goes to 5b; m4 (before milestone 6) and m5 (before any paid run on a host whose process environment is readable as a file) go to 5b's list, m5 by rule only; the nine ledger minors marked for the wave are fixed; the README and the CHANGELOG say CI is configured to run the validations, and this report's CI row holds the measurement.
 - Final review, push and CI row: the fix wave commits and does not push; the controller pushes, and the CI row is filled after CI completes, from one read of the pull request's checks, in a documentation-only commit that the controller checks against that read.
+- Final review, README size line: the README's export size names the commit it was measured at (`0181af3`, as this report gives) instead of "the last code commit". If this is wrong, one number in the README is stale.
+- macOS CI fix: the controller added the name macOS puts into a child's environment to the tolerated sets of the two tests the CI section names for the macOS legs (`10cc0c9`). The fix has the same shape as three existing tests, falls outside any review finding, and was needed because a red required check blocks the merge. If this is wrong, the pull request needs another CI round.
 
 ## Checks
 
