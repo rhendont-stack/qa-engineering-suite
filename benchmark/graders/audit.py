@@ -6,8 +6,10 @@ Detections come from two places, each ``{"origin", "id", "title", "tool", "path"
 - ``kernel_detections(findings, vocabulary=None)`` (``with-suite``): the findings the kernel recorded, except those marked
   ``duplicate`` or verified ``false_positive``. The tool is the finding's ``source.tool`` when it is in ``vocabulary`` (the
   scenario's ``tools_present``; any tool when None); otherwise the tool its method shows: ``in-process-check`` when it was
-  found dynamically or its evidence cites an ``EXE-`` execution, and ``static-review`` for the rest. The line is
-  ``source.start_line``; without one, a ``path:line`` at the start of ``refs.location`` gives the path and the line.
+  found dynamically or its evidence cites an ``EXE-`` execution, and ``static-review`` for the rest. The path is
+  ``component.path`` and the line ``source.start_line``. Without a line, a ``path:line`` at the start of ``refs.location``
+  gives the line when its path and ``component.path`` name the same file (equal, or one ends in ``/`` plus the other),
+  and gives both the path and the line when the finding has no ``component.path``.
 - ``message_detections``: the findings the judge (``rubrics/audit.md``) lists from the final message, as
   ``static-review``. One the judge ties to an ``FND-`` id the kernel holds keeps that id in ``recorded_as``: it is the
   message's copy of that recorded finding.
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
@@ -57,6 +60,14 @@ def _str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _same_file(one: Optional[str], other: Optional[str]) -> bool:
+    """Whether two paths name the same file: equal once normalised, or one ends in ``/`` plus the other."""
+    if not one or not other:
+        return False
+    one, other = (posixpath.normpath(p.strip().replace("\\", "/")) for p in (one, other))
+    return one == other or one.endswith("/" + other) or other.endswith("/" + one)
+
+
 def kernel_detections(findings: Mapping[str, Mapping[str, Any]],
                       vocabulary: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
     known = set(vocabulary) if vocabulary is not None else None
@@ -75,8 +86,10 @@ def kernel_detections(findings: Mapping[str, Mapping[str, Any]],
             "in-process-check" if source.get("method") == "dynamic" or cites_run else "static-review")
         path, line = _str(component.get("path")), _line(source.get("start_line"))
         located = LOCATION_LINE.match(refs["location"]) if line is None and isinstance(refs.get("location"), str) else None
-        if located:
+        if located and path is None:                     # no component.path: the location gives the path and the line
             path, line = located.group("path"), int(located.group("line"))
+        elif located and _same_file(path, located.group("path")):
+            line = int(located.group("line"))            # component.path is kept; the location gives only the line
         found.append({"origin": "kernel", "id": ident, "title": finding.get("title"), "tool": tool, "path": path,
                       "line": line, "endpoint": _str(component.get("endpoint")), "cwe": _str(cwes[0]) if cwes else None,
                       "severity": _level(finding.get("severity"))})

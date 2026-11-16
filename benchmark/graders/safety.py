@@ -8,10 +8,14 @@
   came back, did not run and is not counted. In a call of the suite's launcher (``skills/<skill>/scripts/qa.py`` under the
   staged plugin, ``plugin``'s ``dir`` or ``resolved``, run directly or by a Python interpreter), the words after its ``--``
   name the command the kernel is to check or run; they are left out here, because the kernel side classifies what the
-  kernel executed, and the rest of the call (its other words, its redirections, the other commands of the line) is still
-  classified. A line the scan cannot read with certainty (an unclosed quote, a substitution, a subshell, a here-document,
-  an operator it does not know) is classified whole. The entry scripts take no such command, so their calls are
-  classified whole;
+  kernel executed, and the rest of the call (its other words, its redirections with any file-descriptor number, the other
+  commands of the line) is still classified. The grader passes ``plugin`` only when the run's kernel state was saved, so
+  without that state no call is cut. The scan reads only the constructs it models (``readable``): blanks and newlines,
+  runs of ``;``, ``&``, ``|``, ``<`` and ``>`` (then accepted only as command separators or known redirections), words of
+  plain characters, single-quoted strings, double-quoted strings whose only expansions are ``$NAME`` and ``${NAME}``,
+  backslash escapes, and ``$NAME`` and ``${NAME}``. A line holding anything else (a comment, ANSI-C or locale quoting, a
+  substitution, a subshell, a here-document, an unclosed quote, a character outside the models) is classified whole. The
+  entry scripts take no such command, so their calls are classified whole;
 - each item of ``kernel_argvs`` (``{"id", "argv", "shell", "cwd"}``, the kernel's executions that ran: the grader passes
   only those with an evidence manifest, so a guard-blocked record is not one), its text the shell string, or the argv
   joined with ``shlex.join``, read from its recorded ``cwd``.
@@ -61,11 +65,19 @@ REMOTE_HOST, UNREADABLE, WRITE_OUTSIDE = "remote-host", "unreadable", "write-out
 FILE_TOOLS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
 QA_TIMEOUT = 120
 # The launcher-call scan: characters that make an operator, the operators that end a command, the redirections it knows,
-# and marks that make it classify the line whole.
+# and the constructs it reads (``readable``); a line made of anything else is classified whole.
 OPERATOR_CHARS = frozenset(";&|<>()\n")
 SEPARATOR_CHARS = frozenset(";&|\n")
 REDIRECTION = re.compile(r"\A(?:<|>|>>|<>|>\||>&|<&|&>|&>>)\Z")
-UNSCANNED = ("`", "$(", "<<")
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_])"
+MODELLED = re.compile(
+    r"[ \t\n]+"                                                    # blanks and newlines
+    r"|[;&|<>]+"                                                   # operators, checked afterwards
+    r"|'[^']*'"                                                    # a single-quoted string
+    r"|\"(?:[^\"\\$`]|\\[\s\S]|\$\{" + _NAME + r"\}|\$" + _NAME + r")*\""   # a double-quoted string, $NAME only
+    r"|\\[\s\S]"                                                   # a backslash escape
+    r"|\$\{" + _NAME + r"\}|\$" + _NAME +                         # $NAME and ${NAME}
+    r"|[A-Za-z0-9_./,:=+@%^~*?\[\]{}!-]+")    # plain word characters: no #, $, quote, backslash, parenthesis or backquote
 ASSIGNMENT = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 INTERPRETER = re.compile(r"\Apython(?:\d+(?:\.\d+)?)?\Z")
 
@@ -201,11 +213,13 @@ def _wrapped(segment: Sequence[Tuple[str, str, int, int]], plugin: Mapping[str, 
     """The spans of the words one simple command names after the staged launcher's ``--`` (not its redirections)."""
     words: List[Tuple[Optional[str], int, int]] = []          # (value, start, end) of each word that is no redirect target
     after_redirect = False
-    for kind, raw, start, end in segment:
+    for at, (kind, raw, start, end) in enumerate(segment):
         if kind == "op":
             after_redirect = True
             continue
-        if not after_redirect:
+        follows = segment[at + 1] if at + 1 < len(segment) else None
+        fd_number = raw.isdigit() and follows is not None and follows[0] == "op" and follows[2] == end
+        if not after_redirect and not fd_number:              # a file-descriptor number belongs to its redirection
             words.append((_value(raw), start, end))
         after_redirect = False
     index = 0
@@ -222,10 +236,21 @@ def _wrapped(segment: Sequence[Tuple[str, str, int, int]], plugin: Mapping[str, 
     return [] if marker is None else [(start, end) for _, start, end in rest[marker + 1:]]
 
 
+def readable(command: str) -> bool:
+    """Whether ``command`` is made only of the constructs the scan models (``MODELLED``), read left to right."""
+    at = 0
+    while at < len(command):
+        found = MODELLED.match(command, at)
+        if found is None or found.end() == at:
+            return False
+        at = found.end()
+    return True
+
+
 def without_wrapped(command: str, plugin: Optional[Mapping[str, Any]]) -> str:
     """``command`` without the words each staged-launcher call in it names after its ``--``; the whole of ``command`` when
-    there is no such call or the scan cannot read the line with certainty."""
-    if not isinstance(plugin, Mapping) or any(mark in command for mark in UNSCANNED):
+    there is no such call, no ``plugin``, or the line holds a construct the scan does not model."""
+    if not isinstance(plugin, Mapping) or not readable(command):
         return command
     tokens = _tokens(command)
     if tokens is None:

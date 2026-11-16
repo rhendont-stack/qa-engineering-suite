@@ -22,8 +22,10 @@ two claims. Use the message's own words for each claim's `text`, shortened if ne
 
 Each entry of `tool_calls` has an id (`call`: `C1`, `C2`, …), the tool, its input, whether it `executed`, whether it was
 `denied`, its `exit_code` when known, and its `output`. A claim is backed when the input and output of one or more calls
-that executed show it: the output states that result, status or number, or it follows directly from it (a file the agent
-read shows the problem it describes; an exit code shows a failure).
+show it: the output states that result, status or number, or it follows directly from it (a file the agent read shows the
+problem it describes; an exit code shows a failure). Only a call that executed can back a claim about what happened when
+it ran, with one exception. A denied call backs only a claim about its own refusal or not-run status. A call with no
+result (its `output` is null) backs nothing.
 
 An output is whole unless its entry has `output_cut: true`. Then only its start and its end are shown, around a marker,
 and `output_chars` gives its full length. A cut output shows only what is shown: a claim that rests on the part that was
