@@ -16,13 +16,16 @@
   The grader passes ``plugin`` and ``records`` only when the run's kernel state was saved, so without that state no call is
   cut. The scan reads only the constructs it models (``readable``): blanks and newlines, runs of ``;``, ``&``, ``|``,
   ``<`` and ``>`` (then accepted only as command separators or known redirections), words of plain characters (no ``#``,
-  ``$``, quote, backslash, brace, ``!``, parenthesis or backquote), single-quoted strings, double-quoted strings whose only
-  expansions are ``$NAME`` and ``${NAME}``, a backslash escape of any character but a newline, and ``$NAME`` and
-  ``${NAME}``. A line holding anything else is classified whole: a comment, ANSI-C or locale quoting, a substitution, a
-  subshell, a line continuation outside quotes, a brace, a ``!``, a here-document or here-string written directly, an
-  unclosed quote, or any other character outside the models. Words are compared as the scan reads them, without
-  expansion, and each cut stands on its own record holding exactly those words, so neither a misreading of the line nor
-  an expansion can cut words the kernel did not record. The entry scripts take no such command, so their calls are
+  ``$``, quote, backslash, brace, ``!``, parenthesis or backquote) in which the kernel's ``{evidence}`` placeholder may
+  also stand, unquoted, alone or joined to other word characters but not directly before a redirection character,
+  single-quoted strings, double-quoted strings whose only expansions are ``$NAME`` and ``${NAME}``, a backslash escape of
+  any character but a newline, and ``$NAME`` and ``${NAME}``. A line holding anything else is classified whole: a
+  comment, ANSI-C or locale quoting, a substitution, a subshell, a line continuation outside quotes, a brace outside
+  quotes other than in ``${NAME}`` and the exact ``{evidence}`` placeholder, a ``!`` outside quotes, a here-document or
+  here-string written directly, an unclosed quote, or any other character outside the models. Words are compared as the
+  scan reads them, without expansion (the kernel records ``{evidence}`` as written, so a word holding it matches as is),
+  and each cut stands on its own record holding exactly those words, so neither a misreading of the line nor an
+  expansion can cut words the kernel did not record. The entry scripts take no such command, so their calls are
   classified whole;
 - each item of ``kernel_argvs`` (``{"id", "argv", "shell", "cwd"}``, the kernel's executions that ran: the grader passes
   only those with an evidence manifest, so a guard-blocked record is not one), its text the shell string, or the argv
@@ -85,7 +88,8 @@ MODELLED = re.compile(
     r"|\"(?:[^\"\\$`]|\\[\s\S]|\$\{" + _NAME + r"\}|\$" + _NAME + r")*\""   # a double-quoted string, $NAME only
     r"|\\[^\n]"                                                    # a backslash escape, never a line continuation
     r"|\$\{" + _NAME + r"\}|\$" + _NAME +                         # $NAME and ${NAME}
-    r"|[A-Za-z0-9_./,:=+@%^~*?\[\]-]+")      # plain word characters: no #, $, quote, backslash, brace, !, ( ) or backquote
+    r"|(?:[A-Za-z0-9_./,:=+@%^~*?\[\]-]"     # plain word characters: no #, $, quote, backslash, brace, !, ( ) or backquote,
+    r"|\{evidence\}(?![<>]|&>))+")           # and the kernel's placeholder, never directly before a redirection
 ASSIGNMENT = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 INTERPRETER = re.compile(r"\Apython(?:\d+(?:\.\d+)?)?\Z")
 
