@@ -4,7 +4,8 @@ Usage: python -I tools/run_skill_eval.py --case PATH --config with-skill|baselin
        --out DIR [--timeout SECONDS] [--ledger PATH] [--keep-workdir] [--stage-remaining-usd N]
 
 The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?, "system_path_only"?, "exclude"?,
-"keep_history"?, "checkout"?}``. ``fixture`` and ``skill`` are paths, relative ones resolved against the repository root. The harness
+"keep_history"?, "checkout"?, "grant_task"?}``. ``fixture`` and ``skill`` are paths, relative ones resolved against the repository
+root. The harness
 copies the fixture into a fresh temporary directory without answer keys or any SKILL.md, gives the copy a one-commit git history of
 its own
 (or, with ``keep_history``, the generator's), places only the skill under test in ``.claude/skills/`` (``with-skill`` only),
@@ -52,12 +53,16 @@ with others and delegates to subagents. ``skills`` is a list of skill directorie
 copy's ``.claude/skills/`` beside the single ``skill``, which keeps working; ``agents`` is a list of ``.md`` files copied to
 ``.claude/agents/``. Every entry is a repository-relative path whose real path is inside the repository; a symlink anywhere in
 it (the path, a parent below the repository, or anything inside a skill directory) is refused with exit 2. The ``Task`` tool is
-allowed, in either configuration so the two arms differ only by what is installed, only when the case declares ``agents``.
+allowed, in either configuration so the two arms differ only by what is installed, only when the case declares ``agents`` or
+sets ``grant_task: true`` (a boolean; anything else is exit 2). ``with-suite`` always allows it, because the suite's
+orchestrator delegates to its agents; the benchmark's cases set ``grant_task``, so its baseline arm gets ``Task`` too and the
+two arms again differ only by what the suite brings.
 
 ``with-suite`` loads the whole suite the way the host loads a plugin, for the benchmark's suite arm; nothing is installed into the
 copy. ``stage_plugin`` exports the repository's ``HEAD`` (resolved to a commit first) with ``git archive`` to
 ``<tmp>/qa-eval-plugin-*/qa-engineering-suite/`` (the directory name is the plugin's name), keeping only ``.claude-plugin/``,
-``skills/`` without any ``evals/`` directory, ``agents/``, ``LICENSE`` and ``README.md``. A kept archive member that is not a
+``skills/`` without any ``evals/`` directory, ``agents/`` and ``LICENSE``; not ``README.md``, which reports fixture results
+and grader wording that only this arm could read (the plugin loads without it). A kept archive member that is not a
 regular file or a directory (a link, a device) refuses the run, and ``.claude-plugin/plugin.json`` is written as
 ``{"name": "qa-engineering-suite"}`` in the staged copy only, when the export has none (deviation 99). The run gets
 ``--plugin-dir <staged>`` (the CLI's help must list it); ``Task`` and, in place of a bare ``Skill`` (which would also grant the
@@ -180,7 +185,9 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 REPO = Path(__file__).resolve().parent.parent
 CONFIGS = ("with-skill", "baseline", "with-suite")
 PLUGIN_NAME = "qa-engineering-suite"
-PLUGIN_FILES = (".claude-plugin", "skills", "agents", "LICENSE", "README.md")    # what a staged plugin keeps of the export
+# What a staged plugin keeps of the export. Not README.md: it reports fixture results and grader wording (answer material),
+# which only the with-suite arm could read; the plugin loads without it.
+PLUGIN_FILES = (".claude-plugin", "skills", "agents", "LICENSE")
 DEFAULT_TIMEOUT = 1800
 SETUP_TIMEOUT = 120
 SETUP_OUTPUT_LIMIT = 1_000_000
@@ -250,6 +257,8 @@ def load_case(path: Path) -> Dict[str, Any]:
     for prefix in allow:
         if prefix.split()[0] in FORBIDDEN_BARE and len(prefix.split()) < 2:
             raise usage_error("bash_allow entry %r is too broad: name the script or subcommand too" % prefix)
+    if "grant_task" in case and not isinstance(case["grant_task"], bool):
+        raise usage_error("grant_task must be true or false")
     if "allow_write" in case and not isinstance(case["allow_write"], bool):
         raise usage_error("allow_write must be true or false")
     if "keep_history" in case and not isinstance(case["keep_history"], bool):
@@ -615,8 +624,9 @@ def _kept(parts: Tuple[str, ...], is_dir: bool) -> bool:
 
 def stage_plugin(repo: Path, dest: Path, rev: str = "HEAD") -> Path:
     """Exports ``rev`` of ``repo`` with ``git archive`` to ``dest/qa-engineering-suite/`` (the directory name is the plugin's
-    name) and keeps only ``.claude-plugin/``, ``skills/`` without any ``evals/`` directory, ``agents/``, ``LICENSE`` and
-    ``README.md``. Only regular files and directories are written: a kept member of any other type (a symbolic or hard link,
+    name) and keeps only ``PLUGIN_FILES``: ``.claude-plugin/``, ``skills/`` without any ``evals/`` directory, ``agents/`` and
+    ``LICENSE`` (never ``README.md``, which holds answer material). Only regular files and directories are written: a kept
+    member of any other type (a symbolic or hard link,
     a device) refuses the staging, so nothing in the staged copy can lead back into the repository. ``.claude-plugin/plugin.json``
     is written as ``{"name": "qa-engineering-suite"}`` when the export has none: without a root manifest the CLI resolves no
     plugin from the export (deviation 99). Returns the staged directory; raises ``Refused``."""
@@ -1537,7 +1547,9 @@ def main(argv: Sequence[str]) -> int:
         return refuse("the installed claude CLI does not list --plugin-dir; with-suite cannot load the staged plugin")
 
     # with-suite grants Skill for the staged skills only (plugin_skill_rules, once staged), never a bare Skill.
-    extra_tools = (["Skill"] if args.config == "with-skill" else []) + (["Task"] if suite or case.get("agents") else [])
+    # Task: always for with-suite; for any configuration whose case declares agents or sets grant_task (the benchmark's do).
+    task = suite or bool(case.get("agents")) or case.get("grant_task") is True
+    extra_tools = (["Skill"] if args.config == "with-skill" else []) + (["Task"] if task else [])
     venv = case.get("runtime_venv")
     venv_real = os.path.realpath(str(resolve(venv))) if venv else None
     run_id = uuid.uuid4().hex[:12]

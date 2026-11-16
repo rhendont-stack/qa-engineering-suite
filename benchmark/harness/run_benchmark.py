@@ -8,8 +8,13 @@ A scenario (``load_scenario``) is a JSON object with exactly these fields: ``id`
 ``allow_write``, ``runtime_venv`` (a path or null), ``system_path_only``, ``keep_work``, ``timeout`` (seconds),
 ``tools_present`` and ``worst_run_usd`` (``{"with-suite": …, "baseline": …}``, each arm's projected largest run). A prompt that
 names the repository's path or a seed ID (``F<n>-<nn>``) is refused. A run's harness case (``harness_case``) holds the id, the
-prompt, the fixture and the run's allowances only, and is the same for both arms, which differ by ``--config`` alone: the
-answer key, the mode, the grader, the tools present and the projections never reach the harness or the agent.
+prompt, the fixture and the run's allowances only (with ``grant_task: true``, so the baseline arm gets ``Task`` as the
+with-suite arm always does), and is the same for both arms, which differ by ``--config`` alone: the answer key, the mode, the
+grader, the tools present and the projections never reach the harness or the agent.
+
+``--out`` must resolve, every symlink followed, to a directory strictly under the repository's ``.superpowers/``; anything
+else is refused with exit 2 before anything runs. The harness denies the repository to every run, so no run can read an
+earlier run's evidence there.
 
 The runs take turns, one of each arm in the order ``--arms`` gives (with-suite, baseline, with-suite, …), until ``--runs`` of
 each are done. Each is a ``run_skill_eval.py`` subprocess with ``--config <arm>``, the scenario's ``timeout``, this command's
@@ -18,9 +23,10 @@ so the run's own ``--max-budget-usd`` is the smaller of the stage's and the ledg
 ``HOME``, ``TMPDIR`` and the key, each when set, and nothing else. The harness writes each run's ``start`` and ``end`` lines in the ledger, under its lock, and the
 ``end`` line again in ``DIR/costs.jsonl``; this command writes no ledger line of its own.
 
-Before each run the stage cap is checked: ``stage_spend`` (every run recorded in ``DIR/costs.jsonl``, earlier invocations on
-the same ``DIR`` included) plus the arm's ``worst_run_usd``, or the largest run recorded there when that is larger, must not
-pass ``--stage-cap-usd``. Otherwise the stage stops with status ``stage_cap_reached`` and exit 3, and each run not made is
+Before each run the stage cap is checked: ``stage_spend`` (every run of the stage, earlier invocations on the same ``DIR``
+included: each run in ``DIR/costs.jsonl``, and each run ``DIR/runs.json`` records that is not there, counted from its ledger
+``end`` line, so a run whose end line never reached ``DIR/costs.jsonl`` still counts) plus the arm's ``worst_run_usd``, or
+the largest run of the stage when that is larger, must not pass ``--stage-cap-usd``. Otherwise the stage stops with status ``stage_cap_reached`` and exit 3, and each run not made is
 recorded with the reason. A recorded cost that is unknown stops it the same way (``cost_unknown``). After each run, every
 ``start`` line it added to the ledger must have its ``end`` line there and in ``DIR/costs.jsonl``; otherwise the stage stops
 (``open_run``, ``evidence_incomplete``; exit 1). A run the harness refuses (exit 3) or rejects as malformed (exit 2) stops the
@@ -28,7 +34,7 @@ stage with that code; a run that fails or times out is recorded, and the next on
 
 ``DIR/runs.json`` holds the scenario, every run made (invocation, arm, index, run id, status, cost, the ``init`` tools and those
 beyond the allow list, the staged plugin, the stage remainder it was given, the evidence directory, the harness's exit code and
-a redacted tail of its stderr) and
+a tail of its stderr, redacted before it is cut) and
 one entry per invocation (its arguments, status, stage spend, and the runs not made and why); it is rewritten after every run.
 ``DIR/cases/`` holds each arm's harness case. Grading is not part of this command yet, so each invocation records
 ``"graded": false``.
@@ -155,7 +161,8 @@ def harness_case(scenario: Mapping[str, Any], arm: str) -> Dict[str, Any]:
         raise ValueError("unknown arm: %r" % arm)
     case: Dict[str, Any] = {"id": scenario["id"], "prompt": scenario["prompt"], "fixture": scenario["fixture"],
                             "bash_allow": list(scenario["bash_allow"]), "allow_write": scenario["allow_write"],
-                            "system_path_only": scenario["system_path_only"]}
+                            "system_path_only": scenario["system_path_only"],
+                            "grant_task": True}      # Task for both arms: with-suite always has it (its orchestrator delegates)
     if scenario["runtime_venv"]:
         case["runtime_venv"] = scenario["runtime_venv"]
     if scenario["keep_work"]:                # the harness takes a non-empty list or none
@@ -166,12 +173,14 @@ def harness_case(scenario: Mapping[str, Any], arm: str) -> Dict[str, Any]:
 # -- the stage --------------------------------------------------------------------------------------------------------
 
 def _lines(path: Path) -> List[Any]:
-    """The JSON value of each readable line of ``path``; a line that cannot be read is left out here, and
-    ``_recorded_costs`` is what refuses it."""
-    if not path.exists():
+    """The JSON value of each readable line of ``path``; a line, or a file, that cannot be read is left out here (so a run
+    missing from it shows as missing), and ``_recorded_costs`` is what refuses it."""
+    try:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, ValueError):
         return []
     found: List[Any] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         try:
             found.append(json.loads(line))
         except ValueError:
@@ -179,42 +188,75 @@ def _lines(path: Path) -> List[Any]:
     return found
 
 
-def _recorded_costs(out: Path) -> List[float]:
-    """The cost of each run recorded in ``out/costs.jsonl``; ``Stop`` when one is unknown or a line cannot be read."""
-    path = out / "costs.jsonl"
+def _known_cost(record: Any) -> Optional[float]:
+    if isinstance(record, dict) and record.get("cost_unknown") is False and _harness._is_amount(record.get("cost_usd")):
+        return float(record["cost_usd"])
+    return None
+
+
+def _stage_run_ids(out: Path) -> List[str]:
+    """The run id of every run ``DIR/runs.json`` records for the stage; ``Stop`` when the record cannot be read."""
+    path = out / "runs.json"
     if not path.exists():
         return []
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, ValueError) as exc:
-        raise Stop("cost_unknown", "%s cannot be read: %s" % (path, type(exc).__name__), 3)
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        return [run["run_id"] for run in doc["runs"] if isinstance(run.get("run_id"), str)]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise Stop("cost_unknown", "%s cannot be read (%s), so the stage's runs are unknown" % (path, type(exc).__name__), 3)
+
+
+def _recorded_costs(out: Path, ledger: Any = None) -> List[float]:
+    """The cost of every run of the stage: each line of ``out/costs.jsonl``, and each run ``out/runs.json`` records that is
+    not there (its end line reached the ledger but not ``costs.jsonl``), read from the ledger's end line by its run id. ``Stop``
+    (``cost_unknown``) when a cost is unknown, a line cannot be read, or such a run's cost is not in ``ledger`` (or no ledger
+    is given): a run of the stage is never left out of its spend."""
+    path = out / "costs.jsonl"
     costs: List[float] = []
-    for number, line in enumerate(text.splitlines(), 1):
-        if not line.strip():
-            continue
+    seen = set()
+    if path.exists():
         try:
-            record = json.loads(line)
-        except ValueError:
-            record = None
-        if not isinstance(record, dict) or record.get("cost_unknown") is not False or not _harness._is_amount(record.get("cost_usd")):
-            raise Stop("cost_unknown", "%s line %d holds no known cost, so the stage's spend cannot be shown under its cap"
-                       % (path, number), 3)
-        costs.append(float(record["cost_usd"]))
+            text = path.read_text(encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            raise Stop("cost_unknown", "%s cannot be read: %s" % (path, type(exc).__name__), 3)
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                record = None
+            cost = _known_cost(record)
+            if cost is None:
+                raise Stop("cost_unknown", "%s line %d holds no known cost, so the stage's spend cannot be shown under its cap"
+                           % (path, number), 3)
+            costs.append(cost)
+            seen.add(record.get("run_id"))
+    missing = [run_id for run_id in _stage_run_ids(out) if run_id not in seen]
+    if missing:
+        ends = {r["run_id"]: r for r in (ledger_records(ledger) if ledger is not None else []) if r["event"] == "end"}
+        for run_id in missing:
+            cost = _known_cost(ends.get(run_id))
+            if cost is None:
+                raise Stop("cost_unknown", "run %s of the stage is not in %s and the ledger holds no known cost for it, so the "
+                           "stage's spend cannot be shown under its cap" % (run_id, path), 3)
+            costs.append(cost)
     return costs
 
 
-def stage_spend(out: Path) -> float:
-    """What the runs recorded under ``out`` cost: the sum over ``out/costs.jsonl``, where the harness repeats each run's ``end``
-    line. Raises ``Stop`` (``cost_unknown``) when a recorded cost is unknown."""
-    return sum(_recorded_costs(out))
+def stage_spend(out: Path, ledger: Any = None) -> float:
+    """What the runs of the stage under ``out`` cost: every run in ``out/costs.jsonl`` (where the harness repeats each run's
+    ``end`` line) and every other run ``out/runs.json`` records, counted from ``ledger``. Raises ``Stop`` (``cost_unknown``)
+    when a cost is unknown or cannot be found."""
+    return sum(_recorded_costs(out, ledger))
 
 
-def check_stage(out: Path, worst: float, cap: float) -> float:
+def check_stage(out: Path, worst: float, cap: float, ledger: Any = None) -> float:
     """What is left of ``cap`` for the next run, which the harness takes as that run's ``--stage-remaining-usd``; ``Stop``
     (``stage_cap_reached``) when the stage's spend plus the next run's projection passes ``cap``: the projection is the arm's
     ``worst`` or the largest run recorded in the stage, whichever is larger. The remainder is computed in decimal, so it is
     exactly the cap less the recorded costs."""
-    costs = _recorded_costs(out)
+    costs = _recorded_costs(out, ledger)
     spend, projected = sum(costs), max([worst] + costs)
     remaining = float(Decimal(repr(cap)) - sum((Decimal(repr(cost)) for cost in costs), Decimal(0)))
     if round(spend + projected, 6) > cap or remaining <= 0:
@@ -259,15 +301,17 @@ def run_child(command: List[str]) -> Tuple[int, str, str]:
     return proc.returncode, out, err
 
 
-def _refusal(stdout: str, stderr: str) -> str:
+def _refusal(stdout: str, stderr: str, key: str) -> str:
+    """The harness's reason for a refusal, redacted and then cut to its last ``STDERR_TAIL`` characters: redacting first, so
+    a cut can never leave part of a key form that redaction would no longer recognise."""
     for line in reversed(stdout.splitlines()):
         try:
             said = json.loads(line)
         except ValueError:
             continue
         if isinstance(said, dict) and isinstance(said.get("refused"), str):
-            return said["refused"]
-    return stderr.strip()[-STDERR_TAIL:]
+            return redact(said["refused"], key)[-STDERR_TAIL:]
+    return redact(stderr.strip(), key)[-STDERR_TAIL:]
 
 
 def one_run(args: argparse.Namespace, scenario: Mapping[str, Any], arm: str, index: int, case_path: Path, out: Path,
@@ -308,7 +352,7 @@ def one_run(args: argparse.Namespace, scenario: Mapping[str, Any], arm: str, ind
         return entries, Stop("evidence_incomplete", "run %s is not in %s, so the stage's spend would be under-counted"
                              % (", ".join(missing), out / "costs.jsonl"), 1)
     if code == 3:
-        return entries, Stop("refused", redact(_refusal(stdout, stderr), key), 3)
+        return entries, Stop("refused", _refusal(stdout, stderr, key), 3)
     if code == 2:
         return entries, Stop("harness_usage_error", redact(stderr.strip(), key)[-STDERR_TAIL:], 2)
     if code not in (0, 1) or not entries:
@@ -373,6 +417,17 @@ def parse(argv: Sequence[str]) -> argparse.Namespace:
     return args
 
 
+def check_out(out: Path) -> None:
+    """``SystemExit(2)`` unless ``out``, every symlink resolved, lies strictly under the repository's ``.superpowers/``
+    (resolved as ``<repository>/.superpowers``, so a ``.superpowers`` that leads elsewhere does not count). The harness denies
+    the repository to every run, so a run can read no earlier run's evidence there; anywhere else it could."""
+    base = os.path.join(os.path.realpath(str(REPO)), ".superpowers")
+    real = os.path.realpath(str(out))
+    if not real.startswith(base + os.sep):
+        raise usage_error("--out must lie under the repository's .superpowers/ (it resolves to %s): the harness denies the "
+                          "repository to every run, so no run can read an earlier run's evidence there" % real)
+
+
 def _on_sigterm(_signum: int, _frame: Any) -> None:
     raise KeyboardInterrupt()
 
@@ -380,6 +435,7 @@ def _on_sigterm(_signum: int, _frame: Any) -> None:
 def main(argv: Sequence[str]) -> int:
     signal.signal(signal.SIGTERM, _on_sigterm)
     args = parse(argv)
+    check_out(Path(args.out))
     scenario = load_scenario(Path(args.scenario))
     out, ledger = Path(args.out), Ledger(Path(args.ledger))
     if os.path.realpath(str(out / "costs.jsonl")) == os.path.realpath(str(ledger.path)):
@@ -397,7 +453,7 @@ def main(argv: Sequence[str]) -> int:
     stop: Optional[Stop] = None
     for position, (arm, index) in enumerate(order):
         try:
-            remaining = check_stage(out, scenario["worst_run_usd"][arm], args.stage_cap_usd)
+            remaining = check_stage(out, scenario["worst_run_usd"][arm], args.stage_cap_usd, ledger)
             entries, stop = one_run(args, scenario, arm, index, cases[arm], out, ledger, invocation["number"], remaining)
         except Stop as before_the_run:
             entries, stop = [], before_the_run
@@ -416,7 +472,7 @@ def main(argv: Sequence[str]) -> int:
     # The graders and the aggregation are wired in here once they are frozen: benchmark/graders/grade_run.py for each run
     # in doc["runs"] that has evidence, then metrics.aggregate over the grades and doc["runs"]. Until then "graded" stays false.
     try:
-        spend: Optional[float] = round(stage_spend(out), 6)
+        spend: Optional[float] = round(stage_spend(out, ledger), 6)
     except Stop:
         spend = None
     invocation.update(status=stop.status if stop else "complete", ended=now_utc(), stage_spend_usd=spend)

@@ -91,6 +91,9 @@ FAKE = textwrap.dedent('''\
                 extra["plugin_files"] = sorted(os.path.relpath(os.path.join(base, name), plugin)
                                                for base, _dirs, names in os.walk(plugin) for name in names)
                 extra["plugin_manifest"] = open(os.path.join(plugin, ".claude-plugin", "plugin.json")).read()
+                if cfg.get("PLUGIN_COPY"):      # the whole staged copy, kept for a test to read after the run deletes it
+                    import shutil
+                    shutil.copytree(plugin, cfg["PLUGIN_COPY"], symlinks=True)
             fh.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "env": dict(os.environ), "helper": helper_info,
                                  "helper_key": KEY, "has_key": "ANTHROPIC_API_KEY" in os.environ, **extra}) + "\\n")
     init = {"type": "system", "subtype": "init", "apiKeySource": cfg.get("API_KEY_SOURCE", "FAKE_SOURCE_PLACEHOLDER"),
@@ -1883,8 +1886,40 @@ def test_keep_work_takes_only_plain_directory_names(world, value):
 
 # -- the with-suite configuration: the whole suite as a staged plugin (milestone 5a) ------------------------------------------
 
-SUITE_FILES = {".claude-plugin", "skills", "agents", "LICENSE", "README.md"}
+SUITE_FILES = {".claude-plugin", "skills", "agents", "LICENSE"}
 ANSWER_DIRS = {"evals", "benchmark", "fixtures", "tests", "docs"}
+# Text that refers to an answer key's content or location: "answer key" with a determiner before it ("as the answer key
+# expects"), or a path to answer keys. Narrowed from the bare phrase so a format reference such as "the alerts as answer-key
+# detections" in a script's docstring, which names no key and no result, is not a hit.
+ANSWER_PHRASE = re.compile(r"(?i)\b(?:the|an|its|their|this|that|these|those|each|every|our|your)\s+answer[ -]keys?\b"
+                           r"|answer[-_ ]keys?/|\banswer_keys?\b")
+BENCH_SCENARIOS = REPO / "benchmark" / "scenarios"
+
+
+def _answer_patterns():
+    """What a staged copy must not hold: the seed-ID pattern the benchmark refuses in a prompt, each benchmark scenario's
+    fixture and answer-key stem, and ``ANSWER_PHRASE``."""
+    spec = importlib.util.spec_from_file_location("run_benchmark_for_patterns", str(REPO / "benchmark" / "harness" / "run_benchmark.py"))
+    bench = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bench)
+    stems = set()
+    for path in sorted(BENCH_SCENARIOS.glob("*.json")):
+        scenario = json.loads(path.read_text())
+        stems |= {pathlib.PurePosixPath(scenario["fixture"]).name, scenario["answer_key"]}
+    assert {"blocked-env", "rest-api"} <= stems                  # the scan is never vacuous
+    return [bench.SEED_ID, ANSWER_PHRASE] + [re.compile(r"(?<![\w-])%s(?![\w-])" % re.escape(s)) for s in sorted(stems)]
+
+
+def _answer_hits(root):
+    patterns = _answer_patterns()
+    hits = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink()):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for pattern in patterns:
+            found = pattern.search(text)
+            if found:
+                hits.append((str(path.relative_to(root)), found.group(0)))
+    return hits
 
 
 def _suite_case(w, **fields):
@@ -1931,14 +1966,20 @@ def test_staged_copies_hold_no_answer_material(world):
     (fixture / "benchmark" / "answer-keys" / "app.json").write_text('{"issues": ["secret expected result"]}\n')
     (fixture / "answer_key.txt").write_text("secret expected result\n")
     case = _suite_case(world)
+    seen = world.root / "plugin-seen"
     for config in ("with-suite", "baseline"):
-        r = run(world, config=config, case=case)
+        r = run(world, config=config, case=case, env={"FAKE_PLUGIN_COPY": str(seen)})
         assert r.returncode == 0, r.stdout + r.stderr
     suite_call, base_call = calls(world)
     staged = suite_call["argv"][suite_call["argv"].index("--plugin-dir") + 1]
     files = suite_call["plugin_files"]
     assert pathlib.PurePath(staged).name == "qa-engineering-suite"
-    assert files and {f.split("/")[0] for f in files} <= SUITE_FILES
+    # The content of the copy the agent was given: no seed ID, no scenario's fixture or answer-key stem, no answer key.
+    assert sorted(str(p.relative_to(seen)) for p in seen.rglob("*") if p.is_file()) == files
+    assert _answer_hits(seen) == []
+    assert ANSWER_PHRASE.search("as the answer key expects") and not ANSWER_PHRASE.search("the alerts as answer-key detections")
+    # And the names: the plugin's own files only.
+    assert files and {f.split("/")[0] for f in files} <= SUITE_FILES and "README.md" not in files
     assert not [f for f in files if set(f.split("/")[:-1]) & ANSWER_DIRS]
     assert {f.split("/")[1] for f in files if f.endswith("/SKILL.md")} == set(_launchers())
     assert json.loads(suite_call["plugin_manifest"]) == {"name": "qa-engineering-suite"}      # scratch only: deviation 99
@@ -1984,9 +2025,9 @@ def test_stage_plugin_exports_head_keeps_only_the_plugin_files_and_refuses_links
     repo = _scratch_repo(tmp_path / "repo")
     staged = harness.stage_plugin(repo, tmp_path / "dest")
     assert staged == tmp_path / "dest" / "qa-engineering-suite"
-    assert listing(staged) == [".claude-plugin/marketplace.json", ".claude-plugin/plugin.json", "LICENSE", "README.md",
+    assert listing(staged) == [".claude-plugin/marketplace.json", ".claude-plugin/plugin.json", "LICENSE",
                                "agents/qa-x.md", "skills/qa-a/SKILL.md", "skills/qa-a/references/evals.md",
-                               "skills/qa-a/scripts/qa.py"]
+                               "skills/qa-a/scripts/qa.py"]                  # no README.md: Review Focus 3
     assert json.loads((staged / ".claude-plugin" / "plugin.json").read_text()) == {"name": "qa-engineering-suite"}
     first = git(repo, "rev-parse", "HEAD")[0]
 
@@ -2094,6 +2135,20 @@ def test_with_suite_and_a_runtime_venv_expose_only_the_venv_of_the_repository(wo
     assert filesystem["allowRead"] == [os.path.realpath(call["cwd"]), venv, os.path.realpath(staged)]
     assert os.path.realpath(str(repo)) in filesystem["denyRead"] and venv not in filesystem["denyRead"]
     assert [p for p in filesystem["allowRead"] if _names_path(p, repo)] == [venv]
+
+
+def test_grant_task_gives_task_to_a_case_of_any_configuration(world):
+    """``grant_task: true`` (the benchmark's cases set it) grants ``Task`` in every configuration, so both benchmark arms get
+    it; a case without it keeps its tool list (no ``Task`` unless it declares ``agents``); anything but a boolean is refused."""
+    plain = _suite_case(world)
+    granted = world.root / "granted.json"
+    granted.write_text(json.dumps(dict(json.loads(plain.read_text()), grant_task=True)))
+    for config, case, task in (("baseline", plain, False), ("baseline", granted, True), ("with-suite", granted, True)):
+        assert run(world, config=config, case=case).returncode == 0
+        assert ("Task" in _allowed(world, len(calls(world)) - 1)) is task, (config, case.name)
+    for bad in ("yes", 1, None):
+        granted.write_text(json.dumps(dict(json.loads(plain.read_text()), grant_task=bad)))
+        assert run(world, config="baseline", case=granted).returncode == 2, bad
 
 
 def test_a_stage_remainder_caps_the_run_when_it_is_the_smaller(world):

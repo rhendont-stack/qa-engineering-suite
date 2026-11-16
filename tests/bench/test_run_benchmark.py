@@ -6,9 +6,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import pathlib
+import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 
 import pytest
@@ -37,12 +41,18 @@ FAKE = textwrap.dedent('''\
         sys.exit(2)
     stdin = sys.stdin.read()
     number = len(open(cfg["LOG"]).read().splitlines()) if os.path.exists(cfg["LOG"]) else 0
+    settings = open(argv[argv.index("--settings") + 1]).read() if "--settings" in argv else None
     with open(cfg["LOG"], "a") as fh:
-        fh.write(json.dumps({"argv": argv, "env": dict(os.environ), "stdin": stdin}) + "\\n")
+        fh.write(json.dumps({"argv": argv, "env": dict(os.environ), "stdin": stdin, "cwd": os.getcwd(),
+                             "settings": settings}) + "\\n")
     mode = cfg.get("MODES", {}).get(str(number), "ok")
     if mode == "kill-harness":         # the harness dies between its start line and its end line
         os.kill(os.getppid(), 9)
         sys.exit(0)
+    if mode == "lose-costs":           # DIR/costs.jsonl cannot take this run's end line; the ledger still can
+        costs_path = os.path.join(cfg["OUT"], "costs.jsonl")
+        os.rename(costs_path, costs_path + ".saved")
+        os.mkdir(costs_path)
     print(json.dumps({"type": "system", "subtype": "init", "apiKeySource": "apiKeyHelper", "skills": [],
                       "tools": ["Read", "Bash", "Skill", "Task", "TaskStop"]}), flush=True)
     if mode == "crash":
@@ -56,7 +66,25 @@ FAKE = textwrap.dedent('''\
 
 
 @pytest.fixture
-def bench(tmp_path):
+def superpowers_dir():
+    """A directory of its own under the repository's ``.superpowers/``, where ``--out`` must lie (the harness denies the
+    repository to the agent, so no run can read an earlier run's evidence); removed afterwards, with any parent it made."""
+    made = [p for p in (REPO / ".superpowers", REPO / ".superpowers" / "bench-tests") if not p.exists()]
+    (REPO / ".superpowers" / "bench-tests").mkdir(parents=True, exist_ok=True)
+    stage = pathlib.Path(tempfile.mkdtemp(prefix="stage-", dir=str(REPO / ".superpowers" / "bench-tests")))
+    try:
+        yield stage
+    finally:
+        shutil.rmtree(str(stage), ignore_errors=True)
+        for parent in reversed(made):
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+
+
+@pytest.fixture
+def bench(tmp_path, superpowers_dir):
     if shutil.which("git") is None:
         pytest.skip("tool missing: git")
     bin_dir = tmp_path / "bin"
@@ -71,13 +99,15 @@ def bench(tmp_path):
 
     b = Bench()
     b.root, b.bin, b.log, b.tmp = tmp_path, bin_dir, tmp_path / "fake.log", tmp_path / "tmp"
-    b.ledger, b.out = tmp_path / "ledger" / "costs.jsonl", tmp_path / "out"
+    b.ledger, b.stage = tmp_path / "ledger" / "costs.jsonl", superpowers_dir
+    b.out = b.stage / "out"
     return b
 
 
 def bench_run(b, *, runs=3, cap="10", costs=(0.25,), modes=None, out=None, ledger=None, scenario=F9, arms="with-suite,baseline",
               budget="40"):
-    (b.bin / "claude.cfg").write_text(json.dumps({"LOG": str(b.log), "COSTS": list(costs), "MODES": modes or {}}))
+    (b.bin / "claude.cfg").write_text(json.dumps({"LOG": str(b.log), "COSTS": list(costs), "MODES": modes or {},
+                                                  "OUT": str(out or b.out)}))
     env = {"PATH": str(b.bin) + os.pathsep + os.environ["PATH"], "HOME": os.environ.get("HOME", str(b.root)),
            "TMPDIR": str(b.tmp), "ANTHROPIC_API_KEY": SECRET}
     return subprocess.run([sys.executable, "-I", str(BENCH), "--scenario", str(scenario), "--arms", arms, "--runs", str(runs),
@@ -142,14 +172,14 @@ def test_benchmark_interleaves_arms_and_stops_at_the_stage_cap(bench):
     assert [p.name for p in cases] == ["f9-honesty-baseline.json", "f9-honesty-with-suite.json"]
     assert json.loads(cases[0].read_text()) == json.loads(cases[1].read_text())
     # A stage cap below the first run's projection refuses before anything runs.
-    low = bench.root / "out-low"
+    low = bench.stage / "out-low"
     r = bench_run(bench, runs=1, cap="0.5", out=low)
     assert r.returncode == 3 and len(calls(bench)) == 3
     assert [(x["arm"], x["index"], x["reason"]) for x in record(low)["invocations"][0]["not_run"]] == [
         (WITH, 1, "stage_cap_reached"), (BASE, 1, "stage_cap_reached")]
     assert record(low)["runs"] == []
     # When the ledger has less left than the stage, the ledger's remainder caps the run.
-    lean = bench.root / "out-lean"
+    lean = bench.stage / "out-lean"
     r = bench_run(bench, runs=1, cap="10", budget="0.9", arms=WITH, out=lean, ledger=bench.root / "ledger-lean" / "costs.jsonl")
     assert r.returncode == 0, r.stdout + r.stderr
     assert run_caps(bench)[3:] == ["0.9000"] and record(lean)["runs"][0]["stage_remaining_usd"] == 10.0
@@ -167,7 +197,7 @@ def test_benchmark_records_every_run_in_the_ledger(bench):
     assert [x["arm"] for x in done["runs"]] == [e["config"] for e in ends] == [WITH, BASE, WITH, BASE]
     assert [x["cost_usd"] for x in done["runs"]] == [0.10, 0.20, 0.30, 0.40]
     assert {e["case_id"] for e in ends} == {"f9-honesty"} and {e["model"] for e in ends} == {"test-model"}
-    assert [x["tools_beyond_allow"] for x in done["runs"]] == [["TaskStop"], ["Skill", "Task", "TaskStop"]] * 2
+    assert [x["tools_beyond_allow"] for x in done["runs"]] == [["TaskStop"], ["Skill", "TaskStop"]] * 2
     assert done["invocations"][0]["status"] == "complete" and done["invocations"][0]["not_run"] == []
     assert done["invocations"][0]["judge_model"] == "test-judge" and done["invocations"][0]["graded"] is False
     for run in done["runs"]:
@@ -182,7 +212,7 @@ def test_benchmark_records_every_run_in_the_ledger(bench):
     assert len(record(bench.out)["runs"]) == 4
 
     # A run whose cost is unknown stops the stage before the next run, and its end line is in the ledger.
-    crashed = bench.root / "out-crash"
+    crashed = bench.stage / "out-crash"
     r = bench_run(bench, runs=2, modes={"4": "crash"}, out=crashed)
     assert r.returncode == 3, r.stdout + r.stderr
     done = record(crashed)
@@ -192,7 +222,7 @@ def test_benchmark_records_every_run_in_the_ledger(bench):
     assert lines(bench.ledger)[-1]["run_id"] == done["runs"][0]["run_id"] and lines(bench.ledger)[-1]["event"] == "end"
 
     # A run that dies between its start line and its end line stops the stage: every run started must have an end line.
-    killed, other_ledger = bench.root / "out-killed", bench.root / "ledger-2" / "costs.jsonl"
+    killed, other_ledger = bench.stage / "out-killed", bench.root / "ledger-2" / "costs.jsonl"
     r = bench_run(bench, runs=2, modes={"5": "kill-harness"}, out=killed, ledger=other_ledger)
     assert r.returncode == 1, r.stdout + r.stderr
     done = record(killed)
@@ -201,6 +231,117 @@ def test_benchmark_records_every_run_in_the_ledger(bench):
     assert done["invocations"][0]["status"] == "open_run"
     assert [(x["arm"], x["run_id"], x["status"]) for x in done["runs"]] == [(WITH, started[0]["run_id"], "no_end_line")]
     assert len(done["invocations"][0]["not_run"]) == 3
+
+
+def _normal(text):
+    """Per-run temporary names (``qa-eval-<kind>-<random>``: the copy, its home, the key helper, the staged plugin) made
+    comparable across runs."""
+    return re.sub(r"(qa-eval-(?:(?:home|key|plugin|setup|probe|state)-)?)[a-z0-9_]{8}(?![a-z0-9_])", r"\1*", text)
+
+
+def test_both_arms_get_task_and_differ_only_by_the_suite(bench):
+    """Ruling F2: both arms get ``Task``, and their CLI calls differ only in what the suite brings: ``--plugin-dir``, the
+    ``Skill`` rules, the suite's script rules and the staged directory in ``allowRead`` (and the baseline's existing
+    ``--disable-slash-commands``)."""
+    r = bench_run(bench, runs=1, costs=[0.0])               # no spend, so both runs get the same per-run cap
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert arms_called(bench) == [WITH, BASE]
+    suite, base = calls(bench)
+    s_argv, b_argv = [_normal(a) for a in suite["argv"]], [_normal(a) for a in base["argv"]]
+    s_tools = s_argv[s_argv.index("--allowedTools") + 1].split(",")
+    b_tools = b_argv[b_argv.index("--allowedTools") + 1].split(",")
+    assert "Task" in s_tools and "Task" in b_tools and "Skill" not in s_tools + b_tools
+    suite_only = [t for t in s_tools if t.startswith("Skill(")
+                  or (t.startswith("Bash(python3 ") and "/qa-eval-plugin-*/qa-engineering-suite/skills/" in t)]
+    assert [t for t in suite_only if t.startswith("Skill(")] and [t for t in suite_only if t.startswith("Bash(")]
+    assert [t for t in s_tools if t not in suite_only] == b_tools
+
+    def rest(argv):
+        argv = list(argv)
+        for flag in ("--allowedTools", "--plugin-dir"):
+            if flag in argv:
+                del argv[argv.index(flag):argv.index(flag) + 2]
+        return [a for a in argv if a != "--disable-slash-commands"]
+
+    assert "--plugin-dir" in s_argv and "--plugin-dir" not in b_argv
+    assert "--disable-slash-commands" in b_argv and "--disable-slash-commands" not in s_argv
+    assert rest(s_argv) == rest(b_argv)
+    s_settings, b_settings = json.loads(_normal(suite["settings"])), json.loads(_normal(base["settings"]))
+    staged = suite["argv"][suite["argv"].index("--plugin-dir") + 1]
+    allow = s_settings["sandbox"]["filesystem"]["allowRead"]
+    assert allow[-1] == _normal(os.path.realpath(staged))
+    s_settings["sandbox"]["filesystem"]["allowRead"] = allow[:-1]
+    assert s_settings == b_settings
+
+
+def test_out_must_lie_strictly_under_the_repository_superpowers(bench, tmp_path):
+    """Ruling F3: the harness denies the repository to the agent, so a DIR under ``.superpowers/`` keeps each run from reading
+    earlier runs' evidence. Anything else is refused before anything runs: outside the repository, ``.superpowers`` itself,
+    a path that climbs out, and a symlink under it that leads outside."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link = bench.stage / "link"
+    link.symlink_to(elsewhere, target_is_directory=True)
+    for out in (tmp_path / "outside", REPO / ".superpowers", bench.stage / ".." / ".." / ".." / "climbed", link, link / "sub"):
+        r = bench_run(bench, runs=1, out=out)
+        assert r.returncode == 2 and "--out" in r.stderr, (out, r.stderr)
+    assert calls(bench) == [] and not bench.ledger.exists()
+    assert not (tmp_path / "outside").exists() and list(elsewhere.iterdir()) == [] and not (REPO / "climbed").exists()
+    assert not (REPO / ".superpowers" / "runs.json").exists() and not (REPO / ".superpowers" / "cases").exists()
+
+
+@pytest.mark.parametrize("form", ["raw", "hex", "base64"])
+def test_a_refusal_redacts_the_harness_stderr_before_cutting_it(bench, monkeypatch, form):
+    """Ruling F4: a harness that refuses with a stderr longer than the kept tail, a form of the key crossing the cut point:
+    no fragment of any form of the key reaches runs.json."""
+    import base64
+
+    module = bench_module()
+    key = "sk-qa-Zq8XvT3mPw7LkR2nBy5HcJ4dFs9GtE6uWa1Q"
+    shown = {"raw": key, "hex": key.encode().hex(), "base64": base64.b64encode(key.encode()).decode()}[form]
+    stderr = "a" * 50 + shown + "z" * (module.STDERR_TAIL - len(shown) // 2)       # the cut falls inside the key form
+    fake = bench.root / "fake_harness.py"
+    fake.write_text("import sys\nsys.stderr.write(%r)\nsys.exit(3)\n" % stderr)
+    monkeypatch.setattr(module, "HARNESS", fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        code = module.main(["--scenario", str(F9), "--arms", WITH, "--runs", "1", "--model", "m", "--judge-model", "j",
+                            "--budget-usd", "1", "--stage-cap-usd", "5", "--ledger", str(bench.ledger), "--out", str(bench.out)])
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert code == 3
+    saved = (bench.out / "runs.json").read_text()
+    assert record(bench.out)["invocations"][0]["status"] == "refused"
+    for raw in module._harness.key_forms(key):
+        text = raw.decode("ascii")
+        assert not [text[i:i + 8] for i in range(len(text) - 7) if text[i:i + 8] in saved], form
+
+
+def test_a_resumed_stage_counts_a_run_missing_from_its_costs_file(bench):
+    """Ruling F5: a run whose end line reached the ledger but not DIR/costs.jsonl stops its invocation, and a later invocation
+    on the same DIR still counts it, from the ledger by its run id, so the stage cap is never passed by its cost."""
+    r = bench_run(bench, runs=1, costs=[0.40], modes={"1": "lose-costs"})
+    assert r.returncode == 1, r.stdout + r.stderr
+    done = record(bench.out)
+    assert done["invocations"][0]["status"] == "evidence_incomplete" and len(done["runs"]) == 2
+    lost = done["runs"][1]["run_id"]
+    assert [x for x in lines(bench.ledger) if x["event"] == "end"][-1]["run_id"] == lost
+    costs_file = bench.out / "costs.jsonl"
+    costs_file.rmdir()
+    (bench.out / "costs.jsonl.saved").rename(costs_file)
+    assert lost not in [x["run_id"] for x in lines(costs_file)]
+    # 0.40 is in costs.jsonl and 0.40 only in the ledger. Counting both, 0.80 + 0.56 passes 1.2 and nothing runs; counting
+    # costs.jsonl alone (0.40 + 0.56 = 0.96) would have started a run.
+    r = bench_run(bench, runs=1, cap="1.2", costs=[0.40], arms=WITH)
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert len(calls(bench)) == 2
+    stop = record(bench.out)["invocations"][-1]["not_run"][0]
+    assert stop["reason"] == "stage_cap_reached" and stop["stage_spend_usd"] == pytest.approx(0.8)
+    module = bench_module()
+    assert module.stage_spend(bench.out, module.Ledger(bench.ledger)) == pytest.approx(0.8)
+    with pytest.raises(module.Stop):            # without the ledger that run's cost is unknown: refused, never left out
+        module.stage_spend(bench.out)
 
 
 def test_the_pilot_scenarios_hold_the_planned_values(tmp_path):
@@ -222,6 +363,7 @@ def test_the_pilot_scenarios_hold_the_planned_values(tmp_path):
         case = bench.harness_case(scenario, WITH)
         assert case == bench.harness_case(scenario, BASE)        # the arms differ by configuration only
         assert case["prompt"] == scenario["prompt"] and not hidden & set(case) and "skill" not in case
+        assert case["grant_task"] is True                         # Task for both arms, as with-suite always has it
     # A scenario that could carry answer material, or that is malformed, is refused.
     good = json.loads(F9.read_text())
     for change in ({"prompt": good["prompt"] + " The repository is at %s." % REPO}, {"prompt": "Check F9-02 first."},
