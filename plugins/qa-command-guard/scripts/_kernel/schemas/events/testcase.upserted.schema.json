@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "testcase.upserted event data",
+  "description": "A test case, new or changed: the whole record. Its automation entries are result test ids as JUnit records them (classname::name). The criteria it verifies are trace.linked events (verified_by), not a field.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.schema.json#/$defs/tc_id"
+    },
+    "title": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "level": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "technique": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "technique_reason": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "oracle": {
+      "enum": [
+        "requirement",
+        "specification",
+        "property",
+        "differential",
+        "characterization"
+      ]
+    },
+    "priority": {
+      "enum": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ]
+    },
+    "criticality": {
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low"
+      ]
+    },
+    "automation": {
+      "type": "array",
+      "items": {
+        "$ref": "records.schema.json#/$defs/text"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "level",
+    "technique",
+    "technique_reason",
+    "oracle",
+    "priority",
+    "criticality",
+    "automation"
+  ],
+  "additionalProperties": false
+}

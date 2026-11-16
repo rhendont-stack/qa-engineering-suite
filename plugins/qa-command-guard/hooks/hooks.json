@@ -1,0 +1,17 @@
+{
+  "description": "Checks each Bash command against the QA suite's command guard while a QA workspace is active.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/guard_hook.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

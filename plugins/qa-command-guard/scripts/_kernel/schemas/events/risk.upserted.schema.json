@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "risk.upserted event data",
+  "description": "A risk, new or changed: the whole record. Its mitigations are trace.linked events (mitigated_by), not a field. A risk without mitigations carries an accepted_gap.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.schema.json#/$defs/rsk_id"
+    },
+    "title": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "likelihood": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "impact": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "scale": {
+      "const": "1-5"
+    },
+    "accepted_gap": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "$ref": "records.schema.json#/$defs/text"
+        },
+        "accepted_by": {
+          "$ref": "records.schema.json#/$defs/text"
+        }
+      },
+      "required": [
+        "reason",
+        "accepted_by"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "likelihood",
+    "impact",
+    "scale"
+  ],
+  "additionalProperties": false
+}

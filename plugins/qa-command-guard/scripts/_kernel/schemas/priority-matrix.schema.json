@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Priority matrix (shared/policies/priority-matrix.json)",
+  "description": "Section 10.5 as data. rows maps a severity to one priority per criticality, in the order of criticalities. A positive adjustment step moves toward P0.",
+  "type": "object",
+  "properties": {
+    "version": {"const": 1},
+    "criticalities": {"const": ["critical", "high", "normal", "low"]},
+    "rows": {
+      "type": "object",
+      "propertyNames": {"$ref": "defs.schema.json#/$defs/severity"},
+      "additionalProperties": {
+        "type": "array",
+        "items": {"$ref": "defs.schema.json#/$defs/priority"},
+        "minItems": 4,
+        "maxItems": 4
+      },
+      "minProperties": 5
+    },
+    "adjustments": {
+      "type": "object",
+      "properties": {
+        "outside_release_scope": {"enum": [-1, 1]},
+        "public_exploit": {"enum": [-1, 1]}
+      },
+      "required": ["outside_release_scope", "public_exploit"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["version", "criticalities", "rows", "adjustments"],
+  "additionalProperties": false
+}

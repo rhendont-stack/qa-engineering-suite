@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-${style_hash}'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA report: ${project}</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --text: #1c2026;
+  --muted: #59616d;
+  --page: #ffffff;
+  --rule: #d5dae1;
+  --head: #eef1f5;
+  --stripe: #f7f8fa;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e4e7ec;
+    --muted: #a0a8b4;
+    --page: #14171c;
+    --rule: #333a45;
+    --head: #1e232b;
+    --stripe: #191d23;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+header, main { max-width: 76rem; margin: 0 auto; padding: 0 1rem; }
+header { padding-top: 2rem; }
+main { padding-bottom: 3rem; }
+h1 { font-size: 1.65rem; line-height: 1.25; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+h2 { font-size: 1.25rem; margin: 2.25rem 0 0.75rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--rule); }
+h3 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; overflow-wrap: anywhere; }
+h4 { font-size: 0.95rem; margin: 1rem 0 0.4rem; color: var(--muted); }
+p, li { overflow-wrap: anywhere; max-width: 70rem; }
+p { margin: 0.5rem 0; }
+ul { padding-left: 1.25rem; }
+strong { font-weight: 650; }
+table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.5rem 0 1rem;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+th, td { border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: var(--head); font-weight: 600; white-space: nowrap; }
+td { overflow-wrap: break-word; white-space: pre-wrap; }
+td:first-child { white-space: nowrap; }
+tbody tr:nth-child(even) { background: var(--stripe); }
+@media print {
+  table { display: table; overflow: visible; }
+  tbody tr:nth-child(even) { background: none; }
+}
+</style>
+</head>
+<body>
+<header>
+<h1>QA report: ${project}</h1>
+</header>
+<main>
+<section>
+<h2>Executive summary</h2>
+${summary}
+</section>
+<section>
+<h2>Gate</h2>
+${gate}
+</section>
+<section>
+<h2>Executions</h2>
+${executions}
+</section>
+<section>
+<h2>Findings</h2>
+${findings}
+</section>
+<section>
+<h2>Traceability</h2>
+${traceability}
+</section>
+<section>
+<h2>Integrity</h2>
+${integrity}
+</section>
+<section>
+<h2>Re-execution</h2>
+${reexecution}
+</section>
+<section>
+<h2>Limitations</h2>
+${limitations}
+</section>
+</main>
+</body>
+</html>

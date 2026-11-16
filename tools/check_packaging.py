@@ -4,8 +4,9 @@ Usage: python3 -I tools/check_packaging.py [root]      (root defaults to the cur
 
 The marketplace lists, in order: ``qa-engineering-suite`` (every skill and agent through the default scans), the bundles
 ``qa-core`` and ``qa-specialists`` (``strict: false`` entries that name their skills; they partition ``catalog.json`` and
-never overlap), and ``qa-command-guard`` (a separate plugin under ``plugins/``). Every entry and the guard's ``plugin.json``
-share one version: the skills' common ``metadata.suite-version``, optionally followed by ``-<pre-release>``. The repository
+never overlap), and ``qa-command-guard`` (a separate plugin under ``plugins/``). The guard plugin holds its manifest, one
+PreToolUse command hook on ``Bash`` (``hooks/hooks.json``), ``scripts/guard_hook.py``, the vendored ``scripts/_kernel/`` with
+its manifest, and a ``README.md``. Every entry and the guard's ``plugin.json`` share one version: the skills' common ``metadata.suite-version``, optionally followed by ``-<pre-release>``. The repository
 root holds no ``.claude-plugin/plugin.json``, ``hooks/hooks.json``, ``bin/`` or ``CLAUDE.md``, and no name is reserved.
 
 Prints one line per problem, ``<path>: <kind>: <detail>``, sorted, then a count. Exit 0 ok, 1 problems, 2 usage.
@@ -30,6 +31,8 @@ SPECIALISTS = ("qa-api-testing", "qa-database", "qa-security", "qa-performance",
 MARKETPLACE = ".claude-plugin/marketplace.json"
 GUARD_PATH = "plugins/qa-command-guard"
 GUARD_MANIFEST = GUARD_PATH + "/.claude-plugin/plugin.json"
+GUARD_HOOK_COMMAND = 'python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/guard_hook.py"'
+GUARD_FILES = ("hooks/hooks.json", "scripts/guard_hook.py", "scripts/_kernel/MANIFEST.sha256", "README.md")
 ENTRIES = ("qa-engineering-suite", "qa-core", "qa-specialists", "qa-command-guard")
 BUNDLES = {"qa-core": CORE, "qa-specialists": SPECIALISTS}
 OWNER = {"name": "rhendont-stack", "url": "https://github.com/rhendont-stack"}
@@ -135,6 +138,39 @@ def check_bundle(root: Path, name: str, item: dict, universe: List[str], seen: D
         out.append(problem(where, "wrong_entries", "only qa-core lists agents; here they load by default"))
 
 
+def guard_hook_shape(doc: object) -> bool:
+    """One PreToolUse group, matcher ``Bash``, with one command handler: the guard script, timeout 10."""
+    try:
+        groups = doc["hooks"]["PreToolUse"]  # type: ignore[index]
+        only_event = list(doc["hooks"]) == ["PreToolUse"]  # type: ignore[index]
+        handler = groups[0]["hooks"][0]
+        return (only_event and len(groups) == 1 and groups[0]["matcher"] == "Bash" and len(groups[0]["hooks"]) == 1
+                and handler.get("type") == "command" and handler.get("command") == GUARD_HOOK_COMMAND
+                and handler.get("timeout") == 10 and not set(handler) - {"type", "command", "timeout"})
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return False
+
+
+def check_guard_plugin(root: Path, out: List[Problem]) -> None:
+    """The guard plugin's files: what the host loads (manifest, hooks file, script) and what the script needs (kernel)."""
+    base = root / GUARD_PATH
+    if not (base / ".claude-plugin" / "plugin.json").is_file():
+        out.append(problem(GUARD_MANIFEST, "bad_guard_plugin", "the plugin has no .claude-plugin/plugin.json"))
+    for relative in GUARD_FILES:
+        if not (base / relative).is_file():
+            out.append(problem("%s/%s" % (GUARD_PATH, relative), "bad_guard_plugin", "the guard plugin lacks this file"))
+    hooks = base / "hooks" / "hooks.json"
+    if hooks.is_file():
+        try:
+            doc = json.loads(hooks.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            doc = None
+        if not guard_hook_shape(doc):
+            out.append(problem("%s/hooks/hooks.json" % GUARD_PATH, "bad_guard_plugin",
+                               "expected one PreToolUse group (matcher Bash) with one command hook, timeout 10, running %s"
+                               % GUARD_HOOK_COMMAND))
+
+
 def check(root: Path) -> List[Problem]:
     out: List[Problem] = []
     for relative in FORBIDDEN_ROOT:
@@ -192,6 +228,7 @@ def check(root: Path) -> List[Problem]:
             out.append(problem(GUARD_MANIFEST, "wrong_entries", "name must be qa-command-guard"))
         check_metadata(GUARD_MANIFEST, guard, out)
         versions["plugin.json"] = guard.get("version") if isinstance(guard.get("version"), str) else ""
+    check_guard_plugin(root, out)
     suite = suite_versions(root)
     if len(suite) > 1:
         out.append(problem("skills", "version_mismatch", "the skills disagree on suite-version: %s" % ", ".join(suite)))

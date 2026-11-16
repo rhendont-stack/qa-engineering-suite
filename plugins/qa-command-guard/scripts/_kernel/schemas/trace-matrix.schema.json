@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Traceability matrix (.qa/trace/matrix.json)",
+  "description": "What qa trace matrix writes: for every requirement its criteria and test cases, whether it is proven on the target commit, its open findings and its gaps; every test case with the latest result of each automated test on the target commit; and the gaps over the whole chain. Derived from the state alone, so the same state gives the same bytes.",
+  "type": "object",
+  "properties": {
+    "target": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$", "description": "the full commit every result row was chosen for; results of other commits are never used"},
+    "target_source": {"enum": ["given", "head"], "description": "present when the command chose the target: given with --target, or head, the working tree's commit"},
+    "tree_dirty": {"type": "boolean", "description": "present with target_source head: whether the working tree differed from that commit when the matrix was made. Results are judged by the executions' own dirty flags, shown on each test row"},
+    "requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
+    "testcases": {"type": "array", "items": {"$ref": "#/$defs/testcase"}},
+    "gaps": {"type": "array", "items": {"$ref": "#/$defs/gap"}},
+    "counts": {
+      "type": "object",
+      "description": "gaps per kind, every kind present",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    }
+  },
+  "required": ["target", "requirements", "testcases", "gaps", "counts"],
+  "additionalProperties": false,
+  "$defs": {
+    "id_list": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "gap": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["req_without_ac", "ac_without_tc", "tc_not_automated", "tc_never_executed", "tc_last_blocked_or_inconclusive", "req_only_characterization_or_assumed", "tc_unproven", "fnd_without_fix", "fix_without_rvl", "rvl_off_target"]},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "required": ["kind", "id"],
+      "additionalProperties": false
+    },
+    "requirement": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "minLength": 1}, "testcases": {"$ref": "#/$defs/id_list"}},
+            "required": ["id", "testcases"],
+            "additionalProperties": false
+          }
+        },
+        "testcases": {"$ref": "#/$defs/id_list"},
+        "proven": {"type": "boolean", "description": "it has criteria, and each has a test case whose oracle is not characterization and whose tests all passed on the target"},
+        "findings": {"$ref": "#/$defs/id_list"},
+        "gaps": {"type": "array", "items": {"$ref": "#/$defs/gap"}}
+      },
+      "required": ["id", "criteria", "testcases", "proven", "findings", "gaps"],
+      "additionalProperties": false
+    },
+    "testcase": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "oracle": {"type": "string"},
+        "status": {"type": ["string", "null"], "description": "failed if any test failed (flaky counts as failed), else blocked or inconclusive, else not_run when a test has no passing result, else passed; null when no test has a result on the target"},
+        "red_check": {"type": "boolean", "description": "an execution in which one of its tests failed an assertion is linked"},
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "test_id": {"type": "string", "minLength": 1},
+              "commit": {"type": ["string", "null"], "description": "the commit of the result row (the target), null when the test has no result on it"},
+              "dirty": {"type": ["boolean", "null"], "description": "the execution's own git fact: it ran on a tree that differed from the commit; null when the test has no result on the target"},
+              "diff_hash": {"type": "string", "description": "present only when dirty: the execution's diff hash"},
+              "status": {"type": ["string", "null"]},
+              "flaky": {"type": "boolean"},
+              "result": {"type": ["string", "null"]},
+              "execution": {"type": ["string", "null"]}
+            },
+            "required": ["test_id", "commit", "dirty", "status", "flaky", "result", "execution"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["id", "oracle", "status", "red_check", "tests"],
+      "additionalProperties": false
+    }
+  }
+}

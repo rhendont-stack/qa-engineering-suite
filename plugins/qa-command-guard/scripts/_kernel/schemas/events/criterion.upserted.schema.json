@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "criterion.upserted event data",
+  "description": "An acceptance criterion, new or changed: the whole record. Its id carries its requirement's number.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "defs.schema.json#/$defs/ac_id"
+    },
+    "requirement": {
+      "$ref": "defs.schema.json#/$defs/req_id"
+    },
+    "given": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "when": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "then": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "threshold": {
+      "$ref": "records.schema.json#/$defs/text"
+    },
+    "verifiable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "requirement",
+    "given",
+    "when",
+    "then",
+    "verifiable"
+  ],
+  "additionalProperties": false
+}

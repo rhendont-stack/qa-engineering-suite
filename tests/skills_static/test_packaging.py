@@ -12,7 +12,8 @@ from helpers import REPO
 
 TOOL = REPO / "tools" / "check_packaging.py"
 MARKETPLACE = ".claude-plugin/marketplace.json"
-GUARD_MANIFEST = "plugins/qa-command-guard/.claude-plugin/plugin.json"
+GUARD = "plugins/qa-command-guard"
+GUARD_MANIFEST = GUARD + "/.claude-plugin/plugin.json"
 
 
 def check(root):
@@ -26,10 +27,11 @@ def kinds(out):
 
 @pytest.fixture
 def root(tmp_path):
-    """A repository root with the shipped marketplace, catalog, agents and guard manifest, and a stub for every skill."""
-    for name in (MARKETPLACE, GUARD_MANIFEST, "catalog.json"):
+    """A repository root with the shipped marketplace, catalog, agents and guard plugin, and a stub for every skill."""
+    for name in (MARKETPLACE, "catalog.json"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / name, tmp_path / name)
+    shutil.copytree(REPO / GUARD, tmp_path / GUARD, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(REPO / "agents", tmp_path / "agents")
     for name in json.loads((tmp_path / "catalog.json").read_text())["skills"]:
         write_skill(tmp_path, name)
@@ -73,16 +75,33 @@ def test_packaging_bundles_partition_the_catalog(root):
     write_skill(root, "qa-extra")
     code, out = check(root)
     assert code == 1 and "bundle_gap" in kinds(out) and "qa-extra" in out
-    # a skill in both bundles
+
+
+def test_packaging_names_a_skill_in_both_bundles(root):
     edit(root, MARKETPLACE, lambda d: entry(d, "qa-core")["skills"].append("./skills/qa-security"))
-    assert "bundle_overlap" in kinds(check(root)[1])
-    # a skill the catalog does not list
+    code, out = check(root)
+    assert code == 1 and any(kind == "bundle_overlap" and "qa-security" in line for line in out.splitlines()
+                             for kind in [line.split(": ")[1]]), out
+
+
+def test_packaging_names_a_skill_the_catalog_does_not_list(root):
+    write_skill(root, "qa-unlisted")   # it has a SKILL.md, so only the catalog is missing it
     edit(root, MARKETPLACE, lambda d: entry(d, "qa-specialists")["skills"].append("./skills/qa-unlisted"))
-    assert "unknown_skill" in kinds(check(root)[1])
-    # a listed path with no SKILL.md
+    code, out = check(root)
+    assert code == 1 and any(kind == "unknown_skill" and "qa-unlisted" in line for line in out.splitlines()
+                             for kind in [line.split(": ")[1]]), out
+    assert "missing_path" not in kinds(out)
+
+
+def test_packaging_names_a_listed_path_with_no_skill_file(root):
     edit(root, MARKETPLACE, lambda d: entry(d, "qa-specialists")["skills"].append("./skills/qa-nothing-here"))
+    code, out = check(root)
+    assert any(kind == "missing_path" and "./skills/qa-nothing-here" in line for line in out.splitlines()
+               for kind in [line.split(": ")[1]]), out
+    # and a catalog skill whose directory lost its SKILL.md
     shutil.rmtree(root / "skills" / "qa-mutation")
-    assert "missing_path" in kinds(check(root)[1])
+    assert any(kind == "missing_path" and "qa-mutation" in line for line in check(root)[1].splitlines()
+               for kind in [line.split(": ")[1]])
 
 
 def test_packaging_refuses_root_plugin_manifest_and_reserved_names(root):
@@ -97,7 +116,8 @@ def test_packaging_refuses_root_plugin_manifest_and_reserved_names(root):
     out = check(root)[1]
     assert "reserved_name" in kinds(out) and "wrong_entries" in kinds(out)
     edit(root, MARKETPLACE, lambda d: d.update(name="anthropic-marketplace"))
-    assert out != check(root)[1] and "reserved_name" in kinds(check(root)[1])
+    out = check(root)[1]
+    assert "%s: reserved_name: the marketplace name must be qa-engineering-suite" % MARKETPLACE in out.splitlines()
 
 
 def test_packaging_versions_agree(root):
@@ -143,3 +163,42 @@ def test_packaging_reports_a_missing_or_broken_marketplace(tmp_path):
     (tmp_path / MARKETPLACE).write_text("[")
     assert "bad_json" in kinds(check(tmp_path)[1])
     assert subprocess.run([sys.executable, "-I", str(TOOL), "a", "b"], capture_output=True).returncode == 2
+
+
+def test_packaging_checks_the_guard_plugin_layout(root):
+    assert check(root)[0] == 0
+    for relative in ("hooks/hooks.json", "scripts/guard_hook.py", "scripts/_kernel/MANIFEST.sha256", "README.md",
+                     ".claude-plugin/plugin.json"):
+        saved = (root / GUARD / relative).read_bytes()
+        (root / GUARD / relative).unlink()
+        code, out = check(root)
+        assert code == 1 and any(line.split(": ")[1] == "bad_guard_plugin" and relative in line for line in out.splitlines()), (
+            relative, out)
+        (root / GUARD / relative).write_bytes(saved)
+    assert check(root)[0] == 0
+    shutil.rmtree(root / GUARD / "scripts" / "_kernel")
+    assert "bad_guard_plugin" in kinds(check(root)[1])
+
+
+def test_packaging_holds_the_guard_hooks_file_to_its_shape(root):
+    path = GUARD + "/hooks/hooks.json"
+
+    def broken(change):
+        shutil.copy(REPO / path, root / path)
+        edit(root, path, change)
+        code, out = check(root)
+        assert code == 1 and any(line.split(": ")[1] == "bad_guard_plugin" and "hooks.json" in line for line in out.splitlines()), out
+
+    def group(doc):
+        return doc["hooks"]["PreToolUse"][0]
+
+    broken(lambda d: group(d).update(matcher="Write"))
+    broken(lambda d: group(d)["hooks"][0].update(timeout=60))
+    broken(lambda d: group(d)["hooks"][0].update(command="python3 guard_hook.py"))
+    broken(lambda d: group(d)["hooks"][0].update(type="prompt"))
+    broken(lambda d: group(d)["hooks"].append(dict(group(d)["hooks"][0])))
+    broken(lambda d: d["hooks"]["PreToolUse"].append(dict(group(d))))
+    broken(lambda d: d["hooks"].update(SessionStart=[]))
+    broken(lambda d: d.update(hooks=[]))
+    (root / path).write_text("{not json")
+    assert "bad_guard_plugin" in kinds(check(root)[1])

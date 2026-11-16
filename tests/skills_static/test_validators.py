@@ -68,6 +68,26 @@ def test_vendor_never_copies_bytecode_and_check_flags_an_extra_file(tmp_repo):
     assert tool("vendor_kernel.py", "--root", tmp_repo)[0] == 0 and tool("vendor_kernel.py", "--check", "--root", tmp_repo)[0] == 0
 
 
+def test_vendor_kernel_covers_the_guard_plugin(tmp_repo):
+    scripts = tmp_repo / "plugins" / "qa-command-guard" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "guard_hook.py").write_text("x = 1\n")
+    assert tool("vendor_kernel.py", "--check", "--root", tmp_repo)[0] == 1   # nothing vendored there yet
+    code, out = tool("vendor_kernel.py", "--root", tmp_repo)
+    assert code == 0 and "vendored plugins/qa-command-guard" in out, out
+    assert (scripts / "_kernel" / "MANIFEST.sha256").is_file() and (scripts / "_kernel" / "qa" / "guard.py").is_file()
+    assert not (scripts / "qa.py").exists() and (scripts / "guard_hook.py").read_text() == "x = 1\n"   # no launcher; the hook is its own file
+    assert tool("vendor_kernel.py", "--check", "--root", tmp_repo)[0] == 0
+    changed = scripts / "_kernel" / "qa" / "ids.py"
+    data = bytearray(changed.read_bytes()); data[10] ^= 1; changed.write_bytes(bytes(data))
+    code, out = tool("vendor_kernel.py", "--check", "--root", tmp_repo)
+    assert code == 1 and "plugins/qa-command-guard/scripts: differs: _kernel/qa/ids.py" in out and "1 difference" in out
+    (scripts / "qa.py").write_text("")   # a launcher does not belong in the plugin
+    assert "extra: qa.py" in tool("vendor_kernel.py", "--check", "--root", tmp_repo)[1]
+    assert tool("vendor_kernel.py", "--root", tmp_repo)[0] == 0   # writing replaces the kernel; the stray file is for a human
+    assert (scripts / "guard_hook.py").read_text() == "x = 1\n"
+
+
 @pytest.mark.parametrize("name", ["vendor_kernel.py", "validate_skills.py", "check_catalog.py"])
 def test_tools_pass_on_a_repository_with_no_skills(tmp_path, name):
     shutil.copytree(REPO / "shared", tmp_path / "shared", ignore=shutil.ignore_patterns("__pycache__"))

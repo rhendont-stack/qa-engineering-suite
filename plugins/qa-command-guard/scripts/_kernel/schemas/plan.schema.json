@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Plan",
+  "description": "A plan record: the mode, the target frozen when the plan was created, and steps whose completion is computed from expected_outputs against the ledger. $defs.template is what a caller supplies to qa plan create; the kernel adds the id and the target and writes each output's commit. A step's status is never stored: done is derived, and only blocked, not_run or a release back to pending are recorded.",
+  "type": "object",
+  "properties": {
+    "id": {"$ref": "#/$defs/plan_id"},
+    "mode": {"type": "string", "minLength": 1},
+    "target": {"$ref": "#/$defs/target"},
+    "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}
+  },
+  "required": ["id", "mode", "target", "steps"],
+  "additionalProperties": false,
+  "$defs": {
+    "target": {
+      "type": "object",
+      "properties": {
+        "commit": {"type": ["string", "null"]},
+        "dirty": {"type": ["boolean", "null"]}
+      },
+      "required": ["commit", "dirty"],
+      "additionalProperties": false
+    },
+    "plan_id": {"type": "string", "pattern": "^PLAN-[0-9]{4,}$"},
+    "step_id": {"type": "string", "pattern": "^S[0-9]{2,}$"},
+    "name": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 64},
+    "template": {
+      "type": "object",
+      "properties": {
+        "mode": {"type": "string", "minLength": 1},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/template_step"}, "minItems": 1}
+      },
+      "required": ["mode", "steps"],
+      "additionalProperties": false
+    },
+    "template_step": {
+      "type": "object",
+      "properties": {
+        "id": {"$ref": "#/$defs/step_id"},
+        "skill": {"$ref": "#/$defs/name"},
+        "depends_on": {"type": "array", "items": {"$ref": "#/$defs/step_id"}, "uniqueItems": true},
+        "requires_authorization": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "expected_outputs": {"type": "array", "items": {"$ref": "#/$defs/template_output"}, "minItems": 1},
+        "exclusive": {"type": "boolean"}
+      },
+      "required": ["id", "skill", "expected_outputs"],
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "id": {"$ref": "#/$defs/step_id"},
+        "skill": {"$ref": "#/$defs/name"},
+        "depends_on": {"type": "array", "items": {"$ref": "#/$defs/step_id"}, "uniqueItems": true},
+        "requires_authorization": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "expected_outputs": {"type": "array", "items": {"$ref": "#/$defs/output"}, "minItems": 1},
+        "exclusive": {"type": "boolean"}
+      },
+      "required": ["id", "skill", "depends_on", "requires_authorization", "expected_outputs", "exclusive"],
+      "additionalProperties": false
+    },
+    "template_output": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["execution", "result_set", "artifact", "gate", "report", "revalidation"]},
+        "skill": {"$ref": "#/$defs/name"},
+        "min_count": {"type": "integer", "minimum": 1},
+        "status_not_in": {"type": "array", "items": {"type": "string"}},
+        "path": {"type": "string", "minLength": 1},
+        "schema": {"type": "string", "minLength": 1},
+        "profile": {"enum": ["change", "fix", "audit", "release"]},
+        "verdict_in": {"type": "array", "items": {"enum": ["READY", "READY_WITH_CONDITIONS", "INSUFFICIENT_EVIDENCE", "NOT_READY"]}, "minItems": 1},
+        "format": {"enum": ["md", "json"]},
+        "outcome_in": {"type": "array", "items": {"enum": ["passed", "failed", "inconclusive"]}, "minItems": 1}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "artifact"}}, "required": ["kind"]}, "then": {"required": ["path", "schema"]}},
+        {"if": {"required": ["outcome_in"]}, "then": {"properties": {"kind": {"const": "revalidation"}}}}
+      ]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["execution", "result_set", "artifact", "gate", "report", "revalidation"]},
+        "skill": {"$ref": "#/$defs/name"},
+        "commit": {"type": ["string", "null"]},
+        "min_count": {"type": "integer", "minimum": 1},
+        "status_not_in": {"type": "array", "items": {"type": "string"}},
+        "path": {"type": "string", "minLength": 1},
+        "schema": {"type": "string", "minLength": 1},
+        "profile": {"enum": ["change", "fix", "audit", "release"]},
+        "verdict_in": {"type": "array", "items": {"enum": ["READY", "READY_WITH_CONDITIONS", "INSUFFICIENT_EVIDENCE", "NOT_READY"]}, "minItems": 1},
+        "format": {"enum": ["md", "json"]},
+        "outcome_in": {"type": "array", "items": {"enum": ["passed", "failed", "inconclusive"]}, "minItems": 1}
+      },
+      "required": ["kind", "commit", "min_count"],
+      "additionalProperties": false,
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "execution"}}, "required": ["kind"]}, "then": {"required": ["skill"]}},
+        {"if": {"properties": {"kind": {"const": "result_set"}}, "required": ["kind"]}, "then": {"required": ["skill"]}},
+        {"if": {"properties": {"kind": {"const": "artifact"}}, "required": ["kind"]}, "then": {"required": ["path", "schema"]}},
+        {"if": {"required": ["outcome_in"]}, "then": {"properties": {"kind": {"const": "revalidation"}}}}
+      ]
+    }
+  }
+}
