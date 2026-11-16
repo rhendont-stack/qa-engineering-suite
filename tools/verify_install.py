@@ -40,9 +40,14 @@ def _names(items: List[str]) -> List[str]:
 
 
 def _hook_count(path: Path) -> int:
+    """What ``claude plugin details`` counts under "Hooks (N)": the events that have a handler, not the handlers.
+
+    Probed with the real CLI (one plugin, four handlers in three matcher groups under two events: it printed ``Hooks (2)``
+    and listed the two event names).
+    """
     try:
         events = json.loads(path.read_text(encoding="utf-8")).get("hooks", {})
-        return sum(len(group.get("hooks", [])) for groups in events.values() for group in groups)
+        return sum(1 for groups in events.values() if any(group.get("hooks") for group in groups))
     except (OSError, ValueError, AttributeError, TypeError):
         return 0
 

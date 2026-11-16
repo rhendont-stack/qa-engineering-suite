@@ -100,11 +100,21 @@ def test_expected_inventory_follows_the_manifest_and_the_catalog(repo):
         "qa-command-guard": {"skills": [], "agents": [], "hooks": 0}}
 
 
-def test_expected_hooks_come_from_the_plugins_hooks_file(repo):
+def test_expected_hooks_count_the_events_with_a_handler(repo):
     hooks = repo / "plugins" / "qa-command-guard" / "hooks"
     hooks.mkdir()
-    (hooks / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}]}}))
-    assert verify_install.expected_inventory(repo)["qa-command-guard"]["hooks"] == 1
+    handler = {"type": "command", "command": "x"}
+
+    def expect(events):
+        (hooks / "hooks.json").write_text(json.dumps({"hooks": events}))
+        return verify_install.expected_inventory(repo)["qa-command-guard"]["hooks"]
+
+    assert expect({"PreToolUse": [{"matcher": "Bash", "hooks": [handler]}]}) == 1
+    # the CLI prints "Hooks (2)  PreToolUse, SessionStart" for this: one count per event, not per group or handler
+    assert expect({"PreToolUse": [{"matcher": "Bash", "hooks": [handler, handler]}, {"matcher": "Write", "hooks": [handler]}],
+                   "SessionStart": [{"hooks": [handler]}]}) == 2
+    assert expect({"PreToolUse": [{"matcher": "Bash", "hooks": []}], "Stop": []}) == 0
+    assert expect([]) == 0
 
 
 def test_parse_details_reads_the_component_inventory():
