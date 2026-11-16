@@ -35,23 +35,35 @@ jobs:
       - name: Install the pinned reference validator
         run: python -m pip install "skills-ref @ git+https://github.com/agentskills/agentskills@83021e2be457a9b6679148719c1f6074f0ad975e#subdirectory=skills-ref"
       - name: Skills pass the reference validator
+        # Every skill is validated even after one fails, and the step fails at the end, so one run shows every failure.
         run: |
-          skills-ref validate skills/qa-api-testing
-          skills-ref validate skills/qa-codebase-intelligence
-          skills-ref validate skills/qa-database
-          skills-ref validate skills/qa-frontend
-          skills-ref validate skills/qa-mobile
-          skills-ref validate skills/qa-mutation
-          skills-ref validate skills/qa-orchestrator
-          skills-ref validate skills/qa-performance
-          skills-ref validate skills/qa-regression-guard
-          skills-ref validate skills/qa-release
-          skills-ref validate skills/qa-reporting
-          skills-ref validate skills/qa-requirements
-          skills-ref validate skills/qa-security
-          skills-ref validate skills/qa-test-execution
-          skills-ref validate skills/qa-test-generation
-          skills-ref validate skills/qa-test-strategy
+          failed=""
+          for skill in \
+            qa-api-testing \
+            qa-codebase-intelligence \
+            qa-database \
+            qa-frontend \
+            qa-mobile \
+            qa-mutation \
+            qa-orchestrator \
+            qa-performance \
+            qa-regression-guard \
+            qa-release \
+            qa-reporting \
+            qa-requirements \
+            qa-security \
+            qa-test-execution \
+            qa-test-generation \
+            qa-test-strategy
+          do
+            if ! skills-ref validate "skills/$skill"; then
+              failed="$failed $skill"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "The reference validator failed for:$failed" >&2
+            exit 1
+          fi
       # claude plugin validate runs on the Mac through tools/verify_install.py for every commit, not here:
       # @anthropic-ai/claude-code@2.1.321 only gets a working binary from its postinstall script, and CI runs no install scripts.
 
