@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import pathlib
 import shutil
 import signal
 import subprocess
@@ -26,11 +27,11 @@ OS_ADDED = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
 CLEAN = {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
 FORBIDDEN_FLAGS = ("--allow-tools", "--scaffold", "--publish-report", "--keep-temp", "--allow-real-servers")
 
-# The fake CLI. Its environment is the wrapper's clean one, so it reads its behaviour (MODE, COST, PASS, EXIT, HELP_OMIT)
-# from claude.cfg beside it and appends one JSON line per call to LOG. For ``plugin eval`` it records what it was given
-# (the export's files, its manifest, the staged prompts) and writes a result shaped like the real CLI's: ``runsPerCase``
-# comes from the case's ``runs:`` frontmatter, ``--runs`` limits the runs made, and ``casesPassed`` counts every case,
-# as the real CLI does under ``--threshold 0``.
+# The fake CLI. Its environment is the wrapper's clean one, so it reads its behaviour (MODE, COST, PASS, EXIT, HELP_OMIT,
+# RUN_ERROR, SKIPPED, SHAPE, FIFO, LEDGER_GONE) from claude.cfg beside it and appends one JSON line per call to LOG. For
+# ``plugin eval`` it records what it was given (the export's files, its manifest, the staged prompts) and writes a result
+# shaped like the real CLI's: ``runsPerCase`` comes from the case's ``runs:`` frontmatter, ``--runs`` limits the runs
+# made, and ``casesPassed`` counts every case, as the real CLI does under ``--threshold 0``.
 FAKE = textwrap.dedent('''\
     #!/usr/bin/env python3
     import base64, fnmatch, json, os, re, sys, time
@@ -79,7 +80,7 @@ FAKE = textwrap.dedent('''\
         graders = [{"name": "01-loads-qa-demo", "passed": passed, "weight": 1, "withOnly": False, "scored": True,
                     "explanation": "Skill called %dx (expected 1..∞)" % (1 if passed else 0)}]
         with_arm = [{"score": 1 if passed else 0, "passed": passed, "turns": 2, "costUsd": 0.01, "judgeCostUsd": 0,
-                     "durationSeconds": 3, "skippedPaidGraders": False, "graders": graders,
+                     "durationSeconds": 3, "skippedPaidGraders": bool(cfg.get("SKIPPED", False)), "graders": graders,
                      "error": cfg.get("RUN_ERROR")} for _ in range(min(runs, per_case))]
         cases.append({"name": name, "dir": os.path.join(opt("--eval-dir"), name), "runsPerCase": per_case,
                       "arms": {"with": with_arm}, "aggregates": {"score": 1 if passed else 0}})
@@ -90,10 +91,22 @@ FAKE = textwrap.dedent('''\
         del doc["costUsd"]
     if mode == "badcost":
         doc["costUsd"] = "0.42"
+    # SHAPE gives one value of the result a JSON type the real CLI does not write there.
+    shape = cfg.get("SHAPE")
+    if shape == "cases":
+        doc["cases"] = 7
+    elif shape == "arms":
+        doc["cases"][0]["arms"] = ["not an object"]
+    elif shape == "with":
+        doc["cases"][0]["arms"]["with"] = 7
+    elif shape == "graders":
+        doc["cases"][0]["arms"]["with"][0]["graders"] = 7
     report = "<html>report</html>"
     if mode == "leak":
         raw = key.encode()
         doc["note"] = "the key is " + key
+        doc["partialReason"] = "stopped near " + key        # CLI text the wrapper copies to its ledger end line
+        doc["claudeVersion"] = "9.9.9 " + key
         report = "<html>%s %s %s</html>" % (base64.b64encode(b"x" + raw).decode(), raw.hex(), raw.hex().upper())
         print("stdout has " + key)
         print("stderr has " + base64.urlsafe_b64encode(b"yz" + raw + b"!").decode(), file=sys.stderr)
@@ -109,6 +122,11 @@ FAKE = textwrap.dedent('''\
             with open(os.path.join(opt("--output-dir"), "nested", "trace.jsonl"), "w") as fh:
                 fh.write(json.dumps({"key": key}) + "\\n")
         print("Wrote " + opt("--json"))
+    if cfg.get("FIFO"):                                     # a file under the output dir that is not a regular file
+        os.mkfifo(os.path.join(opt("--output-dir"), "pipe"))
+    if cfg.get("LEDGER_GONE"):                              # the ledger's end-line append will fail after this run
+        os.rename(cfg["LEDGER_GONE"], cfg["LEDGER_GONE"] + ".moved")
+        os.mkdir(cfg["LEDGER_GONE"])
     sys.exit(int(cfg.get("EXIT", 0)))
 ''')
 
@@ -154,6 +172,7 @@ def suite(tmp_path):
     shutil.copy(str(WRAPPER), str(repo / "tools" / "run_plugin_eval.py"))
     shutil.copy(str(HARNESS), str(repo / "tools" / "run_skill_eval.py"))
     files = {".claude-plugin/marketplace.json": '{"name": "qa-engineering-suite", "plugins": []}\n',
+             ".gitignore": ".superpowers/\n",
              "skills/qa-demo/SKILL.md": "---\nname: qa-demo\ndescription: Demo.\n---\n\n# Demo\n",
              "skills/qa-demo/evals/harness-case.json": '{"id": "demo-1"}\n',
              "skills/qa-demo/evals/plugin/prompts.json": '{"skill": "qa-demo"}\n',
@@ -199,7 +218,7 @@ def start(s, *extra, budget="5", runs="1", case="trigger-*", out=None, env=None,
     """Starts the wrapper with a minimal caller environment; ``env`` adds (or, with None, removes) variables."""
     set_fake(s, **cfg)
     s.count += 1
-    s.out = out or s.root / "out" / str(s.count)
+    s.out = out or s.repo / ".superpowers" / "runs" / str(s.count)
     argv = [sys.executable, "-I", str(s.wrapper), "--skill", skill, "--runs", runs, "--model", "test-model",
             "--budget-usd", budget, "--ledger", str(s.ledger), "--out", str(s.out)] + (["--case", case] if case else []) \
         + list(extra)
@@ -236,6 +255,16 @@ def key_forms():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.key_forms(SECRET)
+
+
+def assert_no_key_saved(s, r):
+    """No form of the key in any regular file under the run's output dir, in the wrapper's output or in the ledger."""
+    saved = [p for p in s.out.rglob("*") if p.is_file() and not p.is_symlink()]
+    assert "result.json" in {p.name for p in saved}
+    blobs = [p.read_bytes() for p in saved] + [r.stdout.encode(), r.stderr.encode()]
+    blobs += [p.read_bytes() for p in s.ledger.parent.rglob("*") if p.is_file()]
+    for form in key_forms():
+        assert not [b for b in blobs if form in b], form
 
 
 def test_plugin_eval_refuses_tool_grants_and_redacts_the_key(suite):
@@ -420,6 +449,108 @@ def test_plugin_eval_a_turn_limit_stop_is_not_a_failed_run(suite):
     assert r.returncode == 1 and end["status"] == "failed" and end["run_errors"] == 2 and end["max_turns_stops"] == 0
 
 
+@pytest.mark.parametrize("shape", ["cases", "arms", "with", "graders"])
+def test_plugin_eval_scans_its_output_after_a_result_of_an_unexpected_shape(suite, shape):
+    # Input class: a result that is valid JSON with one value of an unexpected JSON type, from a CLI that also writes the
+    # key into its files and output. The run is recorded as failed with its known cost, and the scan still runs.
+    r = run(suite, MODE="leak", SHAPE=shape)
+    assert r.returncode == 1, r.stdout + r.stderr
+    start_line, end = ledger(suite)
+    assert end["event"] == "end" and end["run_id"] == start_line["run_id"] and end["status"] == "failed"
+    assert end["shape_problems"] and end["cost_usd"] == 0.42 and end["cost_unknown"] is False
+    assert_no_key_saved(suite, r)
+
+
+def test_plugin_eval_scans_its_output_when_the_ledger_line_cannot_be_written(suite):
+    # Input class: an error on the ledger's end-line append after a run whose CLI wrote the key into its files.
+    r = run(suite, MODE="leak", LEDGER_GONE=str(suite.ledger))
+    assert r.returncode == 1 and "LEDGER WRITE FAILED" in r.stderr
+    moved = suite.ledger.with_name(suite.ledger.name + ".moved")
+    assert [json.loads(line)["event"] for line in moved.read_text().splitlines()] == ["start"]
+    assert_no_key_saved(suite, r)
+
+
+def test_plugin_eval_names_what_its_scan_could_not_read(suite):
+    # Input class: a path under the output dir that is not a regular file. The scan names it and the run exits 1.
+    r = run(suite, MODE="leak", FIFO=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "results/pipe" in r.stderr and "results/pipe" in " ".join(json.loads(r.stdout)["unscanned"])
+    assert ledger(suite)[-1]["status"] == "ok"
+    assert_no_key_saved(suite, r)
+
+
+def test_plugin_eval_scan_goes_on_past_what_it_cannot_read(tmp_path, monkeypatch):
+    # Input classes: a directory that cannot be listed and a file that cannot be read. Each is named, and every other
+    # file is still redacted, whatever the walk's order.
+    spec = importlib.util.spec_from_file_location("run_plugin_eval_for_scan_test", str(WRAPPER))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = tmp_path / "out"
+    for rel in ("a.txt", "locked/inner.txt", "bad.txt", "z/last.txt"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("before " + SECRET + " after\n")
+    real_scandir, real_read = os.scandir, pathlib.Path.read_bytes
+
+    def scandir(path="."):
+        if os.path.basename(os.fspath(path)) == "locked":
+            raise PermissionError(13, "Permission denied", os.fspath(path))
+        return real_scandir(path)
+
+    def read_bytes(self):
+        if self.name == "bad.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", read_bytes)
+    scan = module.redact_tree(root, SECRET)
+    monkeypatch.undo()
+    unscanned = " ".join(scan["unscanned"])
+    assert "locked" in unscanned and "bad.txt" in unscanned
+    assert sorted(scan["redacted"]) == ["a.txt", "z/last.txt"]
+    for rel in ("a.txt", "z/last.txt"):
+        assert SECRET not in (root / rel).read_text()
+
+
+def test_plugin_eval_a_run_whose_paid_graders_were_skipped_is_not_a_pass(suite):
+    r = run(suite, SKIPPED=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    summary = {c["name"]: c for c in json.loads((suite.out / "summary.json").read_text())["cases"]}
+    for name in ("trigger-en-01", "trigger-en-02"):
+        case = summary[name]
+        assert (case["passes"], case["fails"], case["skipped"]) == (0, 0, 1)
+        assert case["runs"][0]["verdict"] == "skipped" and case["runs"][0]["passed"] is False
+    shown = {c["name"]: c for c in json.loads(r.stdout)["cases"]}
+    assert (shown["trigger-en-01"]["passes"], shown["trigger-en-01"]["skipped"]) == (0, 1)
+    assert ledger(suite)[-1]["verdicts"] == {"pass": 0, "fail": 0, "skipped": 2}
+    assert run(suite).returncode == 0
+    assert ledger(suite)[-1]["verdicts"] == {"pass": 2, "fail": 0, "skipped": 0}
+
+
+def test_plugin_eval_refuses_a_prompt_frontmatter_it_cannot_parse(suite):
+    # Input class: a prompt.md whose frontmatter the grant check cannot delimit, in a case the glob does not select.
+    # Every form grants read-only tools only: the refusal is for a frontmatter that cannot be read, not for its grant.
+    good = _case_files("qa-demo", "x", "p", "[Skill, Read]")["x/prompt.md"]
+    forms = {"other line endings": good.replace("\n", "\r\n").encode("utf-8"),
+             "a carriage return inside the frontmatter": good.replace("runs: 3\n", "runs: 3\r\n").encode("utf-8"),
+             "a leading byte-order mark": ("﻿" + good).encode("utf-8"),
+             "a leading blank line": ("\n" + good).encode("utf-8"),
+             "no closing delimiter": good.replace("[Skill, Read]\n---\n", "[Skill, Read]\n").encode("utf-8"),
+             "a closing delimiter with more on its line": good.replace("\n---\np", "\n--- x\np").encode("utf-8"),
+             "a grant line after the frontmatter": (good + "allowed_tools: [Read]\n").encode("utf-8"),
+             "bytes that are not UTF-8": good.encode("utf-8").replace(b"tags", b"t\xffgs")}
+    path = suite.repo / "skills/qa-demo/evals/plugin/trigger-en-02/prompt.md"
+    for label, data in forms.items():
+        path.write_bytes(data)
+        rev = commit(suite, {}, label)
+        r = run(suite, "--commit", rev, case="trigger-en-01")
+        assert r.returncode == 3, (label, r.stdout, r.stderr)
+        assert "trigger-en-02/prompt.md" in r.stderr, (label, r.stderr)
+    assert eval_calls(suite) == [] and not suite.ledger.exists()
+    path.write_bytes(good.encode("utf-8"))
+    assert run(suite, "--commit", commit(suite, {}, "clean"), case="trigger-en-01").returncode == 0
+
+
 def test_plugin_eval_refuses_bad_arguments_before_anything_runs(suite):
     assert run(suite, env={"ANTHROPIC_API_KEY": None}).returncode == 3
     assert run(suite, env={"ANTHROPIC_API_KEY": ""}).returncode == 3
@@ -430,7 +561,18 @@ def test_plugin_eval_refuses_bad_arguments_before_anything_runs(suite):
     assert run(suite, case="a/b").returncode == 2
     assert run(suite, case="no-such-case-*").returncode == 2
     assert run(suite, "--commit", "no-such-rev").returncode == 2
-    used = suite.root / "used"
+    used = suite.repo / ".superpowers" / "used"
     (used / "results").mkdir(parents=True)
     assert run(suite, out=used).returncode == 2
+    # --out must resolve, symbolic links included, under the repository's .superpowers/, and never under skills/.
+    elsewhere = suite.root / "elsewhere"
+    elsewhere.mkdir()
+    (suite.repo / ".superpowers" / "link").symlink_to(elsewhere, target_is_directory=True)
+    refused = [elsewhere / "run", suite.repo / "skills" / "qa-demo" / "evals" / "run", suite.repo / ".superpowers",
+               suite.repo / ".superpowers" / "link" / "run", suite.repo / ".superpowers" / ".." / "skills" / "run"]
+    for out in refused:
+        r = run(suite, out=out)
+        assert r.returncode == 2 and "--out" in r.stderr, (out, r.stderr)
+    assert not (elsewhere / "run").exists() and not (suite.repo / "skills" / "run").exists()
+    assert not (suite.repo / "skills" / "qa-demo" / "evals" / "run").exists()
     assert eval_calls(suite) == [] and not suite.ledger.exists()

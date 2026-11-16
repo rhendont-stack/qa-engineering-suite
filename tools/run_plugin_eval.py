@@ -19,8 +19,9 @@ the working tree, so the plugin's name is the suite's. The export is staged befo
 
 ``check_cases`` refuses the run (exit 3) when any case of the skill, selected by the glob or not, grants ``Bash``,
 ``Write``, ``Edit``, ``NotebookEdit``, ``WebFetch``, ``WebSearch``, an ``mcp__`` tool, or a grant it cannot read, in
-``prompt.md``'s frontmatter or in ``case.yaml``. The CLI passes the key to its children through the environment, so a
-case must not be able to run or send anything.
+``prompt.md``'s frontmatter or in ``case.yaml``. A ``prompt.md`` whose frontmatter it cannot delimit, one with an
+``allowed_tools`` line outside its frontmatter and a case file that is not UTF-8 count as grants it cannot read. The CLI
+passes the key to its children through the environment, so a case must not be able to run or send anything.
 
 Every ``claude`` call gets an environment built from scratch: ``PATH``, a temporary ``HOME`` and ``CLAUDE_CONFIG_DIR``,
 ``DISABLE_TELEMETRY=1`` and ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1``, plus ``ANTHROPIC_API_KEY`` from the caller's
@@ -33,16 +34,25 @@ is the budget left over the whole ledger. The cost is the result's ``costUsd`` (
 unreadable ``costUsd``, a missing result and an interrupted run are recorded as unknown, never as 0.
 
 Verdicts come from each run's grader results, never from the result's ``casesPassed``, which counts every case scoring at
-least ``--threshold`` (0 here). A run the CLI reports as stopped at its case's own ``max_turns`` is graded as usual and
-counted in the ``end`` line's ``max_turns_stops``; any other run error makes the status ``failed``.
+least ``--threshold`` (0 here). A run is ``pass`` when it has graders and every one passed, ``skipped`` when the CLI
+skipped its paid graders (a skipped grader is not a passed one), and ``fail`` otherwise; the three are counted apart. A
+result value of an unexpected JSON type is recorded in the ``end`` line's ``shape_problems`` and makes the status
+``failed``. A run the CLI reports as stopped at its case's own ``max_turns`` is graded as usual and counted in the
+``end`` line's ``max_turns_stops``; any other run error makes the status ``failed``. The ``end`` line is redacted before
+it is appended, because it copies text from the CLI's result.
 
-``DIR`` receives ``result.json`` and ``results/`` (the CLI's), ``cli-stdout.txt``, ``cli-stderr.txt``, ``summary.json``
-(per case: runs, passes, fails, and each run's grader results) and ``costs.jsonl`` (the ``end`` line again). Then every file under ``DIR`` is scanned and the key's forms (``redact_bytes``) are replaced by
-the marker; symbolic links are not followed. ``DIR`` must not already hold a result.
+``DIR`` must resolve, symbolic links included, under the repository's ``.superpowers/`` and never under ``skills/``, and
+must not already hold a result. It receives ``result.json`` and ``results/`` (the CLI's), ``cli-stdout.txt``,
+``cli-stderr.txt``, ``summary.json`` (per case: runs, passes, fails, skipped, and each run's verdict and grader results)
+and ``costs.jsonl`` (the ``end`` line again). Once the CLI has returned, every file under ``DIR`` is scanned on every
+path, the ledger failure and any exception included, and the key's forms (``redact_bytes``) are replaced by the marker.
+Symbolic links are not followed. A directory the scan cannot list and a file it cannot read, redact or write back are
+named on stderr and in the printed summary's ``unscanned``, and the scan goes on past them.
 
 Exit codes: 0 the run finished and was recorded with status ``ok``; 1 it was recorded with another status (``failed``,
-``partial``, ``runs_mismatch``, ``timeout``, ``interrupted``) or its evidence was not fully saved; 2 bad arguments; 3
-refused (a forbidden grant, a CLI without an essential flag, no key, the budget reached or an unknown recorded cost).
+``partial``, ``runs_mismatch``, ``timeout``, ``interrupted``), its evidence was not fully saved, or a path under ``DIR``
+was left unscanned; 2 bad arguments; 3 refused (a forbidden or unreadable grant, a CLI without an essential flag, no
+key, the budget reached or an unknown recorded cost).
 """
 from __future__ import annotations
 
@@ -60,9 +70,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 def _load_harness() -> Any:
@@ -80,6 +91,7 @@ check_budget = _harness.check_budget
 run_cap = _harness.run_cap
 append_line = _harness.append_line
 redact_bytes = _harness.redact_bytes
+redact = _harness.redact
 key_forms = _harness.key_forms
 now_utc = _harness.now_utc
 
@@ -95,6 +107,8 @@ ESSENTIAL_FLAGS = ("--no-publish", "--max-cost-usd", "--trust-plugin", "--eval-d
 SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*\Z")
 GRANT_LINE = re.compile(r"^(\s*)allowed_tools\s*:\s*(.*?)\s*$")
+# Line breaks other than LF that ``str.splitlines`` honours (YAML's CR among them): a frontmatter holding one is refused.
+OTHER_LINE_BREAKS = "\r\v\f\x1c\x1d\x1e\x85  "
 # The run error the CLI reports when a run stops at its case's own ``max_turns``: the run is still graded as usual.
 TURN_LIMIT = re.compile(r"\A(?:exit \d+: )?Reached maximum number of turns \(\d+\)\Z")
 
@@ -117,6 +131,45 @@ def _frontmatter(text: str) -> str:
         return ""
     end = text.find("\n---", 3)
     return text[4:end + 1] if end >= 0 else ""
+
+
+def _prompt_head(text: str, where: str) -> str:
+    """A ``prompt.md``'s frontmatter, for the grant check: the lines between an opening ``---`` line and the first later
+    line that starts with ``---``, which must be exactly ``---`` (where ``_frontmatter`` ends it too). Raises ``Refused``
+    for a file that opens with anything else delimiter-like (other line endings, a byte-order mark or blank lines first),
+    for a frontmatter that is never closed, and for an ``allowed_tools`` line outside the frontmatter: a grant the check
+    cannot place cannot be shown to be safe."""
+    lines = text.split("\n")
+    head: List[str] = []
+    rest = lines
+    if text.startswith("---\n"):
+        for number in range(1, len(lines)):
+            if lines[number].startswith("---"):
+                if lines[number] != "---":
+                    raise Refused("%s: the frontmatter's closing line is not a plain ---; refusing a grant that cannot "
+                                  "be read" % where)
+                head, rest = lines[1:number], lines[number + 1:]
+                break
+        else:
+            raise Refused("%s: the frontmatter is never closed; refusing a grant that cannot be read" % where)
+        if any(mark in line for line in head for mark in OTHER_LINE_BREAKS):
+            raise Refused("%s: the frontmatter holds a line break other than LF; refusing a grant that cannot be read"
+                          % where)
+    elif text.lstrip("﻿ \t\r\n").startswith("---"):
+        raise Refused("%s: the file opens with a frontmatter delimiter the check cannot read; refusing a grant that "
+                      "cannot be read" % where)
+    if any(GRANT_LINE.match(line) for line in "\n".join(rest).splitlines()):
+        raise Refused("%s: an allowed_tools line outside the frontmatter; refusing a grant that cannot be read" % where)
+    return "\n".join(head) + "\n"
+
+
+def _case_text(path: Path, where: str) -> str:
+    """The file's text exactly as the CLI reads it: no newline translation, so other line endings stay visible."""
+    try:
+        return path.read_bytes().decode("utf-8")
+    except (OSError, ValueError) as exc:
+        raise Refused("%s cannot be read as UTF-8 text (%s); refusing a grant that cannot be read"
+                      % (where, type(exc).__name__))
 
 
 def _grants(text: str, where: str) -> List[str]:
@@ -167,9 +220,10 @@ def check_cases(eval_dir: Path, case_glob: Optional[str]) -> List[Path]:
         rel = str(base.relative_to(eval_dir))
         texts = []
         if (base / "prompt.md").is_file():
-            texts.append((_frontmatter((base / "prompt.md").read_text(encoding="utf-8")), rel + "/prompt.md"))
+            where = rel + "/prompt.md"
+            texts.append((_prompt_head(_case_text(base / "prompt.md", where), where), where))
         if (base / "case.yaml").is_file():
-            texts.append(((base / "case.yaml").read_text(encoding="utf-8"), rel + "/case.yaml"))
+            texts.append((_case_text(base / "case.yaml", rel + "/case.yaml"), rel + "/case.yaml"))
         for text, where in texts:
             for grant in _grants(text, where):
                 tool = grant.split("(", 1)[0].strip()
@@ -304,47 +358,131 @@ def read_result(path: Path) -> Optional[Dict[str, Any]]:
     return doc if isinstance(doc, dict) else None
 
 
-def verdicts(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Per case: each run's grader results and the run's verdict, which is a pass only when the run has graders and
-    every one passed. ``casesPassed`` and the CLI's own run ``passed`` are not used."""
+def verdicts(doc: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Per case: each run's grader results and verdict, and the result's shape problems. A run is ``skipped`` when the
+    CLI skipped its paid graders, ``pass`` when it has graders and every one passed, and ``fail`` otherwise.
+    ``casesPassed`` and the CLI's own run ``passed`` are not used. A ``cases``, ``arms``, ``with``, run, ``graders`` or
+    ``skippedPaidGraders`` value of an unexpected JSON type is left out and named in the shape problems, which the run
+    records as a failure; this never raises on a parsed JSON document."""
     shown: List[Dict[str, Any]] = []
-    for case in doc.get("cases") or []:
+    odd: List[str] = []
+    cases = doc.get("cases")
+    if not isinstance(cases, list):
+        odd.append("cases is not a list")
+        cases = []
+    for i, case in enumerate(cases):
         if not isinstance(case, dict):
+            odd.append("cases[%d] is not an object" % i)
             continue
+        arms = case.get("arms")
+        made = arms.get("with") if isinstance(arms, dict) else None
+        if not isinstance(made, list):
+            odd.append("cases[%d].arms.with is not a list" % i)
+            made = []
         runs = []
-        for run in ((case.get("arms") or {}).get("with") or []):
+        for j, run in enumerate(made):
+            where = "cases[%d].arms.with[%d]" % (i, j)
             if not isinstance(run, dict):
+                odd.append(where + " is not an object")
                 continue
-            graders = [g for g in (run.get("graders") or []) if isinstance(g, dict)]
-            runs.append({"passed": bool(graders) and all(g.get("passed") is True for g in graders),
-                         "error": run.get("error"), "cost_usd": run.get("costUsd"), "judge_cost_usd": run.get("judgeCostUsd"),
+            listed = run.get("graders")
+            if not isinstance(listed, list):
+                odd.append(where + ".graders is not a list")
+                listed = []
+            graders = [g for g in listed if isinstance(g, dict)]
+            if len(graders) != len(listed):
+                odd.append(where + ".graders holds a value that is not an object")
+            skipped = run.get("skippedPaidGraders")
+            if not (skipped is None or isinstance(skipped, bool)):
+                odd.append(where + ".skippedPaidGraders is not a boolean")
+            if skipped is True:
+                verdict = "skipped"                 # a skipped grader is not a passed grader
+            elif graders and all(g.get("passed") is True for g in graders):
+                verdict = "pass"
+            else:
+                verdict = "fail"
+            runs.append({"verdict": verdict, "passed": verdict == "pass", "error": run.get("error"),
+                         "cost_usd": run.get("costUsd"), "judge_cost_usd": run.get("judgeCostUsd"),
                          "duration_seconds": run.get("durationSeconds"), "turns": run.get("turns"),
-                         "skipped_paid_graders": run.get("skippedPaidGraders"), "graders": graders})
+                         "skipped_paid_graders": skipped, "graders": graders})
         shown.append({"name": case.get("name"), "runs_per_case": case.get("runsPerCase"), "runs": runs,
-                      "passes": sum(1 for r in runs if r["passed"]), "fails": sum(1 for r in runs if not r["passed"])})
-    return shown
+                      "passes": sum(1 for r in runs if r["verdict"] == "pass"),
+                      "fails": sum(1 for r in runs if r["verdict"] == "fail"),
+                      "skipped": sum(1 for r in runs if r["verdict"] == "skipped")})
+    return shown, odd
 
 
 def runs_differ(cases: Sequence[Dict[str, Any]], runs: int) -> List[str]:
     return [str(c["name"]) for c in cases if c["runs_per_case"] != runs or len(c["runs"]) > runs]
 
 
+def redact_value(value: Any, key: str) -> Any:
+    """``value`` with the key's forms replaced in every string it holds, keys of objects included."""
+    if isinstance(value, str):
+        return redact(value, key)
+    if isinstance(value, list):
+        return [redact_value(item, key) for item in value]
+    if isinstance(value, dict):
+        return {redact_value(k, key): redact_value(v, key) for k, v in value.items()}
+    return value
+
+
 def redact_tree(root: Path, key: str) -> Dict[str, List[str]]:
-    """Replaces the key's forms in every regular file under ``root``; symbolic links are listed, never followed."""
-    redacted, links = [], []
-    for base, dirs, files in os.walk(str(root), followlinks=False):
-        for name in dirs + files:
-            path = Path(base) / name
-            if path.is_symlink():
-                links.append(str(path.relative_to(root)))
-                continue
-            if name in files and path.is_file():
-                data = path.read_bytes()
-                clean = redact_bytes(data, key)
-                if clean != data:
-                    path.write_bytes(clean)
-                    redacted.append(str(path.relative_to(root)))
-    return {"redacted": sorted(redacted), "links": sorted(links)}
+    """Replaces the key's forms in every regular file under ``root``. Symbolic links are listed, never followed. A
+    directory that cannot be listed, a path that is not a regular file, and a file that cannot be read, redacted or
+    written back are listed in ``unscanned`` with the reason, and the scan goes on past them. It never raises an
+    ``Exception``."""
+    redacted: List[str] = []
+    links: List[str] = []
+    unscanned: List[str] = []
+
+    def rel(path: Any) -> str:
+        try:
+            return str(Path(path).relative_to(root))
+        except (TypeError, ValueError):
+            return str(path)
+
+    def cannot_list(exc: OSError) -> None:
+        unscanned.append("%s (cannot be listed: %s)" % (rel(exc.filename if exc.filename else root), type(exc).__name__))
+
+    try:
+        for base, dirs, files in os.walk(str(root), onerror=cannot_list, followlinks=False):
+            for name in dirs + files:
+                path = Path(base) / name
+                try:
+                    if path.is_symlink():
+                        links.append(rel(path))
+                    elif name not in files:
+                        continue                    # a directory: the walk enters it
+                    elif not path.is_file():
+                        unscanned.append("%s (not a regular file)" % rel(path))
+                    else:
+                        data = path.read_bytes()
+                        clean = redact_bytes(data, key)
+                        if clean != data:
+                            path.write_bytes(clean)
+                            redacted.append(rel(path))
+                except Exception as exc:            # one file's failure must not end the scan for the others
+                    unscanned.append("%s (%s)" % (rel(path), type(exc).__name__))
+    except Exception as exc:
+        unscanned.append("%s (the scan stopped: %s)" % (rel(root), type(exc).__name__))
+    return {"redacted": sorted(redacted), "links": sorted(links), "unscanned": sorted(unscanned)}
+
+
+def scan_out(out: Path, key: str) -> Tuple[Dict[str, List[str]], List[int]]:
+    """``redact_tree`` of ``out`` with SIGTERM and SIGINT held until it ends, so a termination signal cannot cut the scan
+    short. Returns the scan and the signals held, which the caller delivers again once it has reported the scan."""
+    held: List[int] = []
+
+    def hold(signum: int, _frame: Any) -> None:
+        held.append(signum)
+
+    previous = {number: signal.signal(number, hold) for number in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return redact_tree(out, key), sorted(set(held))
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
 # -- main -------------------------------------------------------------------------------------------------------------
@@ -377,8 +515,19 @@ def parse(argv: Sequence[str]) -> argparse.Namespace:
     for name in ("model", "judge_model"):
         if not getattr(args, name) or getattr(args, name).startswith("-"):
             raise usage_error("--%s must name a model" % name.replace("_", "-"))
-    args.out = str(Path(args.out).resolve())
+    out = Path(args.out).resolve()                  # symbolic links resolved, so a link cannot lead the output elsewhere
+    allowed, skills = (REPO / ".superpowers").resolve(), (REPO / "skills").resolve()
+    if not _inside(out, allowed) or _inside(out, skills, or_equal=True):
+        raise usage_error("--out must resolve to a directory under %s, never under %s" % (allowed, skills))
+    args.out = str(out)
     return args
+
+
+def _inside(path: Path, parent: Path, or_equal: bool = False) -> bool:
+    """Whether ``path`` is below ``parent`` (or is it, with ``or_equal``), comparing NFC forms: macOS keeps either
+    Unicode form in a path, and the two resolved paths may come from different sources."""
+    child, base = unicodedata.normalize("NFC", str(path)), unicodedata.normalize("NFC", str(parent))
+    return (or_equal and child == base) or child.startswith(base.rstrip(os.sep) + os.sep)
 
 
 def _on_sigterm(_signum: int, _frame: Any) -> None:
@@ -441,10 +590,43 @@ def _run(args: argparse.Namespace, key: str, exe: str, tmp: Path, export_root: P
         return refuse(str(exc))
     outcome = _harness.execute(command, "", tmp / "work", WALL_TIMEOUT, clean_env(tmp / "home", tmp / "config", key))
     pending = outcome.pop("pending", None)
+    try:                                       # from here on, the scan in ``finally`` runs on every path
+        written = _record(args, key, tmp, sha, staged, cases, out, ledger, run_id, case_id, command, outcome)
+    finally:                                   # every file under DIR, the CLI's included
+        scan, held = scan_out(out, key)
+        for path in scan["unscanned"]:
+            print(redact("NOT SCANNED FOR THE KEY, check it before sharing anything under --out: %s" % path, key),
+                  file=sys.stderr)
+        for number in held:                    # a termination signal that arrived during the scan, delivered now
+            signal.raise_signal(number)
+    if written is None:                        # the ledger line was not written; its record is on stderr
+        return 1
+    status, shown, cost, problems = written
+    if scan["unscanned"]:
+        problems.append("%d path(s) under --out not scanned for the key" % len(scan["unscanned"]))
+    if scan["links"]:
+        problems.append("symbolic links under --out, not followed: %s" % ", ".join(scan["links"]))
+    for problem in problems:
+        print(redact(problem, key) + " (the ledger line was written)", file=sys.stderr)
+    summary = {"run_id": run_id, "status": status, "cost_usd": cost, "cost_unknown": cost is None, "out": str(out),
+               "redacted_files": scan["redacted"], "unscanned": scan["unscanned"],
+               "cases": [{"name": c["name"], "runs": len(c["runs"]), "passes": c["passes"], "fails": c["fails"],
+                          "skipped": c["skipped"]} for c in shown]}
+    print(redact_bytes(json.dumps(summary, sort_keys=True).encode("utf-8"), key).decode("utf-8"))
+    if pending is not None and not isinstance(pending, KeyboardInterrupt):
+        raise pending
+    return 0 if status == "ok" and not problems else 1
+
+
+def _record(args: argparse.Namespace, key: str, tmp: Path, sha: str, staged: Dict[str, Any], cases: List[str], out: Path,
+            ledger: Any, run_id: str, case_id: str, command: List[str],
+            outcome: Dict[str, Any]) -> Optional[Tuple[str, List[Dict[str, Any]], Optional[float], List[str]]]:
+    """Writes the run's ``end`` line, then its evidence. Returns the status, the cases, the cost and the evidence
+    problems, or None when the ``end`` line could not be written (its redacted record is then printed on stderr)."""
     doc = None if outcome["interrupted"] else read_result(out / "result.json")
     cost = _amount(doc.get("costUsd")) if doc is not None else None
     duration = _amount(doc.get("durationSeconds")) if doc is not None else None
-    shown = verdicts(doc) if doc is not None else []
+    shown, odd = verdicts(doc) if doc is not None else ([], [])
     mismatched = runs_differ(shown, args.runs)
     stops = [r["error"] for c in shown for r in c["runs"] if r["error"] and TURN_LIMIT.search(str(r["error"]))]
     errors = [r["error"] for c in shown for r in c["runs"] if r["error"] and not TURN_LIMIT.search(str(r["error"]))]
@@ -452,7 +634,7 @@ def _run(args: argparse.Namespace, key: str, exe: str, tmp: Path, export_root: P
         status = "interrupted"
     elif outcome["timed_out"]:
         status = "timeout"
-    elif doc is None or cost is None:
+    elif doc is None or cost is None or odd:
         status = "failed"
     elif mismatched:
         status = "runs_mismatch"
@@ -462,6 +644,8 @@ def _run(args: argparse.Namespace, key: str, exe: str, tmp: Path, export_root: P
         status = "failed"
     else:
         status = "ok"
+    counts = {verdict: sum(1 for c in shown for r in c["runs"] if r["verdict"] == verdict)
+              for verdict in ("pass", "fail", "skipped")}
     record = {"event": "end", "run_id": run_id, "timestamp": now_utc(), "case_id": case_id, "config": "plugin-eval",
               "model": args.model, "judge_model": args.judge_model, "engine": "claude plugin eval", "skill": args.skill,
               "case_glob": args.case, "cases": cases, "runs": args.runs, "commit": sha, "exit_code": outcome["exit_code"],
@@ -469,20 +653,20 @@ def _run(args: argparse.Namespace, key: str, exe: str, tmp: Path, export_root: P
               "partial_reason": doc.get("partialReason") if doc is not None else None,
               "cost_usd": cost, "cost_unknown": cost is None,
               "duration_ms": int(round(duration * 1000)) if duration is not None else None, "wall_ms": outcome["wall_ms"],
-              "timed_out": outcome["timed_out"], "status": status, "runs_mismatch": mismatched, "run_errors": len(errors),
-              "max_turns_stops": len(stops),
+              "timed_out": outcome["timed_out"], "status": status, "verdicts": counts, "shape_problems": odd,
+              "runs_mismatch": mismatched, "run_errors": len(errors), "max_turns_stops": len(stops),
               "claude_version": doc.get("claudeVersion") if doc is not None else None,
               "swept_pids": len(outcome["swept"]), "sweeper_blind": outcome["sweeper_blind"],
               "staging": {"eval_dir": staged["eval_dir"], "evals_removed": staged["evals_removed"],
                           "manifest_written": staged["manifest_written"]},
               "command": [a.replace(str(tmp), "<tmp>") for a in command[1:]]}
+    record = redact_value(record, key)         # it copies text from the CLI's result, and the ledger is outside DIR
     try:                                       # first the ledger line, before anything that can fail
         ledger.append(record)
     except OSError as exc:
         print("LEDGER WRITE FAILED (%s); the record follows so the spend is not lost:\n%s"
-              % (exc, redact_bytes(json.dumps(record, sort_keys=True).encode("utf-8"), key).decode("utf-8")),
-              file=sys.stderr)
-        return 1
+              % (redact(str(exc), key), json.dumps(record, sort_keys=True)), file=sys.stderr)
+        return None
     problems: List[str] = []
     try:
         if (out / "costs.jsonl").resolve() != ledger.path.resolve():
@@ -490,27 +674,11 @@ def _run(args: argparse.Namespace, key: str, exe: str, tmp: Path, export_root: P
         (out / "cli-stdout.txt").write_bytes(redact_bytes(outcome["stdout"].encode("utf-8"), key))
         (out / "cli-stderr.txt").write_bytes(redact_bytes(outcome["stderr"].encode("utf-8"), key))
         (out / "summary.json").write_text(json.dumps({"run_id": run_id, "skill": args.skill, "status": status,
-                                                      "cost_usd": cost, "cases": shown}, indent=2, sort_keys=True) + "\n",
-                                          encoding="utf-8")
+                                                      "cost_usd": cost, "verdicts": counts, "cases": shown},
+                                                     indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except OSError as exc:
         problems.append("evidence not fully saved: %s" % type(exc).__name__)
-    try:                                       # every file under DIR, the CLI's included
-        scan = redact_tree(out, key)
-    except OSError as exc:
-        scan = {"redacted": [], "links": []}
-        problems.append("redaction scan failed: %s" % type(exc).__name__)
-    if scan["links"]:
-        problems.append("symbolic links under --out, not followed: %s" % ", ".join(scan["links"]))
-    for problem in problems:
-        print(problem + " (the ledger line was written)", file=sys.stderr)
-    summary = {"run_id": run_id, "status": status, "cost_usd": cost, "cost_unknown": cost is None, "out": str(out),
-               "redacted_files": scan["redacted"],
-               "cases": [{"name": c["name"], "runs": len(c["runs"]), "passes": c["passes"], "fails": c["fails"]} for c in shown]}
-    print(redact_bytes(json.dumps(summary, sort_keys=True).encode("utf-8"), key).decode("utf-8"))
-    if pending is not None and not isinstance(pending, KeyboardInterrupt):
-        raise pending
-    return 0 if status == "ok" and not problems else 1
-
+    return status, shown, cost, problems
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
