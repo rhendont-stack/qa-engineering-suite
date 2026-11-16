@@ -4,7 +4,8 @@ An opt-in plugin for the QA Engineering Suite. It adds one hook that checks ever
 with the suite's own command guard (the same rules `qa run` applies), but only while a QA workspace is active.
 
 It is not part of the full `qa-engineering-suite` plugin or of the `qa-core` and `qa-specialists` bundles. Install it
-separately, and only if you want the check on commands you approve in the host.
+separately, and only if you want that check on every Bash command while a QA workspace is active, not only on the
+commands a QA run starts.
 
 ## When it is active
 

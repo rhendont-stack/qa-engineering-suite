@@ -1,7 +1,7 @@
 {
   "name": "qa-command-guard",
   "version": "0.1.0-dev.1",
-  "description": "Opt-in guard: a PreToolUse hook that checks shell commands a QA run is about to execute. Not part of the full suite or the bundles.",
+  "description": "Opt-in guard: a PreToolUse hook that checks every Bash command Claude Code is about to run while a QA workspace (.qa/config.json in the working directory or a parent) is active, with the suite's command guard; it denies or asks, never allows. Not part of the full suite or the bundles.",
   "author": {
     "name": "rhendont-stack",
     "url": "https://github.com/rhendont-stack"
