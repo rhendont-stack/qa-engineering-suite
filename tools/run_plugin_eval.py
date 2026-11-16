@@ -33,9 +33,11 @@ is the budget left over the whole ledger. The cost is the result's ``costUsd`` (
 unreadable ``costUsd``, a missing result and an interrupted run are recorded as unknown, never as 0.
 
 Verdicts come from each run's grader results, never from the result's ``casesPassed``, which counts every case scoring at
-least ``--threshold`` (0 here). ``DIR`` receives ``result.json`` and ``results/`` (the CLI's), ``cli-stdout.txt``,
-``cli-stderr.txt``, ``summary.json`` (per case: runs, passes, fails, and each run's grader results) and ``costs.jsonl``
-(the ``end`` line again). Then every file under ``DIR`` is scanned and the key's forms (``redact_bytes``) are replaced by
+least ``--threshold`` (0 here). A run the CLI reports as stopped at its case's own ``max_turns`` is graded as usual and
+counted in the ``end`` line's ``max_turns_stops``; any other run error makes the status ``failed``.
+
+``DIR`` receives ``result.json`` and ``results/`` (the CLI's), ``cli-stdout.txt``, ``cli-stderr.txt``, ``summary.json``
+(per case: runs, passes, fails, and each run's grader results) and ``costs.jsonl`` (the ``end`` line again). Then every file under ``DIR`` is scanned and the key's forms (``redact_bytes``) are replaced by
 the marker; symbolic links are not followed. ``DIR`` must not already hold a result.
 
 Exit codes: 0 the run finished and was recorded with status ``ok``; 1 it was recorded with another status (``failed``,
@@ -93,6 +95,8 @@ ESSENTIAL_FLAGS = ("--no-publish", "--max-cost-usd", "--trust-plugin", "--eval-d
 SKILL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*\Z")
 GRANT_LINE = re.compile(r"^(\s*)allowed_tools\s*:\s*(.*?)\s*$")
+# The run error the CLI reports when a run stops at its case's own ``max_turns``: the run is still graded as usual.
+TURN_LIMIT = re.compile(r"\A(?:exit \d+: )?Reached maximum number of turns \(\d+\)\Z")
 
 
 def usage_error(message: str) -> "SystemExit":
@@ -229,9 +233,9 @@ def export(rev: str, target: Path, home: Path) -> str:
     return sha
 
 
-def stage(export_root: Path, skill: str, runs: int) -> Dict[str, Any]:
-    """Moves the skill's cases to ``plugin-evals/<skill>/``, removes every ``skills/*/evals/``, sets each case's runs and
-    writes the root manifest when there is none. ``SystemExit(2)`` when the skill has no plugin eval cases."""
+def stage(export_root: Path, skill: str) -> Dict[str, Any]:
+    """Copies the skill's cases to ``plugin-evals/<skill>/``, removes every ``skills/*/evals/`` and writes the root manifest
+    when there is none. ``SystemExit(2)`` when the skill has no plugin eval cases."""
     source = export_root / "skills" / skill / "evals" / "plugin"
     if not source.is_dir() or source.is_symlink():
         raise usage_error("skills/%s/evals/plugin is not in the export: no such skill, or it has no plugin eval cases" % skill)
@@ -404,7 +408,7 @@ def main(argv: Sequence[str]) -> int:
             (tmp / name).mkdir()
         export_root = tmp / PLUGIN_NAME
         sha = export(args.commit, export_root, tmp / "home")
-        staged = stage(export_root, args.skill, args.runs)
+        staged = stage(export_root, args.skill)
         try:
             selected = check_cases(staged["cases"], args.case)
         except Refused as exc:
@@ -442,7 +446,8 @@ def _run(args: argparse.Namespace, key: str, exe: str, tmp: Path, export_root: P
     duration = _amount(doc.get("durationSeconds")) if doc is not None else None
     shown = verdicts(doc) if doc is not None else []
     mismatched = runs_differ(shown, args.runs)
-    errors = [r["error"] for c in shown for r in c["runs"] if r["error"]]
+    stops = [r["error"] for c in shown for r in c["runs"] if r["error"] and TURN_LIMIT.search(str(r["error"]))]
+    errors = [r["error"] for c in shown for r in c["runs"] if r["error"] and not TURN_LIMIT.search(str(r["error"]))]
     if outcome["interrupted"]:
         status = "interrupted"
     elif outcome["timed_out"]:
@@ -465,6 +470,7 @@ def _run(args: argparse.Namespace, key: str, exe: str, tmp: Path, export_root: P
               "cost_usd": cost, "cost_unknown": cost is None,
               "duration_ms": int(round(duration * 1000)) if duration is not None else None, "wall_ms": outcome["wall_ms"],
               "timed_out": outcome["timed_out"], "status": status, "runs_mismatch": mismatched, "run_errors": len(errors),
+              "max_turns_stops": len(stops),
               "claude_version": doc.get("claudeVersion") if doc is not None else None,
               "swept_pids": len(outcome["swept"]), "sweeper_blind": outcome["sweeper_blind"],
               "staging": {"eval_dir": staged["eval_dir"], "evals_removed": staged["evals_removed"],

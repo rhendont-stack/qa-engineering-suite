@@ -79,7 +79,8 @@ FAKE = textwrap.dedent('''\
         graders = [{"name": "01-loads-qa-demo", "passed": passed, "weight": 1, "withOnly": False, "scored": True,
                     "explanation": "Skill called %dx (expected 1..∞)" % (1 if passed else 0)}]
         with_arm = [{"score": 1 if passed else 0, "passed": passed, "turns": 2, "costUsd": 0.01, "judgeCostUsd": 0,
-                     "durationSeconds": 3, "skippedPaidGraders": False, "graders": graders} for _ in range(min(runs, per_case))]
+                     "durationSeconds": 3, "skippedPaidGraders": False, "graders": graders,
+                     "error": cfg.get("RUN_ERROR")} for _ in range(min(runs, per_case))]
         cases.append({"name": name, "dir": os.path.join(opt("--eval-dir"), name), "runsPerCase": per_case,
                       "arms": {"with": with_arm}, "aggregates": {"score": 1 if passed else 0}})
     doc = {"schemaVersion": 1, "claudeVersion": "9.9.9", "durationSeconds": 12, "costUsd": float(cfg.get("COST", "0.42")),
@@ -405,6 +406,18 @@ def test_plugin_eval_takes_verdicts_from_each_runs_graders(suite):
     summary = {c["name"]: c for c in json.loads((suite.out / "summary.json").read_text())["cases"]}
     assert summary["trigger-en-01"]["runs"][0]["passed"] is False
     assert summary["trigger-en-01"]["runs"][0]["graders"][0]["explanation"].startswith("Skill called 0x")
+
+
+def test_plugin_eval_a_turn_limit_stop_is_not_a_failed_run(suite):
+    # A trigger case allows a few turns: the run that loads the skill and then stops at the case's own limit is graded as
+    # usual. Any other run error fails the invocation.
+    r = run(suite, RUN_ERROR="exit 1: Reached maximum number of turns (3)")
+    assert r.returncode == 0, r.stdout + r.stderr
+    end = ledger(suite)[-1]
+    assert end["status"] == "ok" and end["max_turns_stops"] == 2 and end["run_errors"] == 0
+    r = run(suite, RUN_ERROR="exit 1: API Error: 529 overloaded")
+    end = ledger(suite)[-1]
+    assert r.returncode == 1 and end["status"] == "failed" and end["run_errors"] == 2 and end["max_turns_stops"] == 0
 
 
 def test_plugin_eval_refuses_bad_arguments_before_anything_runs(suite):
