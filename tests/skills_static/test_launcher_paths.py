@@ -15,6 +15,9 @@ AGENTS = REPO / "agents"
 INSTALL_PATH = b".claude/skills/"
 DEFINITION = ("`<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when "
               "the skill loads.")
+# What follows the definition: the absolute path goes into the agent's own calls and into any command it hands the user,
+# because a relative `.claude/skills/...` path does not exist under a plugin or user install.
+WRITE_IT = "Write it as that absolute path in every call below and in every command you give the user."
 SKILL_FILES = sorted(SKILLS.glob("*/SKILL.md"))
 
 # Text that describes the project copy a generated CI job runs, not a call the agent makes: a CI runner sees only the
@@ -64,6 +67,14 @@ def test_skill_md_defines_skill_dir_once(path):
     tools = re.search(r"^## Tools\n(.*?)^## ", text, re.S | re.M)
     assert tools and DEFINITION in tools.group(1)
     assert "${" not in text
+
+
+@pytest.mark.parametrize("path", SKILL_FILES, ids=[p.parent.name for p in SKILL_FILES])
+def test_skill_md_writes_the_absolute_path_for_the_user_too(path):
+    """The definition is followed by the rule that covers the agent's calls and the commands it gives the user, once."""
+    text = path.read_text(encoding="utf-8")
+    assert text.count(DEFINITION + " " + WRITE_IT) == 1
+    assert text.count("Write it as that absolute path") == 1
 
 
 def test_there_is_a_skill_md_for_every_skill():

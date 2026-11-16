@@ -32,7 +32,7 @@ Answer "does this API do what its contract says?" with recorded evidence. List e
 
 ## Tools
 
-Every call below is written out in full and run from the project root, one call per Bash command. `<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path.
+Every call below is written out in full and run from the project root, one call per Bash command. `<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below and in every command you give the user.
 
 - Kernel: `python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing <command>`, with `init`, `config show`, `config set`, `run`, `authorize`, `finding add --json`, `state show`, `ledger verify`. Every command prints one JSON object. Read `status`, `reason` and `execution` from it.
 - Inventory: `python3 <skill-dir>/scripts/endpoint_inventory.py scan --spec <contract>` writes `.qa/work/api/inventory.json` (operations, code locations, `drift`, `unreadable`); `… endpoint_inventory.py mark --operation "<METHOD /path>" --status <verified|not_run|blocked> [--execution EXE-…] [--reason "<why>"]` sets a status; `… endpoint_inventory.py assets` copies the tool configurations into `.qa/work/api/`.

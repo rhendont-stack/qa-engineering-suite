@@ -34,7 +34,7 @@ Turn recorded test cases into automated tests that can be trusted. Each test imp
 
 ## Tools
 
-`<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below.
+`<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below and in every command you give the user.
 
 Every kernel call is written out in full, exactly like this, from the project root:
 

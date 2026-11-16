@@ -33,7 +33,7 @@ Answer "what security weaknesses does this project ship?" with recorded evidence
 
 ## Tools
 
-`<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below.
+`<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below and in every command you give the user.
 
 Every call below is written out in full and run from the project root, one call per Bash command, with no variables, loops, `cd`, pipes, redirections or heredocs. Read files with Read, Grep and Glob, never with Bash.
 

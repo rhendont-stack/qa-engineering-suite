@@ -32,7 +32,7 @@ Answer "can this schema, these migrations and this code lose, duplicate, orphan 
 
 ## Tools
 
-`<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below.
+`<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below and in every command you give the user.
 
 Every call below is written out in full and run from the project root, one call per Bash command, with no variables, loops, `cd`, pipes or heredocs.
 

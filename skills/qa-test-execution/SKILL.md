@@ -32,7 +32,7 @@ Run the project's own test suites through the `qa` kernel and report what happen
 
 ## Tools
 
-In this file `qa <command>` means `python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-test-execution <command>`, always through the interpreter and never as a bare executable. `<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path. Every command prints one JSON object on stdout and writes full logs under `.qa/evidence/`. Do not paste logs into your answer.
+In this file `qa <command>` means `python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-test-execution <command>`, always through the interpreter and never as a bare executable. `<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below and in every command you give the user. Every command prints one JSON object on stdout and writes full logs under `.qa/evidence/`. Do not paste logs into your answer.
 
 - Kernel: `qa init`, `qa config show`, `qa config set`, `qa detect tests`, `qa doctor`, `qa run`, `qa result reclassify`, `qa compare`, `qa state show`, `qa ledger verify`, `qa report check`.
 - The project's own test tools (pytest, Jest, Vitest, Gradle, Maven, go, cargo, Playwright, Cypress). Whether one is present is learned from `qa doctor` (tool versions) or from the recorded result of the run itself: a missing tool is a `blocked` execution, not a guess.
