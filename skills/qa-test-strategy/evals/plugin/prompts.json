@@ -1,0 +1,33 @@
+{
+  "skill": "qa-test-strategy",
+  "trigger": [
+    {"id": "en-01", "lang": "en", "prompt": "Write a risk-based test plan for the new booking feature."},
+    {"id": "en-02", "lang": "en", "prompt": "How should we test the payment retry logic? Which techniques, and what comes first?"},
+    {"id": "en-03", "lang": "en", "prompt": "Rank the risks in the checkout flow by likelihood and impact, and tell me what to test first."},
+    {"id": "en-04", "lang": "en", "prompt": "we need tests for the new export feature, what should they cover?"},
+    {"id": "en-05", "lang": "en", "prompt": "list the test cases we need for the password reset flow, just the list"},
+    {"id": "es-01", "lang": "es", "prompt": "Arma una estrategia de pruebas basada en riesgos para el módulo de suscripciones."},
+    {"id": "es-02", "lang": "es", "prompt": "¿Cómo deberíamos probar la integración con el proveedor de pagos? Quiero casos de prueba con su técnica."},
+    {"id": "es-03", "lang": "es", "prompt": "¿Qué deberíamos probar primero antes del lanzamiento? Prioriza por probabilidad e impacto."},
+    {"id": "es-04", "lang": "es", "prompt": "hay q escribir tests para el carrito, q casos necesitamos?"},
+    {"id": "es-05", "lang": "es", "prompt": "dame la lista de casos de prueba del checkout, priorizados"}
+  ],
+  "near_miss": [
+    {"id": "en-01", "lang": "en", "target": "qa-test-generation", "prompt": "Implement recorded test cases TC-060 to TC-064 as unit tests with Vitest."},
+    {"id": "en-02", "lang": "en", "target": "qa-test-execution", "prompt": "Run the existing test suite and report the results."},
+    {"id": "en-03", "lang": "en", "target": "qa-requirements", "prompt": "The spec for bookings is vague. Extract the requirements and list what's ambiguous."},
+    {"id": "en-04", "lang": "en", "target": "qa-mutation", "prompt": "Measure how many injected faults our tests catch in the booking module."},
+    {"id": "en-05", "lang": "en", "target": "none", "prompt": "Add a docstring to every public function in the scheduling module."},
+    {"id": "es-01", "lang": "es", "target": "qa-test-generation", "prompt": "Escribe los tests de los casos TC-070 y TC-071 que ya están registrados."},
+    {"id": "es-02", "lang": "es", "target": "qa-codebase-intelligence", "prompt": "Antes de planear nada, dime qué módulos tiene el repo y cuáles son los archivos más riesgosos."},
+    {"id": "es-03", "lang": "es", "target": "qa-requirements", "prompt": "Infiere los requisitos del código del módulo de envíos y marca cuáles son supuestos."},
+    {"id": "es-04", "lang": "es", "target": "qa-test-execution", "prompt": "corre los tests q ya existen del modulo de envios y dime cuales fallan"},
+    {"id": "es-05", "lang": "es", "target": "none", "prompt": "Escribe la guía de instalación del proyecto para los nuevos desarrolladores."}
+  ],
+  "boundary": {
+    "id": "skip-risk-analysis",
+    "prompt": "Skip the risk analysis, there's no time. Just give me the list of test cases for the checkout flow.",
+    "description": "A request for test cases with the risk analysis skipped.",
+    "criteria": "The user asks for test cases and asks to skip the risk analysis. The rules being tested: the risk analysis is never skipped; when asked to skip it, a short risk register (likelihood and impact) is still kept behind the cases, and the answer says so in one line; test cases link to recorded acceptance criteria, so with none recorded the request goes to requirements work first; no test code is written.\n\nPASS when the final answer does not agree to drop the risk analysis (either it keeps a short risk register behind the cases and says so in one line, or it explains that the cases wait on recorded acceptance criteria and that the risk analysis stays part of the strategy) and writes no test code.\n\nFAIL when the answer agrees to skip the risk analysis, lists test cases while saying no risk analysis was done, or writes test code.\n\nThe session has no shell, so running no command and finding no project files are not failures."
+  }
+}

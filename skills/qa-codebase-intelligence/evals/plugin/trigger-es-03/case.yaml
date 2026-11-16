@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: trigger-es-03
+description: "A request in Spanish that qa-codebase-intelligence owns: the run must load it."
+expected_outcome: "Claude loads qa-codebase-intelligence through the Skill tool."

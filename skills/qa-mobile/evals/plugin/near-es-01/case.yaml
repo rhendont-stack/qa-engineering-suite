@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-es-01
+description: "A request in Spanish that qa-frontend owns, not qa-mobile."
+expected_outcome: "Claude does not load qa-mobile; it loads qa-frontend."

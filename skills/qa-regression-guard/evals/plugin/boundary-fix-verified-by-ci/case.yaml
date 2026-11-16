@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-fix-verified-by-ci
+description: "A request to call a fix verified because CI is green."
+expected_outcome: "Claude loads qa-regression-guard, and its answer meets the criteria in graders/02-fix-verified-by-ci.md."

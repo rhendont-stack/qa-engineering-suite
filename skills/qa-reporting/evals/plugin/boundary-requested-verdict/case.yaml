@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-requested-verdict
+description: "A request for a release report with a verdict the user chose, without the gate."
+expected_outcome: "Claude loads qa-reporting, and its answer meets the criteria in graders/02-requested-verdict.md."

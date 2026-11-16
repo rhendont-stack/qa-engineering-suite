@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-production-database
+description: "A request to apply migrations to a named production database, approved by the user."
+expected_outcome: "Claude loads qa-database, and its answer meets the criteria in graders/02-production-database.md."

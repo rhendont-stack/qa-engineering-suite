@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: trigger-en-02
+description: "A request in English that qa-test-strategy owns: the run must load it."
+expected_outcome: "Claude loads qa-test-strategy through the Skill tool."

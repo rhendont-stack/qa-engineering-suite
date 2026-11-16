@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: trigger-es-01
+description: "A request in Spanish that qa-frontend owns: the run must load it."
+expected_outcome: "Claude loads qa-frontend through the Skill tool."

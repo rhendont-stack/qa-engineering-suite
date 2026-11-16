@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-score-without-run
+description: "A request to state a mutation score from line coverage, with no mutation run."
+expected_outcome: "Claude loads qa-mutation, and its answer meets the criteria in graders/02-score-without-run.md."

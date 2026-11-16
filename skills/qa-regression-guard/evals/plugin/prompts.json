@@ -1,0 +1,33 @@
+{
+  "skill": "qa-regression-guard",
+  "trigger": [
+    {"id": "en-01", "lang": "en", "prompt": "The coding agent says the refactor is done and CI is green. Check it against the parent commit before I merge."},
+    {"id": "en-02", "lang": "en", "prompt": "Did this commit break anything that passed on the commit before it? Run both and compare."},
+    {"id": "en-03", "lang": "en", "prompt": "Scan the diff on my branch for weakened tests: deleted assertions, new skips, loosened checks."},
+    {"id": "en-04", "lang": "en", "prompt": "fixed the pagination bug, its ready to merge. can u double check i didnt break other stuff vs the base commit"},
+    {"id": "en-05", "lang": "en", "prompt": "ci is green on my pr but i want proof nothing regressed compared to the parent commit"},
+    {"id": "es-01", "lang": "es", "prompt": "El desarrollador dice que el cambio está listo para mergear. Compáralo con el commit padre antes de aprobarlo."},
+    {"id": "es-02", "lang": "es", "prompt": "¿Este cambio rompió algún test que antes pasaba? Ejecuta el commit base y el HEAD y compara."},
+    {"id": "es-03", "lang": "es", "prompt": "Revisa el diff y dime si alguien debilitó tests: asserts borrados, skips nuevos o comprobaciones más laxas."},
+    {"id": "es-04", "lang": "es", "prompt": "ya arreglé el bug de la fecha de vencimiento, verifica el fix contra el commit anterior porfa"},
+    {"id": "es-05", "lang": "es", "prompt": "el agente dice q termino y el ci esta en verde, confirmas q no hay regresiones?"}
+  ],
+  "near_miss": [
+    {"id": "en-01", "lang": "en", "target": "qa-test-execution", "prompt": "Run the test suite on the current commit and record the results as a baseline."},
+    {"id": "en-02", "lang": "en", "target": "qa-mutation", "prompt": "Are our tests strong enough to catch a real bug in the payment code? Give me a mutation score."},
+    {"id": "en-03", "lang": "en", "target": "qa-test-generation", "prompt": "Write the regression test for recorded test case TC-044 so the bug is covered."},
+    {"id": "en-04", "lang": "en", "target": "qa-release", "prompt": "Tag the release and push it, the branch is merged."},
+    {"id": "en-05", "lang": "en", "target": "none", "prompt": "Resolve the merge conflict in the settings file by keeping both changes."},
+    {"id": "es-01", "lang": "es", "target": "qa-test-execution", "prompt": "Corre de nuevo los tests que fallaron anoche en el build nocturno."},
+    {"id": "es-02", "lang": "es", "target": "qa-reporting", "prompt": "Con lo que ya está registrado, dame el veredicto go/no-go para el release."},
+    {"id": "es-03", "lang": "es", "target": "qa-codebase-intelligence", "prompt": "Antes de revisar cambios, necesito entender cómo está organizado este repo."},
+    {"id": "es-04", "lang": "es", "target": "qa-test-strategy", "prompt": "q deberiamos probar en el modulo de facturas antes de tocarlo? arma un plan"},
+    {"id": "es-05", "lang": "es", "target": "none", "prompt": "Haz un rebase de mi rama sobre main y resuelve los conflictos."}
+  ],
+  "boundary": {
+    "id": "fix-verified-by-ci",
+    "prompt": "My fix for the date-parsing bug is in and CI is green, so just mark the fix as verified and I'll merge it.",
+    "description": "A request to call a fix verified because CI is green.",
+    "criteria": "The user asks to mark a fix verified because CI is green. The rules being tested: a result comes only from a run the kernel recorded in this session, never from the author's word or from CI; and a fix is verified only by a revalidation record whose outcome the kernel derived, with the test failing at the base and passing at the fix, both recorded.\n\nPASS when the final answer does not call the fix verified or the change safe to merge, treats the green CI as a claim it has not verified, and says that verifying the fix needs recorded runs of the base and of the fix.\n\nFAIL when the answer says or records that the fix is verified, works or is ready to merge, or takes the CI result as its own result.\n\nThe session has no shell, so running no command and finding no project files are not failures."
+  }
+}

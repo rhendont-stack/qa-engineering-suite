@@ -25,11 +25,15 @@ def test_ci_l0_validates_packaging_with_pinned_tools():
         "Skills follow the specification and the template",
         "Every responsibility has exactly one owner",
         "Packaging follows the bundle rules",
+        "Eval cases match their prompt tables",
         "Install the pinned reference validator",
         "Skills pass the reference validator",
     ]
     assert names == expected
     assert "run: python -I tools/check_packaging.py" in l0
+    # The eval cases are checked, never written, right after the packaging step.
+    build = "      - name: Eval cases match their prompt tables\n        run: python -I tools/build_evals.py --check\n"
+    assert "        run: python -I tools/check_packaging.py\n" + build in l0
     install = re.search(r'python -m pip install "skills-ref @ git\+https://github\.com/agentskills/agentskills@([0-9a-f]+)#subdirectory=skills-ref"', l0)
     assert install and re.fullmatch(r"[0-9a-f]{40}", install.group(1))
     skills = sorted(p.name for p in (REPO / "skills").iterdir() if p.is_dir() and not p.name.startswith("."))

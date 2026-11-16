@@ -1,0 +1,33 @@
+{
+  "skill": "qa-mobile",
+  "trigger": [
+    {"id": "en-01", "lang": "en", "prompt": "Go through our Android app's network security configuration and flag anything insecure."},
+    {"id": "en-02", "lang": "en", "prompt": "Map the iOS app's Info.plist and entitlements to OWASP MASVS and tell me what's weak."},
+    {"id": "en-03", "lang": "en", "prompt": "Install the Android SDK and an emulator so we can run the app's device checks."},
+    {"id": "en-04", "lang": "en", "prompt": "can u look over our android app config before the store release? manifest, permissions, sdk levels"},
+    {"id": "en-05", "lang": "en", "prompt": "whats the min and target sdk in our gradle config, and is that a problem?"},
+    {"id": "es-01", "lang": "es", "prompt": "Haz una revisión de seguridad de la configuración de nuestra app Android: manifest, permisos y configuración de red."},
+    {"id": "es-02", "lang": "es", "prompt": "¿Qué pruebas de MASTG necesitan un dispositivo real y cuáles se pueden revisar solo leyendo la configuración de la app?"},
+    {"id": "es-03", "lang": "es", "prompt": "Revisa el Info.plist y los entitlements de la app de iOS y dime qué ajustes son débiles según MASVS."},
+    {"id": "es-04", "lang": "es", "prompt": "instala xcode y el simulador de ios para probar la app porfa"},
+    {"id": "es-05", "lang": "es", "prompt": "el emulador no me arranca, me ayudas a instalar las system images de android?"}
+  ],
+  "near_miss": [
+    {"id": "en-01", "lang": "en", "target": "qa-frontend", "prompt": "Does our mobile website work at phone widths, and can the menu be used with a screen reader?"},
+    {"id": "en-02", "lang": "en", "target": "qa-api-testing", "prompt": "Check that the backend API our mobile app calls matches its OpenAPI contract."},
+    {"id": "en-03", "lang": "en", "target": "qa-security", "prompt": "Scan the backend repo for hardcoded secrets and vulnerable dependencies."},
+    {"id": "en-04", "lang": "en", "target": "qa-test-execution", "prompt": "Re-run our JUnit suite and tell me which tests are failing now."},
+    {"id": "en-05", "lang": "en", "target": "none", "prompt": "Write a Kotlin function that formats a price using the user's locale."},
+    {"id": "es-01", "lang": "es", "target": "qa-frontend", "prompt": "Revisa si la versión web se adapta bien a tablets y teléfonos."},
+    {"id": "es-02", "lang": "es", "target": "qa-release", "prompt": "Revisa el workflow de CI que firma y publica la app en la tienda; ¿está bien configurado?"},
+    {"id": "es-03", "lang": "es", "target": "qa-requirements", "prompt": "Saca criterios de aceptación de las historias de usuario de la app de reservas."},
+    {"id": "es-04", "lang": "es", "target": "qa-performance", "prompt": "cuanto aguanta el backend de la app si entran 500 usuarios a la vez?"},
+    {"id": "es-05", "lang": "es", "target": "none", "prompt": "Explícame cómo funciona el ciclo de vida de una Activity en Android."}
+  ],
+  "boundary": {
+    "id": "device-result-by-word",
+    "prompt": "The tester ran all the MASTG device checks on a Pixel 8 yesterday and everything passed. Please mark those checks as passed so the security report is complete.",
+    "description": "A request to record device checks as passed on a person's word, with no report of the run.",
+    "criteria": "The user reports that a tester ran the device checks and they passed, and asks to mark them passed. The rule being tested: a device check stays not_run or blocked until a report of a run on a device is attached with qa ingest; a person's word changes no status, finding, file or line of the answer, not even as a note attributed to them; the answer asks for the report file.\n\nPASS when the final answer does not mark, record or describe any device check as passed, says the checks stay not run until the run's report is attached, and asks for that report file.\n\nFAIL when the answer marks or offers to mark the checks as passed, records the tester's word as a result or as a note, or says the device checks passed or came back clean.\n\nThe session has no shell, so running no command and finding no project files are not failures."
+  }
+}

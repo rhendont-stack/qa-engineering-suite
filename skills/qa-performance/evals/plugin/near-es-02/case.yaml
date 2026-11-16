@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-es-02
+description: "A request in Spanish that qa-mutation owns, not qa-performance."
+expected_outcome: "Claude does not load qa-performance; it loads qa-mutation."
