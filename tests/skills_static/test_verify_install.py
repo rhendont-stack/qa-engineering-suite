@@ -40,6 +40,8 @@ elif args[:2] == ["plugin", "details"]:
     print("  Agents (%d)  %s" % (len(agents), ", ".join(agents)))
     print("  Hooks (%d)" % hooks)
     print("  MCP servers (0)\\n  LSP servers (0)")
+    if (LOG.parent / "details-fails").exists():
+        sys.exit(1)
 else:
     sys.exit(9)
 '''
@@ -154,3 +156,53 @@ def test_verify_install_refuses_a_missing_claude_and_bad_usage(repo, tmp_path):
     r, _ = run(repo, tmp_path, tmp_path / "no-such-claude")
     assert r.returncode == 3
     assert subprocess.run([sys.executable, "-I", str(TOOLS / "verify_install.py")], capture_output=True).returncode == 2
+
+
+def test_a_failing_details_call_is_not_ok_even_if_it_printed_the_inventory(repo, tmp_path):
+    claude, _ = fake_claude(tmp_path, GOOD)
+    (tmp_path / "details-fails").write_text("")
+    r, out = run(repo, tmp_path, claude)
+    doc = json.loads((out / "install.json").read_text())
+    assert r.returncode == 1 and doc["ok"] is False
+    assert all(e["installed"] and not e["matches_expected"] and e["skills"] is None for e in doc["entries"].values())
+
+
+@pytest.mark.parametrize("damage", ["no-source", "no-plugins-key", "plugin-not-an-object", "catalog-without-skills"])
+def test_a_malformed_marketplace_is_refused_without_a_traceback(repo, tmp_path, damage):
+    market = repo / ".claude-plugin" / "marketplace.json"
+    doc = json.loads(market.read_text())
+    if damage == "no-source":
+        del doc["plugins"][0]["source"]
+    elif damage == "no-plugins-key":
+        del doc["plugins"]
+    elif damage == "plugin-not-an-object":
+        doc["plugins"][0] = "qa-one"
+    else:
+        (repo / "catalog.json").write_text("{}")
+    market.write_text(json.dumps(doc))
+    git(repo, "commit", "-qam", "damage")
+    claude, _ = fake_claude(tmp_path, GOOD)
+    r, _ = run(repo, tmp_path, claude)
+    assert r.returncode == 3 and "refused" in r.stdout and "malformed" in r.stdout and "Traceback" not in r.stdout + r.stderr
+
+
+def test_saved_output_hides_both_forms_of_the_temporary_directory(tmp_path):
+    real = tmp_path / "real"
+    (real / "home").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    script = tmp_path / "say-paths"
+    script.write_text("#!%s\nimport os\nhome = os.environ['HOME']\nprint(home, os.path.realpath(home), sep='\\n')\n" % sys.executable)
+    script.chmod(0o755)
+    code, text = verify_install.run_claude(str(script), [], link)
+    assert code == 0 and text == "<TMP>/home\n<TMP>/home\n", text
+
+
+@pytest.mark.skipif(not hasattr(__import__("tarfile"), "data_filter"), reason="extraction filters need Python 3.12+ or a security release")
+def test_the_export_refuses_a_link_that_points_outside(repo, tmp_path):
+    (repo / "outside-link").symlink_to("/etc")
+    git(repo, "add", "outside-link")
+    git(repo, "commit", "-qm", "link")
+    claude, _ = fake_claude(tmp_path, GOOD)
+    r, out = run(repo, tmp_path, claude)
+    assert r.returncode == 3 and "refused" in r.stdout and "Traceback" not in r.stdout + r.stderr

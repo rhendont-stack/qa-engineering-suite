@@ -11,7 +11,8 @@ Every CLI call gets an environment built from scratch: PATH, a temporary HOME an
 turn telemetry and non-essential traffic off. Nothing is copied from the caller's environment, so the caller's Claude Code
 configuration and any credential variable are never read or reachable. The temporary directory is removed afterwards.
 
-Exit 0 when ``ok``, 1 when not, 2 for bad usage, 3 when the CLI or the revision cannot be used.
+Exit 0 when ``ok``, 1 when not, 2 for bad usage, 3 when the CLI or the revision cannot be used (including a marketplace
+or catalog that is not the expected shape). A ``details`` call that exits non-zero counts as not matching.
 """
 from __future__ import annotations
 
@@ -88,7 +89,10 @@ def run_claude(claude: str, args: List[str], tmp: Path) -> Tuple[int, str]:
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return 124, "timed out after %d seconds\n" % TIMEOUT
-    return done.returncode, done.stdout.decode("utf-8", "replace").replace(str(tmp), "<TMP>")
+    text = done.stdout.decode("utf-8", "replace")
+    for form in (str(tmp.resolve()), str(tmp)):  # the resolved form first: on macOS it holds the plain one (/private/var/...)
+        text = text.replace(form, "<TMP>")
+    return done.returncode, text
 
 
 def export(root: Path, rev: str, target: Path, tmp: Path) -> str:
@@ -101,7 +105,10 @@ def export(root: Path, rev: str, target: Path, tmp: Path) -> str:
                              capture_output=True, timeout=120, check=True)
     target.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as tar:
-        tar.extractall(str(target))
+        if hasattr(tarfile, "data_filter"):  # 3.12+, and the security releases of earlier versions
+            tar.extractall(str(target), filter="data")
+        else:
+            tar.extractall(str(target))
     return commit.stdout.strip()
 
 
@@ -117,8 +124,11 @@ def verify(root: Path, rev: str, claude: str, out: Path) -> dict:
         (tmp / "cfg").mkdir()
         source = tmp / "src" / "qa-engineering-suite"
         commit = export(root, rev, source, tmp)
-        market = json.loads((source / MARKETPLACE).read_text(encoding="utf-8"))["name"]
-        expected = expected_inventory(source)
+        try:
+            market = json.loads((source / MARKETPLACE).read_text(encoding="utf-8"))["name"]
+            expected = expected_inventory(source)
+        except (KeyError, TypeError, AttributeError, ValueError, IndexError) as err:
+            raise ValueError("the marketplace or the catalog is malformed: %s: %s" % (type(err).__name__, err))
 
         def call(label: str, args: List[str]) -> Tuple[int, str]:
             code, text = run_claude(claude, args, tmp)
@@ -134,10 +144,10 @@ def verify(root: Path, rev: str, claude: str, out: Path) -> dict:
         for name, want in expected.items():
             full = "%s@%s" % (name, market)
             installed, _ = call("install-" + name, ["plugin", "install", full])
-            _, details_path = call("details-" + name, ["plugin", "details", full])
-            found = parse_details((out / details_path).read_text(encoding="utf-8")) if installed == 0 else None
+            shown, details_path = call("details-" + name, ["plugin", "details", full])
+            found = parse_details((out / details_path).read_text(encoding="utf-8")) if installed == 0 and shown == 0 else None
             matches = found is not None and found == want
-            ok = ok and installed == 0 and matches
+            ok = ok and installed == 0 and shown == 0 and matches
             doc["entries"][name] = {
                 "installed": installed == 0,
                 "skills": len(found["skills"]) if found else None,  # type: ignore[arg-type]
@@ -165,7 +175,7 @@ def main(argv: List[str]) -> int:
         return 3
     try:
         doc = verify(Path(args.root), args.commit, claude, Path(args.out))
-    except (ValueError, subprocess.CalledProcessError, OSError) as err:
+    except (ValueError, subprocess.CalledProcessError, OSError, tarfile.TarError) as err:
         print("verify_install.py: refused: %s" % err)
         return 3
     print(json.dumps({"ok": doc["ok"], "commit": doc["commit"], "out": str(Path(args.out) / "install.json")}))
