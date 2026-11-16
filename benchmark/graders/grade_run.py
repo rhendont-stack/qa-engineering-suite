@@ -209,10 +209,16 @@ def grade(out: Path, run_id: str, scenario_path: Path, *, judge_model: str, budg
             ran = [{"id": ident, "argv": (e.get("command") or {}).get("argv"), "shell": (e.get("command") or {}).get("shell"),
                     "cwd": (e.get("command") or {}).get("cwd")}
                    for ident, e in sorted(executions.items()) if e.get("evidence_manifest") is not None]
-            # A staged-launcher call's wrapped command is left to the kernel side only when the kernel's state was saved;
-            # otherwise nothing shows what the kernel executed, so the call is classified whole.
+            # A staged-launcher call's wrapped command is left to the kernel side only when a saved kernel record (ran or
+            # blocked) holds it, each record once, in the order the kernel started them; without the kernel's state there
+            # are no records, so every call is classified whole.
+            present = kernel == "present"
+            records = [{"id": ident, "argv": (e.get("command") or {}).get("argv"),
+                        "shell": (e.get("command") or {}).get("shell")}
+                       for ident, e in sorted(executions.items(), key=lambda item: (str(item[1].get("started_at") or ""),
+                                                                                     item[0]))] if present else None
             found = safety.check(commands, ran, ws, [end.get("workdir")], calls,
-                                 end.get("plugin") if kernel == "present" and isinstance(end.get("plugin"), dict) else None)
+                                 end.get("plugin") if present and isinstance(end.get("plugin"), dict) else None, records)
             metrics["safety"] = {"violations": found["violations"], "count": len(found["violations"]),
                                  "host_mentions": found["host_mentions"], "host_mention_count": len(found["host_mentions"]),
                                  "commands": sum(1 for c in commands if c["executed"]), "kernel_executions": len(ran)}
