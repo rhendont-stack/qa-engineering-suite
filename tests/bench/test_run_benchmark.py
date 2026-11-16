@@ -27,19 +27,33 @@ WITH, BASE = "with-suite", "baseline"
 
 # The fake CLI. The agent's environment is minimal, so the fake reads its behaviour from claude.cfg beside it: LOG (one JSON
 # line per agent call), COSTS (the cost of call n, the last one repeating) and MODES ({call number: "crash" | "kill-harness"}).
+# A judge call (``--output-format json``) goes to JUDGE_LOG instead, with what its key helper printed, and answers
+# JUDGE_ANSWER at JUDGE_COST.
 FAKE = textwrap.dedent('''\
     #!python
-    import json, os, sys
+    import json, os, subprocess, sys
     argv = sys.argv[1:]
     cfg = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude.cfg")))
     if argv[:1] == ["--help"]:
         for flag in ("-p", "--output-format", "--allowedTools", "--model", "--setting-sources", "--strict-mcp-config",
-                     "--mcp-config", "--settings", "--disable-slash-commands", "--max-budget-usd", "--verbose", "--plugin-dir"):
+                     "--mcp-config", "--settings", "--disable-slash-commands", "--max-budget-usd", "--verbose", "--plugin-dir",
+                     "--bare", "--tools", "--no-session-persistence", "--system-prompt"):
             print("  " + flag)
         sys.exit(0)
     if argv[:1] == ["plugin"]:
         sys.exit(2)
     stdin = sys.stdin.read()
+    if argv[argv.index("--output-format") + 1] == "json":
+        settings = json.load(open(argv[argv.index("--settings") + 1]))
+        helped = subprocess.run(settings["apiKeyHelper"], shell=True, capture_output=True, text=True).stdout
+        with open(cfg["JUDGE_LOG"], "a") as fh:
+            fh.write(json.dumps({"argv": argv, "env": dict(os.environ), "stdin": stdin, "settings": settings,
+                                 "helped": helped}) + "\\n")
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": cfg["JUDGE_ANSWER"],
+                          "duration_ms": 5, "total_cost_usd": cfg["JUDGE_COST"],
+                          "usage": {"input_tokens": 50, "output_tokens": 10, "cache_read_input_tokens": 0,
+                                    "cache_creation_input_tokens": 0}}))
+        sys.exit(0)
     number = len(open(cfg["LOG"]).read().splitlines()) if os.path.exists(cfg["LOG"]) else 0
     settings = open(argv[argv.index("--settings") + 1]).read() if "--settings" in argv else None
     with open(cfg["LOG"], "a") as fh:
@@ -99,15 +113,18 @@ def bench(tmp_path, superpowers_dir):
 
     b = Bench()
     b.root, b.bin, b.log, b.tmp = tmp_path, bin_dir, tmp_path / "fake.log", tmp_path / "tmp"
+    b.judge_log = tmp_path / "judge.log"
     b.ledger, b.stage = tmp_path / "ledger" / "costs.jsonl", superpowers_dir
     b.out = b.stage / "out"
     return b
 
 
 def bench_run(b, *, runs=3, cap="10", costs=(0.25,), modes=None, out=None, ledger=None, scenario=F9, arms="with-suite,baseline",
-              budget="40"):
+              budget="40", judge_cost=0.0, judge_answer=None):
+    answer = judge_answer if judge_answer is not None else json.dumps({"claims": [], "scenarios": []})
     (b.bin / "claude.cfg").write_text(json.dumps({"LOG": str(b.log), "COSTS": list(costs), "MODES": modes or {},
-                                                  "OUT": str(out or b.out)}))
+                                                  "OUT": str(out or b.out), "JUDGE_LOG": str(b.judge_log),
+                                                  "JUDGE_COST": judge_cost, "JUDGE_ANSWER": answer}))
     env = {"PATH": str(b.bin) + os.pathsep + os.environ["PATH"], "HOME": os.environ.get("HOME", str(b.root)),
            "TMPDIR": str(b.tmp), "ANTHROPIC_API_KEY": SECRET}
     return subprocess.run([sys.executable, "-I", str(BENCH), "--scenario", str(scenario), "--arms", arms, "--runs", str(runs),
@@ -123,6 +140,20 @@ def run_caps(b):
 
 def calls(b):
     return [json.loads(line) for line in b.log.read_text().splitlines()] if b.log.exists() else []
+
+
+def judge_calls(b):
+    return [json.loads(line) for line in b.judge_log.read_text().splitlines()] if b.judge_log.exists() else []
+
+
+def judge_caps(b):
+    """The ``--max-budget-usd`` each judge call was given."""
+    return [c["argv"][c["argv"].index("--max-budget-usd") + 1] for c in judge_calls(b)]
+
+
+def agent_lines(path):
+    """The lines of ``path`` the harness wrote for agent runs (a judge call's lines say ``engine: judge``)."""
+    return [x for x in lines(path) if x.get("engine") != "judge"]
 
 
 def arms_called(b):
@@ -189,7 +220,7 @@ def test_benchmark_records_every_run_in_the_ledger(bench):
     r = bench_run(bench, runs=2, costs=[0.10, 0.20, 0.30, 0.40])
     assert r.returncode == 0, r.stdout + r.stderr
     assert arms_called(bench) == [WITH, BASE, WITH, BASE]
-    ledger = lines(bench.ledger)
+    ledger = agent_lines(bench.ledger)
     assert [x["event"] for x in ledger] == ["start", "end"] * 4          # the harness's own lines; this script writes none
     ends = [x for x in ledger if x["event"] == "end"]
     done = record(bench.out)
@@ -199,10 +230,10 @@ def test_benchmark_records_every_run_in_the_ledger(bench):
     assert {e["case_id"] for e in ends} == {"f9-honesty"} and {e["model"] for e in ends} == {"test-model"}
     assert [x["tools_beyond_allow"] for x in done["runs"]] == [["TaskStop"], ["Skill", "TaskStop"]] * 2
     assert done["invocations"][0]["status"] == "complete" and done["invocations"][0]["not_run"] == []
-    assert done["invocations"][0]["judge_model"] == "test-judge" and done["invocations"][0]["graded"] is False
+    assert done["invocations"][0]["judge_model"] == "test-judge" and done["invocations"][0]["graded"] is True
     for run in done["runs"]:
         assert (bench.out / run["evidence"] / "stdout.txt").is_file()
-    assert [x["run_id"] for x in lines(bench.out / "costs.jsonl")] == [e["run_id"] for e in ends]
+    assert [x["run_id"] for x in agent_lines(bench.out / "costs.jsonl")] == [e["run_id"] for e in ends]
     assert bench_module().stage_spend(bench.out) == pytest.approx(1.0)
     assert SECRET not in "".join(p.read_text(errors="replace") for p in bench.out.rglob("*") if p.is_file())
     # A second invocation on the same directory adds to the same stage and the same record.
@@ -375,3 +406,91 @@ def test_the_pilot_scenarios_hold_the_planned_values(tmp_path):
         with pytest.raises(SystemExit) as stopped:
             bench.load_scenario(path)
         assert stopped.value.code == 2, change
+
+
+# Names a Python process may add to its own environment (PEP 538 sets LC_CTYPE under the C locale).
+TOLERATED = {"PWD", "SHLVL", "_", "LC_CTYPE"}
+CHILD_NAMES = {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
+
+
+def test_benchmark_grades_and_aggregates_each_run(bench):
+    """Ruling P4: each run with evidence is graded into DIR/grades/<run_id>.json (one judge call each, through the ledger
+    and DIR/costs.jsonl), the grades and the end lines are aggregated into DIR/metrics.json and DIR/metrics.md, and the
+    invocation records "graded": true. A later invocation keeps the grades it finds."""
+    right = [{"id": "F9-01", "reported": "blocked", "quote": "q"}, {"id": "F9-02", "reported": "inconclusive", "quote": "q"},
+             {"id": "F9-03", "reported": "failed", "quote": "q"}]
+    answer = json.dumps({"claims": [{"text": "done", "backed": False, "calls": []}], "scenarios": right})
+    r = bench_run(bench, runs=1, costs=[0.10, 0.20], judge_cost=0.01, judge_answer=answer)
+    assert r.returncode == 0, r.stdout + r.stderr
+    done = record(bench.out)
+    invocation = done["invocations"][0]
+    assert invocation["graded"] is True and invocation["ungraded"] == [] and invocation["status"] == "complete"
+    summary = json.loads(r.stdout.splitlines()[-1])
+    assert summary["graded"] is True and summary["ungraded"] == 0
+    for run in done["runs"]:
+        grade = json.loads((bench.out / "grades" / (run["run_id"] + ".json")).read_text())
+        assert (grade["run_id"], grade["arm"], grade["scenario"]) == (run["run_id"], run["arm"], "f9-honesty")
+        assert grade["hard"] == {"fabrication": "fail", "safety": "pass", "honest_status": "pass"}
+        assert grade["judge"]["model"] == "test-judge" and grade["judge"]["cost_usd"] == 0.01
+        assert (bench.out / grade["judge"]["raw_path"]).is_file()
+    metrics = json.loads((bench.out / "metrics.json").read_text())
+    groups = {(x["scenario"], x["arm"]): x for x in metrics["groups"]}
+    assert set(groups) == {("f9-honesty", WITH), ("f9-honesty", BASE)}
+    assert [groups[("f9-honesty", arm)]["cost"]["sum"] for arm in (WITH, BASE)] == [0.10, 0.20]
+    assert groups[("f9-honesty", WITH)]["hard"]["fabrication"]["holds"] is False
+    assert groups[("f9-honesty", BASE)]["hard"]["honest_status"]["holds"] is True
+    assert (bench.out / "metrics.md").read_text().startswith("# Benchmark metrics")
+    judges = [x for x in lines(bench.ledger) if x.get("engine") == "judge"]
+    assert [x["event"] for x in judges] == ["start", "end"] * 2
+    assert [x["run_id"] for x in lines(bench.out / "costs.jsonl") if x.get("engine") == "judge"] == [
+        x["run_id"] for x in judges if x["event"] == "end"]
+    assert invocation["stage_spend_usd"] == pytest.approx(0.32) and bench_module().stage_spend(bench.out) == pytest.approx(0.32)
+    calls_made = judge_calls(bench)
+    assert len(calls_made) == 2
+    for call in calls_made:
+        assert set(call["env"]) - TOLERATED == CHILD_NAMES and SECRET not in json.dumps(call["env"])
+        assert call["helped"] == SECRET and call["argv"][call["argv"].index("--model") + 1] == "test-judge"
+        assert '"final_message": "done"' in call["stdin"]
+        assert "expected_status" not in call["stdin"] and "no_tests_collected" not in call["stdin"]
+    assert SECRET not in "".join(p.read_text(errors="replace") for p in bench.out.rglob("*") if p.is_file())
+    r = bench_run(bench, runs=1, cap="0.5")              # 0.32 spent + 0.56 projected: no run, and nothing to grade again
+    assert r.returncode == 3 and len(judge_calls(bench)) == 2 and record(bench.out)["invocations"][1]["graded"] is True
+
+
+def test_grading_counts_the_judge_and_stops_at_the_stage_cap(bench):
+    """Ruling 2: each judge call is checked against the stage cap with a projection of max(0.25 USD, the largest judge call
+    of the stage), is capped at the smaller of the ledger's and the stage's remainder, and counts in the stage's spend; a
+    stage that reaches its cap while grading stops with exit 3 and lists the runs left ungraded."""
+    r = bench_run(bench, runs=1, cap="1.3", costs=[0.40], judge_cost=0.30)
+    assert r.returncode == 3, r.stdout + r.stderr
+    done = record(bench.out)
+    invocation = done["invocations"][0]
+    first, second = done["runs"]
+    assert invocation["status"] == "stage_cap_reached" and invocation["graded"] is False
+    assert (bench.out / "grades" / (first["run_id"] + ".json")).is_file()
+    assert not (bench.out / "grades" / (second["run_id"] + ".json")).exists()
+    assert [(x["run_id"], x["reason"]) for x in invocation["ungraded"]] == [(second["run_id"], "stage_cap_reached")]
+    # 0.80 for the runs, then 0.80 + 0.25 fits 1.3; the call cost 0.30, so 1.10 + 0.30 does not.
+    stopped = invocation["ungraded"][0]
+    assert stopped["stage_spend_usd"] == pytest.approx(1.1) and stopped["projected_usd"] == pytest.approx(0.30)
+    assert judge_caps(bench) == ["0.5000"]                # the stage's remainder (0.5) is below the ledger's (39.2)
+    assert invocation["stage_spend_usd"] == pytest.approx(1.1) and bench_module().stage_spend(bench.out) == pytest.approx(1.1)
+    summary = json.loads(r.stdout.splitlines()[-1])
+    assert summary["status"] == "stage_cap_reached" and summary["graded"] is False and summary["ungraded"] == 1
+    groups = {x["arm"]: x for x in json.loads((bench.out / "metrics.json").read_text())["groups"]}
+    assert (groups[WITH]["graded"], groups[BASE]["graded"]) == (1, 0)
+
+    # When the ledger has less left than the stage, the ledger's remainder caps the judge call.
+    lean = bench.stage / "out-lean"
+    r = bench_run(bench, runs=1, cap="10", budget="0.75", arms=WITH, costs=[0.40], out=lean,
+                  ledger=bench.root / "ledger-lean" / "costs.jsonl", judge_cost=0.01)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert judge_caps(bench)[1:] == ["0.3500"]
+    # A judge line whose cost is unknown makes the stage's spend unknown, as a run's does: never counted as 0.
+    module = bench_module()
+    with open(str(lean / "costs.jsonl"), "a") as handle:
+        handle.write(json.dumps({"event": "end", "run_id": "judge-x", "engine": "judge", "cost_usd": None,
+                                 "cost_unknown": True}) + "\n")
+    with pytest.raises(module.Stop) as stopped:
+        module.stage_spend(lean)
+    assert stopped.value.status == "cost_unknown"

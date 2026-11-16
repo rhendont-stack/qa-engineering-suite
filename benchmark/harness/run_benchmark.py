@@ -21,12 +21,12 @@ each are done. Each is a ``run_skill_eval.py`` subprocess with ``--config <arm>`
 ``--model``, ``--budget-usd``, ``--ledger`` and ``--out``, and ``--stage-remaining-usd`` (the stage cap less the stage's spend),
 so the run's own ``--max-budget-usd`` is the smaller of the stage's and the ledger's remainder; its environment holds ``PATH``,
 ``HOME``, ``TMPDIR`` and the key, each when set, and nothing else. The harness writes each run's ``start`` and ``end`` lines in the ledger, under its lock, and the
-``end`` line again in ``DIR/costs.jsonl``; this command writes no ledger line of its own.
+``end`` line again in ``DIR/costs.jsonl``; this command writes no ledger line of its own (the judge writes its own, below).
 
-Before each run the stage cap is checked: ``stage_spend`` (every run of the stage, earlier invocations on the same ``DIR``
-included: each run in ``DIR/costs.jsonl``, and each run ``DIR/runs.json`` records that is not there, counted from its ledger
-``end`` line, so a run whose end line never reached ``DIR/costs.jsonl`` still counts) plus the arm's ``worst_run_usd``, or
-the largest run of the stage when that is larger, must not pass ``--stage-cap-usd``. Otherwise the stage stops with status ``stage_cap_reached`` and exit 3, and each run not made is
+Before each run the stage cap is checked: ``stage_spend`` (every run and judge call of the stage, earlier invocations on the
+same ``DIR`` included: each line of ``DIR/costs.jsonl``, and each run or judge call ``DIR/runs.json`` records that is not
+there, counted from its ledger ``end`` line, so one whose end line never reached ``DIR/costs.jsonl`` still counts) plus the
+arm's ``worst_run_usd``, or the largest run (not judge call) of the stage when that is larger, must not pass ``--stage-cap-usd``. Otherwise the stage stops with status ``stage_cap_reached`` and exit 3, and each run not made is
 recorded with the reason. A recorded cost that is unknown stops it the same way (``cost_unknown``). After each run, every
 ``start`` line it added to the ledger must have its ``end`` line there and in ``DIR/costs.jsonl``; otherwise the stage stops
 (``open_run``, ``evidence_incomplete``; exit 1). A run the harness refuses (exit 3) or rejects as malformed (exit 2) stops the
@@ -36,11 +36,25 @@ stage with that code; a run that fails or times out is recorded, and the next on
 beyond the allow list, the staged plugin, the stage remainder it was given, the evidence directory, the harness's exit code and
 a tail of its stderr, redacted before it is cut) and
 one entry per invocation (its arguments, status, stage spend, and the runs not made and why); it is rewritten after every run.
-``DIR/cases/`` holds each arm's harness case. Grading is not part of this command yet, so each invocation records
-``"graded": false``.
+``DIR/cases/`` holds each arm's harness case.
 
-Exit codes: 0 every run finished ok; 1 a run failed or timed out, or a run has no end line or incomplete evidence; 2 bad
-arguments; 3 refused (the stage cap, an unknown recorded cost, the ledger, or the harness refused a run); 130 interrupted.
+Then the stage is graded, unless it stopped for a reason other than its cap: each run ``DIR/runs.json`` records whose
+evidence (``runs/<run_id>/stdout.txt``) exists and that has no ``DIR/grades/<run_id>.json`` yet is graded by
+``benchmark/graders/grade_run.py`` with ``--judge-model`` (one judge call per run that has a final message, through the
+ledger under its lock, its ``end`` line also in ``DIR/costs.jsonl``, so ``stage_spend`` counts it). Before each judge call
+the stage cap is checked as before a run, with a projection of ``max(JUDGE_PROJECTION_USD, the largest judge call of the
+stage)``; the call's ``--max-budget-usd`` is the smaller of the ledger's and the stage's remainder (and ``--budget-usd``). A
+stage that reaches its cap while grading stops with ``stage_cap_reached`` and exit 3; the judge refusing stops it with
+``refused`` and exit 3; a judge line missing from ``DIR/costs.jsonl`` stops it with ``evidence_incomplete`` and exit 1;
+a grader that fails on one run records ``grader_error`` for it and exits 1. Each judge call's id is kept in
+``DIR/runs.json`` (``judge_calls``), so a later invocation counts it from the ledger even if ``DIR/costs.jsonl`` lost it.
+The grades and the runs' end lines are then aggregated (``metrics.aggregate``) into ``DIR/metrics.json`` and
+``DIR/metrics.md`` (``metrics.render_md``). The invocation records ``"graded"`` (true when every run of the stage has a
+grade) and ``"ungraded"`` (each run left without one, and why).
+
+Exit codes: 0 every run finished ok; 1 a run failed or timed out, a run has no end line or incomplete evidence, or a grader
+failed; 2 bad arguments; 3 refused (the stage cap, an unknown recorded cost, the ledger, the harness refused a run, or the
+judge refused); 130 interrupted.
 """
 from __future__ import annotations
 
@@ -68,13 +82,20 @@ NAME = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 SEED_ID = re.compile(r"(?<![A-Za-z0-9])F\d{1,2}-\d{2}(?![0-9])")
 STDERR_TAIL = 4000
 CHILD_WAIT = 300       # seconds an interrupted harness gets to record its run before it is killed
+GRADE_RUN = REPO / "benchmark" / "graders" / "grade_run.py"
+METRICS = REPO / "benchmark" / "harness" / "metrics.py"
+JUDGE_PROJECTION_USD = 0.25    # a judge call is projected at this, or at the largest judge call of the stage when larger
 
 
-def _load_harness() -> Any:
-    spec = importlib.util.spec_from_file_location("qa_run_skill_eval", str(HARNESS))
+def _load(name: str, path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(name, str(path))
     module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
+
+
+def _load_harness() -> Any:
+    return _load("qa_run_skill_eval", HARNESS)
 
 
 _harness = _load_harness()
@@ -195,24 +216,30 @@ def _known_cost(record: Any) -> Optional[float]:
 
 
 def _stage_run_ids(out: Path) -> List[str]:
-    """The run id of every run ``DIR/runs.json`` records for the stage; ``Stop`` when the record cannot be read."""
+    """The id of every run and every judge call ``DIR/runs.json`` records for the stage; ``Stop`` when the record cannot be
+    read."""
     path = out / "runs.json"
     if not path.exists():
         return []
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
-        return [run["run_id"] for run in doc["runs"] if isinstance(run.get("run_id"), str)]
+        return [entry["run_id"] for entry in doc["runs"] + doc.get("judge_calls", []) if isinstance(entry.get("run_id"), str)]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise Stop("cost_unknown", "%s cannot be read (%s), so the stage's runs are unknown" % (path, type(exc).__name__), 3)
 
 
 def _recorded_costs(out: Path, ledger: Any = None) -> List[float]:
-    """The cost of every run of the stage: each line of ``out/costs.jsonl``, and each run ``out/runs.json`` records that is
-    not there (its end line reached the ledger but not ``costs.jsonl``), read from the ledger's end line by its run id. ``Stop``
-    (``cost_unknown``) when a cost is unknown, a line cannot be read, or such a run's cost is not in ``ledger`` (or no ledger
-    is given): a run of the stage is never left out of its spend."""
+    """The cost of every run and judge call of the stage (``_recorded``)."""
+    return [cost for cost, _engine in _recorded(out, ledger)]
+
+
+def _recorded(out: Path, ledger: Any = None) -> List[Tuple[float, Optional[str]]]:
+    """``(cost, engine)`` of every run and judge call of the stage: each line of ``out/costs.jsonl``, and each run or judge
+    call ``out/runs.json`` records that is not there (its end line reached the ledger but not ``costs.jsonl``), read from the
+    ledger's end line by its id. ``Stop`` (``cost_unknown``) when a cost is unknown, a line cannot be read, or such a cost is
+    not in ``ledger`` (or no ledger is given): nothing of the stage is ever left out of its spend."""
     path = out / "costs.jsonl"
-    costs: List[float] = []
+    costs: List[Tuple[float, Optional[str]]] = []
     seen = set()
     if path.exists():
         try:
@@ -230,7 +257,7 @@ def _recorded_costs(out: Path, ledger: Any = None) -> List[float]:
             if cost is None:
                 raise Stop("cost_unknown", "%s line %d holds no known cost, so the stage's spend cannot be shown under its cap"
                            % (path, number), 3)
-            costs.append(cost)
+            costs.append((cost, record.get("engine")))
             seen.add(record.get("run_id"))
     missing = [run_id for run_id in _stage_run_ids(out) if run_id not in seen]
     if missing:
@@ -240,30 +267,44 @@ def _recorded_costs(out: Path, ledger: Any = None) -> List[float]:
             if cost is None:
                 raise Stop("cost_unknown", "run %s of the stage is not in %s and the ledger holds no known cost for it, so the "
                            "stage's spend cannot be shown under its cap" % (run_id, path), 3)
-            costs.append(cost)
+            costs.append((cost, ends[run_id].get("engine")))
     return costs
 
 
 def stage_spend(out: Path, ledger: Any = None) -> float:
-    """What the runs of the stage under ``out`` cost: every run in ``out/costs.jsonl`` (where the harness repeats each run's
-    ``end`` line) and every other run ``out/runs.json`` records, counted from ``ledger``. Raises ``Stop`` (``cost_unknown``)
-    when a cost is unknown or cannot be found."""
+    """What the runs and judge calls of the stage under ``out`` cost: every line of ``out/costs.jsonl`` (where the harness
+    repeats each run's ``end`` line and the judge each call's) and every other run or judge call ``out/runs.json`` records,
+    counted from ``ledger``. Raises ``Stop`` (``cost_unknown``) when a cost is unknown or cannot be found."""
     return sum(_recorded_costs(out, ledger))
+
+
+def _remaining(costs: Sequence[float], projected: float, cap: float, what: str) -> float:
+    """What is left of ``cap`` after ``costs``, computed in decimal so it is exactly the cap less the recorded costs;
+    ``Stop`` (``stage_cap_reached``) when the spend plus ``projected`` passes ``cap`` or nothing is left."""
+    spend = sum(costs)
+    remaining = float(Decimal(repr(cap)) - sum((Decimal(repr(cost)) for cost in costs), Decimal(0)))
+    if round(spend + projected, 6) > cap or remaining <= 0:
+        raise Stop("stage_cap_reached", "%.4f USD spent in the stage and %.4f USD projected for the next %s pass the stage "
+                   "cap of %.4f USD" % (spend, projected, what, cap), 3, stage_spend_usd=round(spend, 6),
+                   projected_usd=projected, stage_cap_usd=cap)
+    return remaining
 
 
 def check_stage(out: Path, worst: float, cap: float, ledger: Any = None) -> float:
     """What is left of ``cap`` for the next run, which the harness takes as that run's ``--stage-remaining-usd``; ``Stop``
     (``stage_cap_reached``) when the stage's spend plus the next run's projection passes ``cap``: the projection is the arm's
-    ``worst`` or the largest run recorded in the stage, whichever is larger. The remainder is computed in decimal, so it is
-    exactly the cap less the recorded costs."""
-    costs = _recorded_costs(out, ledger)
-    spend, projected = sum(costs), max([worst] + costs)
-    remaining = float(Decimal(repr(cap)) - sum((Decimal(repr(cost)) for cost in costs), Decimal(0)))
-    if round(spend + projected, 6) > cap or remaining <= 0:
-        raise Stop("stage_cap_reached", "%.4f USD spent in the stage and %.4f USD projected for the next run pass the stage "
-                   "cap of %.4f USD" % (spend, projected, cap), 3, stage_spend_usd=round(spend, 6), projected_usd=projected,
-                   stage_cap_usd=cap)
-    return remaining
+    ``worst`` or the largest run recorded in the stage, whichever is larger (a judge call is not a run and never sets it)."""
+    recorded = _recorded(out, ledger)
+    runs = [cost for cost, engine in recorded if engine != "judge"]
+    return _remaining([cost for cost, _ in recorded], max([worst] + runs), cap, "run")
+
+
+def check_judge(out: Path, cap: float, ledger: Any = None) -> float:
+    """What is left of ``cap`` for the next judge call; ``Stop`` (``stage_cap_reached``) when the stage's spend plus the
+    call's projection, ``max(JUDGE_PROJECTION_USD, the largest judge call of the stage)``, passes ``cap``."""
+    recorded = _recorded(out, ledger)
+    judges = [cost for cost, engine in recorded if engine == "judge"]
+    return _remaining([cost for cost, _ in recorded], max([JUDGE_PROJECTION_USD] + judges), cap, "judge call")
 
 
 def ledger_records(ledger: Any) -> List[Dict[str, Any]]:
@@ -446,7 +487,7 @@ def main(argv: Sequence[str]) -> int:
         "number": len(doc["invocations"]) + 1, "started": now_utc(), "ended": None, "arms": args.arms,
         "runs_per_arm": args.runs, "model": args.model, "judge_model": args.judge_model, "budget_usd": args.budget_usd,
         "stage_cap_usd": args.stage_cap_usd, "ledger": str(ledger.path), "status": "running", "stage_spend_usd": None,
-        "not_run": [], "graded": False}
+        "not_run": [], "graded": False, "ungraded": []}
     doc["invocations"].append(invocation)
     order = [(arm, index) for index in range(1, args.runs + 1) for arm in args.arms]
     made: List[Dict[str, Any]] = []
@@ -469,20 +510,109 @@ def main(argv: Sequence[str]) -> int:
                 invocation["not_run"][0].update(stop.detail)
             print("%s: %s: %s" % ("refused" if stop.code == 3 else "stopped", stop.status, stop), file=sys.stderr)
             break
-    # The graders and the aggregation are wired in here once they are frozen: benchmark/graders/grade_run.py for each run
-    # in doc["runs"] that has evidence, then metrics.aggregate over the grades and doc["runs"]. Until then "graded" stays false.
+    grading_stop, grader_failed = None, False
+    if stop is None or stop.status == "stage_cap_reached":
+        grading_stop, grader_failed = grade_stage(args, doc, invocation, out, ledger)
+    else:
+        invocation["ungraded"] = [{"run_id": run["run_id"], "reason": "stage_stopped:%s" % stop.status}
+                                  for run in doc["runs"] if not (out / "grades" / ("%s.json" % run["run_id"])).is_file()]
+    invocation["graded"] = not invocation["ungraded"]
     try:
         spend: Optional[float] = round(stage_spend(out, ledger), 6)
     except Stop:
         spend = None
-    invocation.update(status=stop.status if stop else "complete", ended=now_utc(), stage_spend_usd=spend)
+    final = grading_stop or stop
+    invocation.update(status=final.status if final else "complete", ended=now_utc(), stage_spend_usd=spend)
     write_record(out, doc)
     print(json.dumps({"scenario": scenario["id"], "status": invocation["status"], "runs": len(made),
-                      "not_run": len(invocation["not_run"]), "stage_spend_usd": spend, "record": str(out / "runs.json")},
-                     sort_keys=True))
-    if stop is not None:
-        return stop.code
-    return 0 if all(entry["harness_exit"] == 0 for entry in made) else 1
+                      "not_run": len(invocation["not_run"]), "stage_spend_usd": spend, "record": str(out / "runs.json"),
+                      "graded": invocation["graded"], "ungraded": len(invocation["ungraded"])}, sort_keys=True))
+    if final is not None:
+        return final.code
+    return 0 if all(entry["harness_exit"] == 0 for entry in made) and not grader_failed else 1
+
+
+# -- grading ----------------------------------------------------------------------------------------------------------
+
+def _end_lines(out: Path, ledger: Any, run_ids: Sequence[str]) -> List[Dict[str, Any]]:
+    """The end line of each of ``run_ids``: from ``DIR/costs.jsonl``, else from the ledger."""
+    found = {r.get("run_id"): r for r in _lines(out / "costs.jsonl")
+             if isinstance(r, dict) and r.get("event") == "end" and r.get("engine") != "judge"}
+    if any(run_id not in found for run_id in run_ids):
+        try:
+            for record in ledger_records(ledger):
+                if record["event"] == "end" and record.get("engine") != "judge":
+                    found.setdefault(record["run_id"], record)
+        except Stop:
+            pass
+    return [found[run_id] for run_id in run_ids if run_id in found]
+
+
+def grade_stage(args: argparse.Namespace, doc: Dict[str, Any], invocation: Dict[str, Any], out: Path,
+                ledger: Any) -> Tuple[Optional[Stop], bool]:
+    """Grades each run of the stage that has evidence and no grade yet, then writes ``DIR/metrics.json`` and
+    ``DIR/metrics.md``: ``(the reason grading stopped, or None; whether a grader failed on a run)``."""
+    graders, metrics = _load("qa_bench_grade_run", GRADE_RUN), _load("qa_bench_metrics", METRICS)
+    key = os.environ.get(KEY_VAR, "")
+    doc.setdefault("judge_calls", [])
+    ungraded: List[Dict[str, Any]] = []
+    stopped: Optional[Stop] = None
+    failed = False
+    for run in doc["runs"]:
+        run_id = run["run_id"]
+        if (out / "grades" / ("%s.json" % run_id)).is_file():
+            continue
+        if stopped is not None:
+            ungraded.append({"run_id": run_id, "reason": stopped.status})
+            continue
+        transcript_path = out / str(run.get("evidence", "")) / "stdout.txt"
+        if not transcript_path.is_file():
+            ungraded.append({"run_id": run_id, "reason": "no_evidence"})
+            continue
+        try:
+            said = graders.transcript.final_message(transcript_path.read_text(encoding="utf-8", errors="replace"))
+            # Only a run with a final message is judged, so only then is a judge call checked against the cap.
+            remaining = check_judge(out, args.stage_cap_usd, ledger) if said.strip() else None
+            grade = graders.grade(out, run_id, Path(args.scenario), judge_model=args.judge_model, budget_usd=args.budget_usd,
+                                  ledger=ledger.path, stage_remaining_usd=remaining)
+        except Stop as reached:
+            stopped = reached
+            ungraded.append(dict(reached.detail, run_id=run_id, reason=reached.status))
+        except graders.JudgeRefused as exc:
+            stopped = Stop("refused", redact(str(exc), key)[-STDERR_TAIL:], 3)
+            ungraded.append({"run_id": run_id, "reason": "refused", "message": stopped.detail["message"]})
+        except KeyboardInterrupt:
+            stopped = Stop("interrupted", "interrupted while grading", 130)
+            ungraded.append({"run_id": run_id, "reason": "interrupted"})
+        except Exception as exc:  # noqa: BLE001 - one run's grader failing is recorded, and the others are still graded
+            failed = True
+            ungraded.append({"run_id": run_id, "reason": "grader_error", "error": redact("%s: %s" % (type(exc).__name__, exc),
+                                                                                          key)[-STDERR_TAIL:]})
+        else:
+            judge_id = grade["judge"].get("judge_id")
+            if grade["judge"].get("called"):
+                doc["judge_calls"].append({"run_id": judge_id, "subject": run_id})
+                write_record(out, doc)
+                if judge_id not in {r.get("run_id") for r in _lines(out / "costs.jsonl") if isinstance(r, dict)}:
+                    stopped = Stop("evidence_incomplete", "judge call %s for run %s is not in %s, so the stage's spend would "
+                                   "be under-counted" % (judge_id, run_id, out / "costs.jsonl"), 1)
+    if stopped is not None:
+        print("%s: %s: %s" % ("refused" if stopped.code == 3 else "stopped", stopped.status, stopped), file=sys.stderr)
+    invocation["ungraded"] = ungraded
+    run_ids = [run["run_id"] for run in doc["runs"]]
+    grades = []
+    for run_id in run_ids:
+        try:
+            grades.append(json.loads((out / "grades" / ("%s.json" % run_id)).read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    summary = metrics.aggregate(grades, _end_lines(out, ledger, run_ids))
+    for name, text in (("metrics.json", json.dumps(summary, indent=2, sort_keys=True) + "\n"),
+                       ("metrics.md", metrics.render_md(summary))):
+        scratch = out / (name + ".tmp")
+        scratch.write_text(text, encoding="utf-8")
+        os.replace(str(scratch), str(out / name))
+    return stopped, failed
 
 
 if __name__ == "__main__":
