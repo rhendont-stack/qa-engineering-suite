@@ -45,6 +45,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixtures F1 (a small static web front end with a stdlib server and a stdlib JUnit runner), F10 (Android and iOS configuration without an app build) and F11 (an inert pipeline with seeded workflow weaknesses and a Dockerfile), with answer keys.
 - The [milestone 4b report](docs/reports/milestone-4b.md). It records the exit as measured: deterministic legs per fixture, the CI leg, whose one GitHub Actions run first did not start its job and, re-run once after the merge, matched the local run, one evaluated whole-suite run per fixture, the kernel legs and the mutation leg, with their open items.
 
+- A Claude Code plugin marketplace, `.claude-plugin/marketplace.json`, version `0.1.0-dev.1`: the full `qa-engineering-suite` plugin (16 skills and 3 subagents) and the `qa-core` and `qa-specialists` bundles, which never overlap. There is no root `plugin.json`; the entries are the manifests. `tools/check_packaging.py` checks the entries, the bundles and the shared version, and `tools/verify_install.py` installs every entry with the real CLI in a scratch configuration and compares what loaded with what the marketplace says.
+- `qa-command-guard`, an opt-in plugin in the same marketplace: one `PreToolUse` hook that checks each Bash command with the kernel's command guard while a QA workspace is active. A deny stays a deny, a command that needs a grant asks, and input it cannot read, a command over 4096 bytes or a check past its 5 second deadline asks too.
+- Every skill calls its launcher as `python3 <skill-dir>/scripts/qa.py`, from the skill's own base directory, in the commands it runs and in the commands it gives the user, so the skills work from a plugin install as well as from a project copy.
+- `claude plugin eval` cases for every skill: 10 trigger, 10 near-miss and 1 boundary prompt each, in English and Spanish, generated from `skills/<name>/evals/plugin/prompts.json` by `tools/build_evals.py` (`--check` in CI). `tools/run_plugin_eval.py` runs them on an exported copy of the suite under the cost ledger's budget, with `--no-publish`, and refuses any case that grants a tool that could reach the evaluation key.
+- CI validates the packaging, the eval cases and every skill with the reference validator `skills-ref`, pinned by commit.
+- The benchmark: `benchmark/harness/run_benchmark.py` runs a scenario with the suite (a staged plugin copy, loaded as the host loads plugins) and without it, interleaved under a stage cap; graders for safety, fabrication, honest status and audit recall, precision and severity; an LLM judge with no tools for what saved state cannot show; per-arm metrics. Scenarios F9 (honesty) and F2 (audit). See [benchmark/README.md](benchmark/README.md).
+- The [milestone 5a report](docs/reports/milestone-5a.md). It records the exit as measured: the install inventories, the guard's measured latency fix, the CI pins, the launcher re-measure, the plugin eval smoke, a pilot benchmark of two scenarios at three runs per arm with its hand check of every judge answer, a projection for the full benchmark, and its open items.
+
 ### Fixed
 
 - The traceability matrix gives a row its run's status when that run did not conclude with a pass or a fail, and `requirements_verified` and `no_blocked_critical` count only runs on the target tree.
@@ -59,6 +67,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `qa-performance`'s results table reads load-limit lines from ingested k6 entries as well as from the run's own limitations.
 - `qa-database` names the container route for a roundtrip when the project is not trusted, instead of describing a host roundtrip as allowed without trust.
 
+- `qa-orchestrator` runs the evaluation step before it answers, also when it works in its own context.
+
 ### Security
 
 - The kernel's git reads no longer run a filter or diff program that a repository configures for itself (its `.git/config`, an included file, `config.worktree` or a submodule); a user-level driver such as git-lfs still applies. The diff hash is computed as a stream.
@@ -68,3 +78,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Redaction of a declared JSON report keeps its strength: the parsed document's keys and values are redacted with the ledger's patterns, and a report whose secrets are not all found that way keeps the byte-level redaction.
 - An unreadable repository no longer lets `qa changes record --kind created` skip the approval for a tracked file.
 - A host run of any activity except `static-analysis` needs `project.trust`: in a project that is not trusted it is refused as `not_authorized` before any standing authorization or grant is read, and the refusal names both routes (trust recorded from the user's own words, or a container run). Milestone 4a let a grant stand in for trust.
+- `tools/run_skill_eval.py` gives its CLI probes a fresh temporary `HOME` and `CLAUDE_CONFIG_DIR`, and its evaluated agent the switches that turn telemetry and non-essential traffic off. Before this fix the probes ran with the caller's real `HOME`; whether they read or wrote the caller's Claude Code configuration is not known.
+- The evaluation harness can run a scenario with the suite installed as a plugin: the staged copy holds no README, evaluation cases or answer material, the agent may load only the suite's own skills, and an output directory outside `.superpowers/` is refused.

@@ -1,6 +1,6 @@
 # QA Engineering Suite
 
-> **Status: pre-release, not ready for use.** The evidence kernel and all 16 skills exist. There is no install path, and no version has been released.
+> **Status: pre-release, not ready for use.** The evidence kernel and all 16 skills exist. An install path for Claude Code exists (a plugin marketplace with the full suite, two bundles and an opt-in guard plugin), and it is not yet verified on any host. No version has been released.
 
 An open-source suite of [Agent Skills](https://agentskills.io) meant to let an AI agent act as an independent QA team. Its rule is simple: a result counts only when reproducible evidence backs it. A test that did not run is never reported as passing.
 
@@ -19,9 +19,44 @@ An open-source suite of [Agent Skills](https://agentskills.io) meant to let an A
 | Domain skills: `qa-frontend`, `qa-release`, `qa-mobile` (static only) | `skills/` | Built, evaluated on a pilot basis with the tools out of the evaluated agent's reach; the browser and pipeline tools measured by deterministic legs in containers; see the [milestone 4b report](docs/reports/milestone-4b.md) |
 | Fixtures F1 (a static web front end), F10 (Android and iOS configuration, no app build) and F11 (an inert pipeline with seeded workflow weaknesses), with answer keys | `fixtures/`, `benchmark/` | Built |
 | CI re-execution jobs (`qa ci begin`, `qa ci generate`) | `shared/kernel/qa/ci.py` | Built and tested; the generated job has not yet run on a hosted runner |
-| Packaging and host manifests | none yet | Not started |
+| Claude Code plugin marketplace: the full suite, the `qa-core` and `qa-specialists` bundles, and the opt-in `qa-command-guard` plugin | `.claude-plugin/marketplace.json`, `plugins/qa-command-guard/` | Built; each entry installed from a local export into a scratch configuration; not verified on a host; see the [milestone 5a report](docs/reports/milestone-5a.md) |
+| `claude plugin eval` cases: 10 trigger, 10 near-miss and 1 boundary prompt per skill, in English and Spanish, and a budgeted runner | `skills/*/evals/plugin/`, `tools/build_evals.py`, `tools/run_plugin_eval.py` | Built; the trigger and near-miss cases run once for two skills, the boundary cases once for all 16 |
+| Benchmark harness, graders and LLM judge | `benchmark/` | Built; a pilot of two scenarios at three runs per arm; see [benchmark/README.md](benchmark/README.md) |
+| Manifests for hosts other than Claude Code | none | Not started; only after a host is verified |
 
 The kernel records each execution in a hash-chained ledger and classifies commands before running them. It requires a recorded authorization for risky activities and ingests JUnit, CTRF and SARIF reports, k6 summaries and axe-core results (each violation an alert tagged with its WCAG success criterion), and records LCOV, Cobertura and JaCoCo coverage, mutation-testing reports and Lighthouse results as measurements that never decide a status. It also records requirements, acceptance criteria, risks and test cases with the links between them, computes a traceability matrix with its gaps, records fixes and revalidates them (FAIL_TO_PASS and PASS_TO_PASS), runs a change in a suite worktree, records the files the suite writes, tracks findings, evaluates release gates, renders reports (Markdown, JSON, SARIF and a self-contained HTML page) and checks the claims those reports make. `qa ci` pins a CI workspace to the accepted configuration and writes a GitHub Actions job, as a patch, that re-runs recorded host runs.
+
+## Install
+
+Nothing in this section is verified yet. Every channel below is **expected** to work and will be verified in Phase 4 (milestone 6): installed through the channel, the skills listed by the host, trigger evaluations, and one M0 and one M3 scenario, recorded with the host version, the model and the date. So far each marketplace entry has been installed only from a local export of this repository into a scratch Claude Code configuration (see the [milestone 5a report](docs/reports/milestone-5a.md)). The version is a pre-release, `0.1.0-dev.1`. Every skill needs `python3` 3.9 or later on `PATH`.
+
+| Channel | In Claude Code | What gets installed | State |
+|---|---|---|---|
+| Plugin marketplace | `/plugin marketplace add rhendont-stack/qa-engineering-suite`, then `/plugin install qa-engineering-suite@qa-engineering-suite` | All 16 skills and 3 subagents | Expected until Phase 4 |
+| Bundles from the same marketplace | `/plugin install qa-core@qa-engineering-suite` or `/plugin install qa-specialists@qa-engineering-suite` | 8 skills each (everyday change and fix verification, or the domain specialists); each bundle also loads the 3 subagents | Expected until Phase 4 |
+| Guard plugin (opt-in) | `/plugin install qa-command-guard@qa-engineering-suite` | One `PreToolUse` hook that checks Bash commands while a QA workspace is active; no skills. See its [README](plugins/qa-command-guard/README.md) | Expected until Phase 4 |
+| Copy | Copy the `skills/qa-*` folders of a clone into `~/.claude/skills/` (all projects) or `.claude/skills/` (one project) | Skills only | Expected until Phase 4 |
+
+The CLI's own plugin validator names a one-step form for Claude Code 2.1.275 or later, which adds the marketplace and installs the entry in one command. Like every line in this section, it is expected until Phase 4:
+
+```text
+/plugin install qa-engineering-suite --marketplace rhendont-stack/qa-engineering-suite
+/plugin install qa-core --marketplace rhendont-stack/qa-engineering-suite
+/plugin install qa-specialists --marketplace rhendont-stack/qa-engineering-suite
+/plugin install qa-command-guard --marketplace rhendont-stack/qa-engineering-suite
+```
+
+Install the full plugin or the bundles, not both: the two bundles do not overlap, but the full plugin contains them both, so installing both puts every skill under two names. Each marketplace entry currently installs the whole repository, about 24 MB, so a bundle is not smaller on disk than the full plugin.
+
+### Compatibility matrix
+
+**Verified** means installed, triggered and run through scenarios in Phase 4, with the host version, the model and the date. **Expected** means the skills follow the Agent Skills specification and the host's documented format, but nothing has been run on that host.
+
+| Host | Channel | Verified | Expected |
+|---|---|---|---|
+| Claude Code | Plugin marketplace, bundles and guard plugin | | Yes |
+| Claude Code | Copy into `~/.claude/skills/` or `.claude/skills/` | | Yes |
+| Other hosts that read Agent Skills from a skills directory | Copy into the host's skills directory (for example `.agents/skills/`) | | Yes, skills only |
 
 ## Verification so far
 
@@ -82,7 +117,17 @@ Milestone 4b adds the following. Its run IDs, evidence IDs, grader changes and l
 | Kernel tests on Linux x86_64 in containers through the kernel, 3.9 and 3.15 | The first leg (3.9) failed 16 tests, all test-side (two parametrized grader tests without a `git` guard); after a test-only fix both legs passed (7205 tests: 5947 pass, 1258 skip, 0 fail; 1176 of the skips need `git`, which the images lack) |
 | Kernel tests on macOS arm64 for milestone 4b | Not run locally. The macOS CI job on the pull request, at `2ed31ec`, concluded `success` on 3.9 and 3.15 (7177 pass, 88 skip, 0 fail each) |
 
-GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request. The Actions tab shows the latest result.
+Milestone 5a adds the following. Its run IDs, costs and limitations are in the [milestone 5a report](docs/reports/milestone-5a.md).
+
+| Check | Result |
+|---|---|
+| Each marketplace entry installed with the Claude Code CLI 2.1.321 in a scratch configuration, from a local export, at three commits | Every inventory as expected: the full suite 16 skills and 3 subagents, each bundle 8 skills and the 3 subagents, the guard plugin one hook. Each root-source entry installs the whole export (24,059,439 bytes at the last code commit) |
+| The skills' new launcher form (`python3 <skill-dir>/scripts/qa.py`), one evaluation case per skill | 15 of 16 cases held every hard criterion; the orchestrator's case did so in 1 of 5 runs (two runs where it did not trigger, two that skipped the reporting step before a text fix) |
+| `claude plugin eval` smoke, one run per case | Trigger and near-miss cases 40 of 40 for `qa-api-testing` and `qa-performance`; boundary cases 9 of 16 on each case's latest run, with six skills not loaded at all |
+| Pilot benchmark, F9 (honesty) and F2 (audit), three runs per arm with and without the suite | No safety violation in 12 of 12 runs. F9: each command's status reported correctly in 3 of 3 runs with the suite and 1 of 3 without; F2: the suite was installed but did not load in any run. Runs with no unbacked claim: F9 0 of 3 with the suite and 1 of 3 without, F2 0 of 3 with and 2 of 3 without (one run with the suite not computable). Projected cost of the full benchmark: 55.91 US$ expected, 81.84 US$ worst |
+| CI with the pinned reference validator `skills-ref` and the packaging checks | Measured on the milestone's pull request |
+
+GitHub Actions runs the suite on Linux x86_64 and macOS arm64, with both Python versions, on every push and pull request, and validates the packaging and every skill (with the pinned reference validator `skills-ref`). The Actions tab shows the latest result.
 
 ## Try the kernel
 
@@ -109,7 +154,8 @@ A new project starts as `untrusted`. In that state `qa run` records a command on
 | 3 | `qa-requirements`, `qa-test-strategy`, `qa-test-generation`, `qa-regression-guard`, `qa-mutation` | Built; exit evidence has open items, see the milestone 3 report |
 | 4a | `qa-api-testing`, `qa-database`, `qa-security`, `qa-performance`; k6 ingestion; fixtures F2, F3 and F6 | Built; exit evidence has open items, see the milestone 4a report |
 | 4b | `qa-frontend`, `qa-release`, `qa-mobile`; HTML reports, axe-core and Lighthouse ingestion, `qa ci`; fixtures F1, F10 and F11 | Built; exit evidence has open items, see the milestone 4b report |
-| 5 | Packaging, per-skill evaluations, pilot benchmark; the orchestrator's `audit` and `release` templates (moved from 4b) | Planned |
+| 5a | Packaging (plugin marketplace, bundles, opt-in guard plugin), `claude plugin eval` cases for every skill, benchmark harness and graders, pilot benchmark | Built; exit evidence has open items, see the milestone 5a report |
+| 5b | The orchestrator's `audit` and `release` templates and the other items carried from 4b; the pilot's findings (the audit judge's format, the safety grader's file-state input, skill descriptions that did not trigger) | Planned |
 | 6 | Full benchmark, internal audit, documentation, v0.1.0 release candidate | Planned |
 
 A skill that fabricates a claim, violates a safety rule, misreports a status or follows an injected instruction will be held back from the release. A skill that only misses a softer target ships marked `experimental`, with its measured numbers published.
@@ -120,13 +166,18 @@ A skill that fabricates a claim, violates a safety rule, misreports a status or 
 - **The kernel does not sandbox a host run.** Only `qa run --container` isolates the program under test, and only as far as the container engine does.
 - **Mutation testing of the kernel is partial.** One mutmut run in a Linux container measured six core modules: canonical 95.79, compare 81.34, gate 84.64, ledger 94.54, status 94.57 and trace 79.42 (4145 killed and 8 timed out of 4890 mutants, 84.93 over the six). A second run, after the redaction fix that had left milestone 3's `report/check` report unreadable, measured `report/check` at 69.95 (277 killed of 396 mutants, 119 survived), the lowest of the seven. A third run, in milestone 4b, re-measured `gate` after the criteria milestones 4a and 4b added to it: 85.07 (1873 killed and 8 timed out of 2211 mutants, 277 survived, 53 without tests). Other kernel modules, `ci` among them, are not measured. Tests that start the kernel in a subprocess run the unmutated copy, so the surviving counts are an upper bound. See the milestone 3, 4a and 4b reports.
 - **The orchestrator's delegation is not yet reliable in every run.** Milestone 3 writes every launcher call literally and dispatches subagents in the foreground. Its fix-verification exit run stopped when the agent, still inside a suite worktree, wrote calls in a relative form the evaluation's allow-list did not cover; after the final review fixes, the skills say to return to the project root after a worktree `cd`, and before the fixes the review scenario held every hard criterion in 2 of 3 runs on the earlier final text, and on the final texts the review and fix-verification scenarios each held every hard criterion in 3 of 3 runs, plus one exit re-run. One `qa-regression-guard` run still stayed in a worktree and had a call refused. Skills that write their own input files run in the orchestrator's own context, because the subagents cannot write files; most of those delegation rows have no evaluated run. See the milestone 3 report.
+- **No install channel is verified yet.** The marketplace entries have been installed only from a local export into a scratch configuration; no host has run the trigger evaluations and scenarios that §15.8 of the design requires.
+- **The pilot benchmark is two scenarios at *k* = 3.** F9 (honesty) and F2 (audit), three runs per arm. In F2 the suite was installed but never loaded, so F2 measured its description, not its audit. The thresholds are proposals, and none is claimed met.
+- **Trigger accuracy is measured for two skills only.** `qa-api-testing` and `qa-performance`, one run per prompt. In the boundary cases, which ask a skill to skip one of its safeguards, six skills were not loaded at all.
+- **A marketplace install carries the whole repository.** Each entry installs the full export, fixtures, benchmark and every skill's evaluation cases included (about 24 MB), so the bundles are not smaller on disk.
+- **Grants expire at the end of the local day by default.** A long run that crosses midnight loses its grants partway.
 - **Evaluation results are small and in-sample.** Three runs per scenario, with descriptions tuned on the same prompts; the milestone 3, 4a and 4b exit runs are one run each, and the fix-verification scenario has one re-run.
 - **Evaluated agents cannot reach the container engine.** The evaluations of the seven domain skills measure static work, the checks the skills write, refusals and honesty with the tools absent. The tools themselves are measured only by the deterministic legs. See the milestone 4a and 4b reports.
 - **`qa-mobile` is static only.** It reads Android and iOS configuration source files; manifest merging, build variants and signed entitlements are out of its reach. Dynamic checks are listed with a remediation and never run: the suite does not install an SDK or an emulator, or drive a device.
-- **The CI job re-runs host runs only, and has run on a hosted runner once.** Container runs are left out with a reason (milestone 5), and the job carries no environment values. In milestone 4b its one run, re-run once on `ubuntu-24.04`, matched the local run for one fixture; a run where the runner and the local run disagree has not been exercised on a runner.
+- **The CI job re-runs host runs only, and has run on a hosted runner once.** Container runs are left out with a reason (milestone 5b), and the job carries no environment values. In milestone 4b its one run, re-run once on `ubuntu-24.04`, matched the local run for one fixture; a run where the runner and the local run disagree has not been exercised on a runner.
 - **`rollback_validated` needs an ingested rehearsal.** The suite never deploys, so the release gate's rollback criterion stays without evidence until a rehearsal record from the project's own pipeline arrives through `qa ingest`.
 - **The frontend tools run only in the container engine.** Playwright, axe-core and Lighthouse run inside the pinned `playwright` image from a committed lockfile; with no engine, `qa-frontend` records each browser leg as blocked and keeps its findings suspected.
-- **Screenshots are kept without baseline comparison.** Each viewport's screenshot is kept as its sha256, size and viewport in the JUnit report, not as a stored image, and there is no visual-regression baseline yet (milestone 5).
+- **Screenshots are kept without baseline comparison.** Each viewport's screenshot is kept as its sha256, size and viewport in the JUnit report, not as a stored image, and there is no visual-regression baseline yet (milestone 5b).
 - **The command guard reads ZAP Automation Framework plans by their path, not their content.** A plan edited at the baseline plan's path reads as passive. `qa-security` writes its plans from committed assets, and the kernel does not yet hash a run's inputs.
 - **Fixture F6 is a deliberately vulnerable training lab.** It starts only on a loopback address and answers only loopback Host names; the suite runs it only inside a container, as a run's own service with network `none`. Do not run it on a host.
 - **Coverage XML with a DOCTYPE** must be in an ASCII-compatible encoding, and a literal `&` in its comments or CDATA is refused.
