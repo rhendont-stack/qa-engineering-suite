@@ -75,14 +75,20 @@ def bench(tmp_path):
     return b
 
 
-def bench_run(b, *, runs=3, cap="10", costs=(0.25,), modes=None, out=None, ledger=None, scenario=F9, arms="with-suite,baseline"):
+def bench_run(b, *, runs=3, cap="10", costs=(0.25,), modes=None, out=None, ledger=None, scenario=F9, arms="with-suite,baseline",
+              budget="40"):
     (b.bin / "claude.cfg").write_text(json.dumps({"LOG": str(b.log), "COSTS": list(costs), "MODES": modes or {}}))
     env = {"PATH": str(b.bin) + os.pathsep + os.environ["PATH"], "HOME": os.environ.get("HOME", str(b.root)),
            "TMPDIR": str(b.tmp), "ANTHROPIC_API_KEY": SECRET}
     return subprocess.run([sys.executable, "-I", str(BENCH), "--scenario", str(scenario), "--arms", arms, "--runs", str(runs),
-                           "--model", "test-model", "--judge-model", "test-judge", "--budget-usd", "40", "--stage-cap-usd", cap,
+                           "--model", "test-model", "--judge-model", "test-judge", "--budget-usd", budget, "--stage-cap-usd", cap,
                            "--ledger", str(ledger or b.ledger), "--out", str(out or b.out)],
                           capture_output=True, text=True, env=env, timeout=900)
+
+
+def run_caps(b):
+    """The ``--max-budget-usd`` each agent call was given."""
+    return [c["argv"][c["argv"].index("--max-budget-usd") + 1] for c in calls(b)]
 
 
 def calls(b):
@@ -126,6 +132,9 @@ def test_benchmark_interleaves_arms_and_stops_at_the_stage_cap(bench):
     assert stop["stage_cap_usd"] == 1.5
     summary = json.loads(r.stdout.splitlines()[-1])
     assert summary["status"] == "stage_cap_reached" and summary["runs"] == 3 and summary["not_run"] == 3
+    # Each run is capped at what is left of the stage (1.5, 1.1, 0.7), which is below what is left in the ledger (40 and less).
+    assert run_caps(bench) == ["1.5000", "1.1000", "0.7000"]
+    assert [x["stage_remaining_usd"] for x in done["runs"]] == [1.5, 1.1, 0.7]
     # The two arms get the same case: the same prompt, the same fixture and the same allowances; only the configuration differs.
     prompt = json.loads(F9.read_text())["prompt"]
     assert [c["stdin"] for c in calls(bench)] == [prompt] * 3
@@ -139,6 +148,11 @@ def test_benchmark_interleaves_arms_and_stops_at_the_stage_cap(bench):
     assert [(x["arm"], x["index"], x["reason"]) for x in record(low)["invocations"][0]["not_run"]] == [
         (WITH, 1, "stage_cap_reached"), (BASE, 1, "stage_cap_reached")]
     assert record(low)["runs"] == []
+    # When the ledger has less left than the stage, the ledger's remainder caps the run.
+    lean = bench.root / "out-lean"
+    r = bench_run(bench, runs=1, cap="10", budget="0.9", arms=WITH, out=lean, ledger=bench.root / "ledger-lean" / "costs.jsonl")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert run_caps(bench)[3:] == ["0.9000"] and record(lean)["runs"][0]["stage_remaining_usd"] == 10.0
 
 
 def test_benchmark_records_every_run_in_the_ledger(bench):

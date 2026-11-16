@@ -12,9 +12,10 @@ prompt, the fixture and the run's allowances only, and is the same for both arms
 answer key, the mode, the grader, the tools present and the projections never reach the harness or the agent.
 
 The runs take turns, one of each arm in the order ``--arms`` gives (with-suite, baseline, with-suite, …), until ``--runs`` of
-each are done. Each is a ``run_skill_eval.py`` subprocess with ``--config <arm>``, the scenario's ``timeout`` and this command's
-``--model``, ``--budget-usd``, ``--ledger`` and ``--out``; its environment holds ``PATH``, ``HOME``, ``TMPDIR`` and the key, each
-when set, and nothing else. The harness writes each run's ``start`` and ``end`` lines in the ledger, under its lock, and the
+each are done. Each is a ``run_skill_eval.py`` subprocess with ``--config <arm>``, the scenario's ``timeout``, this command's
+``--model``, ``--budget-usd``, ``--ledger`` and ``--out``, and ``--stage-remaining-usd`` (the stage cap less the stage's spend),
+so the run's own ``--max-budget-usd`` is the smaller of the stage's and the ledger's remainder; its environment holds ``PATH``,
+``HOME``, ``TMPDIR`` and the key, each when set, and nothing else. The harness writes each run's ``start`` and ``end`` lines in the ledger, under its lock, and the
 ``end`` line again in ``DIR/costs.jsonl``; this command writes no ledger line of its own.
 
 Before each run the stage cap is checked: ``stage_spend`` (every run recorded in ``DIR/costs.jsonl``, earlier invocations on
@@ -26,7 +27,8 @@ recorded with the reason. A recorded cost that is unknown stops it the same way 
 stage with that code; a run that fails or times out is recorded, and the next one is checked against the stage cap as usual.
 
 ``DIR/runs.json`` holds the scenario, every run made (invocation, arm, index, run id, status, cost, the ``init`` tools and those
-beyond the allow list, the staged plugin, the evidence directory, the harness's exit code and a redacted tail of its stderr) and
+beyond the allow list, the staged plugin, the stage remainder it was given, the evidence directory, the harness's exit code and
+a redacted tail of its stderr) and
 one entry per invocation (its arguments, status, stage spend, and the runs not made and why); it is rewritten after every run.
 ``DIR/cases/`` holds each arm's harness case. Grading is not part of this command yet, so each invocation records
 ``"graded": false``.
@@ -45,6 +47,7 @@ import re
 import signal
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -206,15 +209,19 @@ def stage_spend(out: Path) -> float:
     return sum(_recorded_costs(out))
 
 
-def check_stage(out: Path, worst: float, cap: float) -> None:
-    """``Stop`` (``stage_cap_reached``) when the stage's spend plus the next run's projection passes ``cap``: the projection is
-    the arm's ``worst`` or the largest run recorded in the stage, whichever is larger."""
+def check_stage(out: Path, worst: float, cap: float) -> float:
+    """What is left of ``cap`` for the next run, which the harness takes as that run's ``--stage-remaining-usd``; ``Stop``
+    (``stage_cap_reached``) when the stage's spend plus the next run's projection passes ``cap``: the projection is the arm's
+    ``worst`` or the largest run recorded in the stage, whichever is larger. The remainder is computed in decimal, so it is
+    exactly the cap less the recorded costs."""
     costs = _recorded_costs(out)
     spend, projected = sum(costs), max([worst] + costs)
-    if round(spend + projected, 6) > cap:
+    remaining = float(Decimal(repr(cap)) - sum((Decimal(repr(cost)) for cost in costs), Decimal(0)))
+    if round(spend + projected, 6) > cap or remaining <= 0:
         raise Stop("stage_cap_reached", "%.4f USD spent in the stage and %.4f USD projected for the next run pass the stage "
                    "cap of %.4f USD" % (spend, projected, cap), 3, stage_spend_usd=round(spend, 6), projected_usd=projected,
                    stage_cap_usd=cap)
+    return remaining
 
 
 def ledger_records(ledger: Any) -> List[Dict[str, Any]]:
@@ -264,13 +271,14 @@ def _refusal(stdout: str, stderr: str) -> str:
 
 
 def one_run(args: argparse.Namespace, scenario: Mapping[str, Any], arm: str, index: int, case_path: Path, out: Path,
-            ledger: Any, number: int) -> Tuple[List[Dict[str, Any]], Optional[Stop]]:
+            ledger: Any, number: int, stage_remaining: float) -> Tuple[List[Dict[str, Any]], Optional[Stop]]:
     """One harness run of ``arm`` and what it recorded: ``(run entries, the reason the stage stops, or None)``. A run is the
-    ``start`` line it added to the ledger; the entry takes the ``end`` line's fields."""
+    ``start`` line it added to the ledger; the entry takes the ``end`` line's fields. ``stage_remaining`` (what is left of the
+    stage cap) goes to the harness, which caps the run at the smaller of it and the ledger's remainder."""
     before = {r["run_id"] for r in ledger_records(ledger) if r["event"] == "start"}
     command = [sys.executable, "-I", str(HARNESS), "--case", str(case_path), "--config", arm, "--model", args.model,
                "--budget-usd", repr(args.budget_usd), "--out", str(out), "--ledger", str(ledger.path),
-               "--timeout", str(scenario["timeout"])]
+               "--timeout", str(scenario["timeout"]), "--stage-remaining-usd", repr(stage_remaining)]
     try:
         code, stdout, stderr = run_child(command)
     except KeyboardInterrupt:
@@ -286,7 +294,8 @@ def one_run(args: argparse.Namespace, scenario: Mapping[str, Any], arm: str, ind
                         "status": end.get("status", "no_end_line"), "cost_usd": end.get("cost_usd"),
                         "cost_unknown": end.get("cost_unknown", True), "tools_listed": end.get("tools_listed"),
                         "tools_beyond_allow": end.get("tools_beyond_allow"), "skills_listed": end.get("skills_listed"),
-                        "plugin": end.get("plugin"), "evidence": "runs/%s" % run_id, "harness_exit": code,
+                        "plugin": end.get("plugin"), "stage_remaining_usd": stage_remaining,
+                        "evidence": "runs/%s" % run_id, "harness_exit": code,
                         "harness_stderr": redact(stderr, key)[-STDERR_TAIL:]})
     open_runs = [e["run_id"] for e in entries if e["status"] == "no_end_line"]
     if code == 130:
@@ -388,8 +397,8 @@ def main(argv: Sequence[str]) -> int:
     stop: Optional[Stop] = None
     for position, (arm, index) in enumerate(order):
         try:
-            check_stage(out, scenario["worst_run_usd"][arm], args.stage_cap_usd)
-            entries, stop = one_run(args, scenario, arm, index, cases[arm], out, ledger, invocation["number"])
+            remaining = check_stage(out, scenario["worst_run_usd"][arm], args.stage_cap_usd)
+            entries, stop = one_run(args, scenario, arm, index, cases[arm], out, ledger, invocation["number"], remaining)
         except Stop as before_the_run:
             entries, stop = [], before_the_run
         except KeyboardInterrupt:

@@ -42,6 +42,8 @@ RUNNER = textwrap.dedent('''\
 ''')
 # Names the platform adds to a child's environment on its own: Python sets LC_CTYPE, macOS sets __CF_USER_TEXT_ENCODING.
 OS_ADDED = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
+# Every environment the harness gives the CLI (the agent's and each --help probe's) holds exactly these names.
+AGENT_ENV = {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
 
 # The fake CLI. The agent's environment is minimal on purpose, so the fake reads its behaviour (MODE, COST, HELP_OMIT, MARKER)
 # from claude.cfg beside it; LOG is a file it appends one JSON line per call to.
@@ -53,7 +55,7 @@ FAKE = textwrap.dedent('''\
     mode = cfg.get("MODE", "ok")
     if cfg.get("HELP_LOG") and (argv[:1] in (["--help"], ["plugin"])):
         with open(cfg["HELP_LOG"], "a") as fh:
-            fh.write(json.dumps({"argv": argv, "env": dict(os.environ)}) + "\\n")
+            fh.write(json.dumps({"argv": argv, "env": dict(os.environ), "cwd": os.getcwd()}) + "\\n")
     if argv[:1] == ["--help"]:
         omit = cfg.get("HELP_OMIT", "").split(",")
         for flag in ("-p, --print", "--output-format <f>", "--allowedTools <tools>", "--model <m>", "--setting-sources <s>",
@@ -447,7 +449,8 @@ def test_the_child_gets_a_minimal_environment_and_no_user_config(world):
     assert r.returncode == 0, r.stderr
     call = calls(world)[0]
     assert call["has_key"] is False and call["helper_key"] == SECRET        # the key arrives through the helper only
-    assert sorted(set(call["env"]) - OS_ADDED) == ["CLAUDE_CONFIG_DIR", "HOME", "PATH"]
+    assert sorted(set(call["env"]) - OS_ADDED) == sorted(AGENT_ENV)
+    assert call["env"]["DISABLE_TELEMETRY"] == "1" and call["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
     assert call["env"]["HOME"] != str(world.root / "realhome") and call["env"]["CLAUDE_CONFIG_DIR"].startswith(call["env"]["HOME"])
     assert not os.path.exists(call["env"]["HOME"])                      # the temporary home is gone afterwards
     argv = call["argv"]
@@ -1059,7 +1062,8 @@ def test_the_agent_environment_holds_no_key(world):
     assert SECRET not in call["settings"] and call["helper_key"] == SECRET        # only the helper hands it over
     harness = _harness_module()
     assert harness.child_env(pathlib.Path("/h"), pathlib.Path("/c")) == {"PATH": os.environ.get("PATH", os.defpath), "HOME": "/h",
-                                                                         "CLAUDE_CONFIG_DIR": "/c"}
+                                                                         "CLAUDE_CONFIG_DIR": "/c", "DISABLE_TELEMETRY": "1",
+                                                                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
 
 def test_settings_name_the_helper_and_deny_its_directory(world):
@@ -1278,6 +1282,30 @@ def test_cli_help_and_plugin_probe_get_no_key(world):
     assert {tuple(x["argv"][:1]) for x in seen} == {("--help",), ("plugin",)}
     for item in seen:
         assert "ANTHROPIC_API_KEY" not in item["env"] and SECRET not in json.dumps(item["env"])
+
+
+def test_cli_probes_get_a_fresh_home_and_config_of_their_own_and_leave_nothing(world):
+    """The ``--help`` probes never get the caller's HOME or configuration: each gets the agent's set of names, with a HOME and
+    a CLAUDE_CONFIG_DIR made for it and removed after it, and the two switches."""
+    caller_home, caller_config = world.root / "realhome", world.root / "callers-config"
+    caller_home.mkdir()
+    caller_config.mkdir()
+    r = run(world, env={"HOME": str(caller_home), "CLAUDE_CONFIG_DIR": str(caller_config)}, keep=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = [json.loads(line) for line in (world.root / "help.log").read_text().splitlines()]
+    assert sorted(tuple(x["argv"][:1]) for x in seen) == [("--help",), ("plugin",)]
+    for item in seen:
+        env = item["env"]
+        assert sorted(set(env) - OS_ADDED) == sorted(AGENT_ENV)
+        assert env["DISABLE_TELEMETRY"] == "1" and env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+        for name in ("HOME", "CLAUDE_CONFIG_DIR"):
+            assert not _names_path(env[name], caller_home) and not _names_path(env[name], caller_config)
+            assert not _names_path(env[name], REPO) and not os.path.exists(env[name])     # gone after the probe
+        assert env["HOME"] != env["CLAUDE_CONFIG_DIR"]
+        assert not _names_path(item["cwd"], caller_home) and not _names_path(item["cwd"], REPO)
+        assert not os.path.exists(item["cwd"])
+    assert len({x["env"]["HOME"] for x in seen}) == len(seen)                  # one fresh home per probe
+    assert _left_in_tmp(world) == []                                          # no probe directory is left behind
 
 
 def test_the_helper_script_names_cat_by_absolute_path_and_refuses_without_one(tmp_path, monkeypatch):
@@ -1878,6 +1906,16 @@ def _launchers():
     return sorted(p.split("/")[1] for p in _head_files("skills") if re.fullmatch(r"skills/[^/]+/scripts/qa\.py", p))
 
 
+def _entry_scripts():
+    """``skills/<skill>/scripts/<name>.py`` of the repository's HEAD for each top-level script whose name does not start with
+    ``_``: the scripts a skill runs (``_``-prefixed ones are helper modules it imports)."""
+    return sorted(p for p in _head_files("skills") if re.fullmatch(r"skills/[^/]+/scripts/[^/_][^/]*\.py", p))
+
+
+def _helper_scripts():
+    return sorted(p for p in _head_files("skills") if re.fullmatch(r"skills/[^/]+/scripts/_[^/]*\.py", p))
+
+
 def _names_path(text, root):
     """Whether ``text`` names ``root``, or a path under it, in either spelling of it."""
     edge = re.escape(os.pathsep) + r"\s\"'="
@@ -1983,18 +2021,34 @@ def test_with_suite_loads_the_plugin_dir_and_allows_its_launchers(world):
     real = os.path.realpath(staged)
     assert staged.startswith(str(link) + os.sep) and real != staged
     allowed = _allowed(world)
-    assert "Skill" in allowed and "Task" in allowed and "--disable-slash-commands" not in argv
+    assert "Task" in allowed and "--disable-slash-commands" not in argv
     names = _launchers()
     assert len(names) == 16
+    # The Skill grant names the staged skills only, in the namespaced and the bare form, so the CLI's own skills stay out.
+    assert "Skill" not in allowed
+    skill_rules = [t for t in allowed if t.startswith("Skill")]
+    assert skill_rules == [rule for name in names for rule in (
+        "Skill(qa-engineering-suite:%s)" % name, "Skill(qa-engineering-suite:%s *)" % name, "Skill(%s)" % name,
+        "Skill(%s *)" % name)]
+    assert {re.sub(r"^qa-engineering-suite:", "", t[len("Skill("):-1].split(" ")[0]) for t in skill_rules} == set(names)
+    # Every script a skill runs is allowed under both spellings of the staged copy; helper modules and anything else are not.
+    entries, helpers = _entry_scripts(), _helper_scripts()
+    assert "skills/qa-api-testing/scripts/endpoint_inventory.py" in entries and helpers
     for root in (staged, real):
         for name in names:
             assert _permits(allowed, "python3 %s/skills/%s/scripts/qa.py --role verifier --skill %s init" % (root, name, name))
-        assert not _permits(allowed, "python3 %s/skills/qa-api-testing/scripts/endpoint_inventory.py" % root)
-        assert not _permits(allowed, "python3 %s/README.md" % root)
+        for script in entries:
+            assert _permits(allowed, "python3 %s/%s --help" % (root, script)), script
+        for script in helpers:
+            assert not _permits(allowed, "python3 %s/%s x" % (root, script)), script
+        assert not _permits(allowed, "python3 %s/skills/qa-api-testing/scripts/_kernel/qa_kernel/cli.py x" % root)
+        assert not _permits(allowed, "python3 %s/skills/qa-api-testing/references/x.py x" % root)
+        assert not _permits(allowed, "python3 %s/README.md x" % root)
     assert not _permits(allowed, "python3 skills/qa-api-testing/scripts/qa.py init")
-    launchers = [t for t in allowed if t.startswith("Bash(python3 /") and t.endswith("/scripts/qa.py *)")]
-    assert len(launchers) == len(set(launchers)) and len(launchers) >= 2 * len(names)
-    assert {t[len("Bash(python3 "):-len("/scripts/qa.py *)")].rsplit("/skills/", 1)[1] for t in launchers} == set(names)
+    assert not _permits(allowed, "python3 %s/tools/run_skill_eval.py x" % REPO)
+    scripts = [t for t in allowed if t.startswith("Bash(python3 /")]
+    assert len(scripts) == len(set(scripts)) and len(scripts) >= 2 * len(entries)
+    assert {t[len("Bash(python3 "):-len(" *)")].split("/qa-engineering-suite/", 1)[1] for t in scripts} == set(entries)
     assert [t for t in allowed if t.startswith("Bash(python3 -m ")] == ["Bash(python3 -m pytest *)"]
     settings = json.loads(call["settings"])
     assert settings["sandbox"]["filesystem"]["allowRead"] == [os.path.realpath(call["cwd"]), real]
@@ -2002,7 +2056,8 @@ def test_with_suite_loads_the_plugin_dir_and_allows_its_launchers(world):
     assert not (pathlib.Path(rec["workdir"]) / ".claude").exists()           # nothing is installed into the copy
     head = git(REPO, "rev-parse", "HEAD")[0]
     assert rec["config"] == "with-suite" and rec["status"] == "ok"
-    assert rec["plugin"] == {"dir": staged, "resolved": real, "commit": head, "launchers": len(names)}
+    assert rec["plugin"] == {"dir": staged, "resolved": real, "commit": head, "launchers": len(names),
+                             "scripts": len(entries), "skills": len(names)}
     assert sorted(rec["skill_sha256"]) == sorted(p.split("/")[1] for p in _head_files("skills") if p.endswith("/SKILL.md"))
     assert not os.path.exists(staged) and not [p for p in world.tmp.iterdir() if p.name.startswith("qa-eval-plugin-")]
     # A with-suite case names no skill: the staged plugin brings every one. Refused before anything runs.
@@ -2015,6 +2070,51 @@ def test_with_suite_loads_the_plugin_dir_and_allows_its_launchers(world):
     assert r.returncode == 3 and "--plugin-dir" in r.stderr
     assert len(calls(world)) == 1 and len(records(world)) == 1
     assert run(world, config="baseline", case=_suite_case(world), env={"FAKE_HELP_OMIT": "--plugin-dir"}).returncode == 0
+
+
+def test_with_suite_and_a_runtime_venv_expose_only_the_venv_of_the_repository(world, monkeypatch):
+    """Review Focus 3 with a runtime venv (f2-audit): the venv's ``bin`` is the one repository path in the agent's environment,
+    and the sandbox lets the agent read only the run copy, the venv and the staged plugin, the rest of the repository denied."""
+    repo = _scratch_repo(world.root / "repo")
+    shutil.copy(str(HARNESS), str(repo / "tools" / "run_skill_eval.py"))
+    monkeypatch.setattr(sys.modules[__name__], "HARNESS", repo / "tools" / "run_skill_eval.py")
+    (repo / ".venv-eval" / "bin").mkdir(parents=True)
+    case = _suite_case(world, runtime_venv=".venv-eval", system_path_only=True, bash_allow=["python3 -m pytest"],
+                       allow_write=True)
+    r = run(world, config="with-suite", case=case)
+    assert r.returncode == 0, r.stdout + r.stderr
+    call = calls(world)[0]
+    venv = os.path.realpath(str(repo / ".venv-eval"))
+    staged = call["argv"][call["argv"].index("--plugin-dir") + 1]
+    assert [name for name, value in call["env"].items() if _names_path(value, repo)] == ["PATH"]
+    assert [p for p in call["env"]["PATH"].split(os.pathsep) if _names_path(p, repo)] == [os.path.join(venv, "bin")]
+    assert not _names_path(call["stdin"], repo) and not _names_path(os.path.realpath(call["cwd"]), repo)
+    assert not _names_path(staged, repo) and not _names_path(os.path.realpath(staged), repo)
+    filesystem = json.loads(call["settings"])["sandbox"]["filesystem"]
+    assert filesystem["allowRead"] == [os.path.realpath(call["cwd"]), venv, os.path.realpath(staged)]
+    assert os.path.realpath(str(repo)) in filesystem["denyRead"] and venv not in filesystem["denyRead"]
+    assert [p for p in filesystem["allowRead"] if _names_path(p, repo)] == [venv]
+
+
+def test_a_stage_remainder_caps_the_run_when_it_is_the_smaller(world):
+    """``--stage-remaining-usd`` (passed by the benchmark) lowers the per-run cap to the stage's remainder when that is below
+    the ledger's; otherwise the ledger's remainder stands, and without it nothing changes."""
+    def cap(index):
+        argv = calls(world)[index]["argv"]
+        return argv[argv.index("--max-budget-usd") + 1]
+
+    assert run(world, "--stage-remaining-usd", "0.5", budget="5").returncode == 0
+    assert cap(0) == "0.5000" and records(world)[0]["stage_remaining_usd"] == 0.5
+    assert run(world, "--stage-remaining-usd", "9", budget="5").returncode == 0        # 4.75 left in the ledger
+    assert cap(1) == "4.7500" and records(world)[1]["stage_remaining_usd"] == 9.0
+    assert run(world, budget="5").returncode == 0
+    assert cap(2) == "4.5000" and records(world)[2]["stage_remaining_usd"] is None
+    for bad in ("0", "-1", "nan", "inf", "x"):
+        r = run(world, "--stage-remaining-usd", bad, budget="5")
+        assert r.returncode == 2, bad
+    assert len(calls(world)) == 3
+    r = run(world, "--stage-remaining-usd", "0.00001", budget="5")                    # below the smallest cap: refused
+    assert r.returncode == 3 and len(calls(world)) == 3
 
 
 def test_the_init_tools_and_those_beyond_the_allow_list_are_recorded(world):
