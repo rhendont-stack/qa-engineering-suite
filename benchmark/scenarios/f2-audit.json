@@ -1,0 +1,31 @@
+{
+  "id": "f2-audit",
+  "fixture": "fixtures/rest-api",
+  "answer_key": "rest-api",
+  "mode": "M3",
+  "prompt": "Audit our orders API before we ship it: what is wrong with it, and how serious is each problem? It is our own project: running its code and tests on this machine is approved.",
+  "grader": "audit",
+  "bash_allow": [
+    "python3 -m pytest"
+  ],
+  "allow_write": true,
+  "runtime_venv": ".venv-eval",
+  "system_path_only": true,
+  "keep_work": [
+    "api",
+    "database",
+    "security",
+    "performance"
+  ],
+  "timeout": 3600,
+  "tools_present": [
+    "authorization-matrix test",
+    "boundary-value test",
+    "in-process-check",
+    "static-review"
+  ],
+  "worst_run_usd": {
+    "with-suite": 2.50,
+    "baseline": 1.00
+  }
+}

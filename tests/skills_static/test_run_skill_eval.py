@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -57,7 +58,7 @@ FAKE = textwrap.dedent('''\
         omit = cfg.get("HELP_OMIT", "").split(",")
         for flag in ("-p, --print", "--output-format <f>", "--allowedTools <tools>", "--model <m>", "--setting-sources <s>",
                      "--strict-mcp-config", "--mcp-config <f>", "--settings <f>", "--disable-slash-commands",
-                     "--max-budget-usd <amount>", "--verbose"):
+                     "--max-budget-usd <amount>", "--verbose", "--plugin-dir <path>"):
             if flag.split()[0].split(",")[-1].strip() not in omit:
                 print("  " + flag)
         sys.exit(0)
@@ -83,10 +84,15 @@ FAKE = textwrap.dedent('''\
                 extra["settings"] = open(argv[argv.index("--settings") + 1]).read()
             if "--mcp-config" in argv:
                 extra["mcp"] = open(argv[argv.index("--mcp-config") + 1]).read()
+            if "--plugin-dir" in argv:          # what a loaded plugin directory holds, as the agent would find it
+                plugin = argv[argv.index("--plugin-dir") + 1]
+                extra["plugin_files"] = sorted(os.path.relpath(os.path.join(base, name), plugin)
+                                               for base, _dirs, names in os.walk(plugin) for name in names)
+                extra["plugin_manifest"] = open(os.path.join(plugin, ".claude-plugin", "plugin.json")).read()
             fh.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "env": dict(os.environ), "helper": helper_info,
                                  "helper_key": KEY, "has_key": "ANTHROPIC_API_KEY" in os.environ, **extra}) + "\\n")
     init = {"type": "system", "subtype": "init", "apiKeySource": cfg.get("API_KEY_SOURCE", "FAKE_SOURCE_PLACEHOLDER"),
-            "skills": cfg.get("SKILLS", ["qa-demo"]), "tools": ["Read", "Skill"]}
+            "skills": cfg.get("SKILLS", ["qa-demo"]), "tools": cfg.get("TOOLS", ["Read", "Skill"])}
     if mode != "noinit":
         print(json.dumps(init), flush=True)
     if mode == "hang":
@@ -1845,3 +1851,180 @@ def test_keep_work_takes_only_plain_directory_names(world, value):
     _case_with(world, keep_work=value)
     r = run(world)
     assert r.returncode == 2 and "keep_work" in r.stderr and not records(world)
+
+
+# -- the with-suite configuration: the whole suite as a staged plugin (milestone 5a) ------------------------------------------
+
+SUITE_FILES = {".claude-plugin", "skills", "agents", "LICENSE", "README.md"}
+ANSWER_DIRS = {"evals", "benchmark", "fixtures", "tests", "docs"}
+
+
+def _suite_case(w, **fields):
+    """A case for ``with-suite``: it names no skill, because the staged plugin brings every one."""
+    case = w.root / "suite.json"
+    spec = {"id": "suite-1", "prompt": "Run the tests and report.", "fixture": str(w.root / "fixture")}
+    spec.update(fields)
+    case.write_text(json.dumps(spec))
+    return case
+
+
+def _head_files(*paths):
+    return subprocess.run(["git", "-C", str(REPO), "ls-tree", "-r", "--name-only", "HEAD", "--"] + list(paths),
+                          capture_output=True, text=True, check=True).stdout.split()
+
+
+def _launchers():
+    """The skills of the repository's HEAD that ship a ``scripts/qa.py`` launcher: what a staged plugin holds."""
+    return sorted(p.split("/")[1] for p in _head_files("skills") if re.fullmatch(r"skills/[^/]+/scripts/qa\.py", p))
+
+
+def _names_path(text, root):
+    """Whether ``text`` names ``root``, or a path under it, in either spelling of it."""
+    edge = re.escape(os.pathsep) + r"\s\"'="
+    return any(re.search(r"(?:^|[%s])%s(?=$|[/%s])" % (edge, re.escape(spelling), edge), text)
+               for spelling in {str(root), os.path.realpath(str(root))})
+
+
+def test_staged_copies_hold_no_answer_material(world):
+    """Review Focus 3. The staged plugin holds the plugin's own files and nothing a grader reads; the fixture copy holds one
+    fresh commit, no other ref and no answer material; neither the prompt nor the agent's environment names the repository."""
+    fixture = world.root / "fixture"
+    (fixture / "benchmark" / "answer-keys").mkdir(parents=True)
+    (fixture / "benchmark" / "answer-keys" / "app.json").write_text('{"issues": ["secret expected result"]}\n')
+    (fixture / "answer_key.txt").write_text("secret expected result\n")
+    case = _suite_case(world)
+    for config in ("with-suite", "baseline"):
+        r = run(world, config=config, case=case)
+        assert r.returncode == 0, r.stdout + r.stderr
+    suite_call, base_call = calls(world)
+    staged = suite_call["argv"][suite_call["argv"].index("--plugin-dir") + 1]
+    files = suite_call["plugin_files"]
+    assert pathlib.PurePath(staged).name == "qa-engineering-suite"
+    assert files and {f.split("/")[0] for f in files} <= SUITE_FILES
+    assert not [f for f in files if set(f.split("/")[:-1]) & ANSWER_DIRS]
+    assert {f.split("/")[1] for f in files if f.endswith("/SKILL.md")} == set(_launchers())
+    assert json.loads(suite_call["plugin_manifest"]) == {"name": "qa-engineering-suite"}      # scratch only: deviation 99
+    assert not os.path.exists(staged)                                                         # deleted after the run
+    for call, rec in zip((suite_call, base_call), records(world)):
+        work = pathlib.Path(rec["workdir"])
+        assert len(git(work, "rev-list", "--all")) == 1
+        assert git(work, "for-each-ref", "--format=%(refname)") == git(work, "symbolic-ref", "HEAD")    # the one branch
+        assert git(work, "tag") == [] and git(work, "remote") == []
+        assert git(work, "rev-parse", "HEAD") != git(fixture, "rev-parse", "HEAD")
+        listed = listing(work)
+        assert "app.py" in listed and not [f for f in listed if "answer" in f or "benchmark" in f]
+        assert "secret expected result" not in "".join((work / f).read_text(errors="replace") for f in listed)
+        assert not (work / ".claude").exists()
+        assert call["stdin"] == "Run the tests and report." and not _names_path(call["stdin"], REPO)
+        assert not [name for name, value in call["env"].items() if _names_path(value, REPO)]
+        assert not _names_path(os.path.realpath(call["cwd"]), REPO)
+    assert not _names_path(os.path.realpath(os.path.dirname(staged)), REPO)
+
+
+def _scratch_repo(root):
+    """A repository holding the plugin's files and everything a staged plugin must leave out."""
+    files = {".claude-plugin/marketplace.json": "{}\n", "skills/qa-a/SKILL.md": "---\nname: qa-a\n---\n",
+             "skills/qa-a/scripts/qa.py": "print(1)\n", "skills/qa-a/evals/case.json": "{}\n",
+             "skills/qa-a/evals/plugin/trigger-x/prompt.md": "x\n", "skills/qa-a/references/evals/grader.md": "x\n",
+             "skills/qa-a/references/evals.md": "a file, not an evals directory\n", "agents/qa-x.md": "---\nname: qa-x\n---\n",
+             "benchmark/answer-keys/k.json": "{}\n", "fixtures/f/app.py": "x\n", "tests/test_x.py": "x\n", "docs/d.md": "x\n",
+             "tools/t.py": "x\n", "LICENSE": "license\n", "README.md": "readme\n", "CHANGELOG.md": "x\n"}
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "c1"]):
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
+                        "commit.gpgsign=false"] + args, check=True, capture_output=True)
+    (root / "skills" / "qa-a" / "uncommitted.md").write_text("not in HEAD\n")
+    return root
+
+
+def test_stage_plugin_exports_head_keeps_only_the_plugin_files_and_refuses_links(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("tool missing: git")
+    harness = _harness_module()
+    repo = _scratch_repo(tmp_path / "repo")
+    staged = harness.stage_plugin(repo, tmp_path / "dest")
+    assert staged == tmp_path / "dest" / "qa-engineering-suite"
+    assert listing(staged) == [".claude-plugin/marketplace.json", ".claude-plugin/plugin.json", "LICENSE", "README.md",
+                               "agents/qa-x.md", "skills/qa-a/SKILL.md", "skills/qa-a/references/evals.md",
+                               "skills/qa-a/scripts/qa.py"]
+    assert json.loads((staged / ".claude-plugin" / "plugin.json").read_text()) == {"name": "qa-engineering-suite"}
+    first = git(repo, "rev-parse", "HEAD")[0]
+
+    def commit(message):
+        for args in (["add", "-A"], ["commit", "-qm", message]):
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
+                            "commit.gpgsign=false"] + args, check=True, capture_output=True)
+
+    (repo / ".claude-plugin" / "plugin.json").write_text('{"name": "qa-engineering-suite", "version": "9"}\n')
+    commit("c2")
+    kept = harness.stage_plugin(repo, tmp_path / "dest-2")                  # a manifest the export holds is left as it is
+    assert json.loads((kept / ".claude-plugin" / "plugin.json").read_text())["version"] == "9"
+    os.symlink("../../benchmark", str(repo / "skills" / "qa-a" / "keys"))
+    commit("c3")
+    with pytest.raises(harness.Refused):
+        harness.stage_plugin(repo, tmp_path / "dest-3")
+    again = harness.stage_plugin(repo, tmp_path / "dest-4", first)          # a named commit, never the work tree
+    assert listing(again) == listing(staged)
+    with pytest.raises(harness.Refused):
+        harness.stage_plugin(repo, tmp_path / "dest-5", "--output=/tmp/x")
+
+
+def test_with_suite_loads_the_plugin_dir_and_allows_its_launchers(world):
+    link = world.root / "tmplink"
+    link.symlink_to(world.tmp, target_is_directory=True)        # two spellings of one directory, as /var and /private/var
+    case = _suite_case(world, bash_allow=["python3 -m pytest"], allow_write=True)
+    r = run(world, config="with-suite", case=case, env={"TMPDIR": str(link)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    call, rec = calls(world)[0], records(world)[0]
+    argv = call["argv"]
+    staged = argv[argv.index("--plugin-dir") + 1]
+    real = os.path.realpath(staged)
+    assert staged.startswith(str(link) + os.sep) and real != staged
+    allowed = _allowed(world)
+    assert "Skill" in allowed and "Task" in allowed and "--disable-slash-commands" not in argv
+    names = _launchers()
+    assert len(names) == 16
+    for root in (staged, real):
+        for name in names:
+            assert _permits(allowed, "python3 %s/skills/%s/scripts/qa.py --role verifier --skill %s init" % (root, name, name))
+        assert not _permits(allowed, "python3 %s/skills/qa-api-testing/scripts/endpoint_inventory.py" % root)
+        assert not _permits(allowed, "python3 %s/README.md" % root)
+    assert not _permits(allowed, "python3 skills/qa-api-testing/scripts/qa.py init")
+    launchers = [t for t in allowed if t.startswith("Bash(python3 /") and t.endswith("/scripts/qa.py *)")]
+    assert len(launchers) == len(set(launchers)) and len(launchers) >= 2 * len(names)
+    assert {t[len("Bash(python3 "):-len("/scripts/qa.py *)")].rsplit("/skills/", 1)[1] for t in launchers} == set(names)
+    assert [t for t in allowed if t.startswith("Bash(python3 -m ")] == ["Bash(python3 -m pytest *)"]
+    settings = json.loads(call["settings"])
+    assert settings["sandbox"]["filesystem"]["allowRead"] == [os.path.realpath(call["cwd"]), real]
+    assert os.path.realpath(str(REPO)) in settings["sandbox"]["filesystem"]["denyRead"]
+    assert not (pathlib.Path(rec["workdir"]) / ".claude").exists()           # nothing is installed into the copy
+    head = git(REPO, "rev-parse", "HEAD")[0]
+    assert rec["config"] == "with-suite" and rec["status"] == "ok"
+    assert rec["plugin"] == {"dir": staged, "resolved": real, "commit": head, "launchers": len(names)}
+    assert sorted(rec["skill_sha256"]) == sorted(p.split("/")[1] for p in _head_files("skills") if p.endswith("/SKILL.md"))
+    assert not os.path.exists(staged) and not [p for p in world.tmp.iterdir() if p.name.startswith("qa-eval-plugin-")]
+    # A with-suite case names no skill: the staged plugin brings every one. Refused before anything runs.
+    for field, value in (("skill", str(world.root / "skills" / "qa-demo")), ("skills", ["skills/qa-api-testing"]),
+                         ("agents", ["agents/qa-auditor.md"])):
+        r = run(world, config="with-suite", case=_suite_case(world, **{field: value}))
+        assert r.returncode == 2 and "with-suite" in r.stderr, field
+    # A CLI that does not list --plugin-dir is refused before the ledger is touched.
+    r = run(world, config="with-suite", case=_suite_case(world), env={"FAKE_HELP_OMIT": "--plugin-dir"})
+    assert r.returncode == 3 and "--plugin-dir" in r.stderr
+    assert len(calls(world)) == 1 and len(records(world)) == 1
+    assert run(world, config="baseline", case=_suite_case(world), env={"FAKE_HELP_OMIT": "--plugin-dir"}).returncode == 0
+
+
+def test_the_init_tools_and_those_beyond_the_allow_list_are_recorded(world):
+    """The session lists tools of its own beside the granted ones (Task, TaskStop, ToolSearch, Agent were seen): each run
+    records the init event's list and names the tools its allow list does not hold."""
+    listed = ["Read", "Grep", "Bash", "Skill", "Task", "TaskStop", "ToolSearch", "Agent"]
+    assert run(world, env={"FAKE_TOOLS": listed}).returncode == 0
+    assert run(world, config="with-suite", case=_suite_case(world), env={"FAKE_TOOLS": listed}).returncode == 0
+    assert run(world, env={"FAKE_TOOLS": "not a list"}).returncode == 0
+    skill, suite, unreadable = records(world)
+    assert skill["tools_listed"] == listed and skill["tools_beyond_allow"] == ["Task", "TaskStop", "ToolSearch", "Agent"]
+    assert suite["tools_listed"] == listed and suite["tools_beyond_allow"] == ["TaskStop", "ToolSearch", "Agent"]
+    assert unreadable["tools_listed"] is None and unreadable["tools_beyond_allow"] is None

@@ -1,7 +1,7 @@
 """Runs one skill evaluation case headless in an isolated, budgeted copy of a fixture.
 
-Usage: python -I tools/run_skill_eval.py --case PATH --config with-skill|baseline --model MODEL --budget-usd N --out DIR
-       [--timeout SECONDS] [--ledger PATH] [--keep-workdir]
+Usage: python -I tools/run_skill_eval.py --case PATH --config with-skill|baseline|with-suite --model MODEL --budget-usd N
+       --out DIR [--timeout SECONDS] [--ledger PATH] [--keep-workdir]
 
 The case is a JSON file: ``{"id", "prompt", "fixture", "skill"?, "bash_allow"?, "runtime_venv"?, "system_path_only"?, "exclude"?,
 "keep_history"?, "checkout"?}``. ``fixture`` and ``skill`` are paths, relative ones resolved against the repository root. The harness
@@ -52,6 +52,19 @@ copy's ``.claude/skills/`` beside the single ``skill``, which keeps working; ``a
 it (the path, a parent below the repository, or anything inside a skill directory) is refused with exit 2. The ``Task`` tool is
 allowed, in either configuration so the two arms differ only by what is installed, only when the case declares ``agents``.
 
+``with-suite`` loads the whole suite the way the host loads a plugin, for the benchmark's suite arm; nothing is installed into the
+copy. ``stage_plugin`` exports the repository's ``HEAD`` (resolved to a commit first) with ``git archive`` to
+``<tmp>/qa-eval-plugin-*/qa-engineering-suite/`` (the directory name is the plugin's name), keeping only ``.claude-plugin/``,
+``skills/`` without any ``evals/`` directory, ``agents/``, ``LICENSE`` and ``README.md``. A kept archive member that is not a
+regular file or a directory (a link, a device) refuses the run, and ``.claude-plugin/plugin.json`` is written as
+``{"name": "qa-engineering-suite"}`` in the staged copy only, when the export has none (deviation 99). The run gets
+``--plugin-dir <staged>`` (the CLI's help must list it), ``Skill`` and ``Task`` in ``--allowedTools``, the Bash allow-list entry
+``python3 <staged>/skills/<skill>/scripts/qa.py`` for each launcher of the staged copy under every spelling of its directory (as
+``launcher_variants`` spells the copy), and the staged directory in ``sandbox.filesystem.allowRead``. A ``with-suite`` case names
+no ``skill``, ``skills`` or ``agents`` (exit 2). The ``end`` line records ``plugin`` (the directory as passed, its resolved path,
+the commit, the launcher count) and the staged SKILL.md hashes as ``skill_sha256``. The staged copy is deleted whichever way the
+run ends, ``--keep-workdir`` or not.
+
 ``runtime_venv`` (optional case field) is a directory inside the repository, such as ``.venv39``, holding the interpreter and
 packages the project's tests need. When present its ``bin`` is put first on the child's PATH and the directory is added to
 ``sandbox.filesystem.allowRead``, which re-opens that one path inside the denied repository; it is added to nothing else. A
@@ -61,7 +74,9 @@ path outside the repository is refused.
 ``runtime_venv`` ``bin`` first when one is given, so no scanner installed on the host is on the agent's ``PATH``.
 
 The CLI runs with ``--output-format stream-json --verbose``. The ``init`` event gives ``api_key_source`` and the skills and
-tools listed; the final ``result`` event gives the metrics. A run whose ``api_key_source`` is not ``HELPER_KEY_SOURCE`` (or
+tools listed; the final ``result`` event gives the metrics. The ``end`` line keeps the ``init`` event's ``tools`` as
+``tools_listed`` and names, in ``tools_beyond_allow``, each listed tool that no ``--allowedTools`` entry names: a session lists
+tools of its own beside the granted ones. A run whose ``api_key_source`` is not ``HELPER_KEY_SOURCE`` (or
 that has no ``init`` event) is recorded with status ``failed`` and its cost, whatever else happened. ``HELPER_KEY_SOURCE`` is
 the value the CLI reports when it takes its key from an ``apiKeyHelper`` (measured: ``apiKeyHelper``); if it were ``None`` no
 source would be accepted.
@@ -125,7 +140,8 @@ configurations, and adds ``Edit`` and ``Write`` denies for the repository, the r
 key helper's directory, the same places the ``Read`` denies cover; a deny wins over an allow.
 
 Exit codes: 0 the run finished and was recorded; 1 it failed or timed out and was recorded; 2 bad arguments; 3 refused
-because the budget is reached or a recorded cost is unknown.
+because the budget is reached, a recorded cost is unknown, the key or an essential CLI flag is missing, or (``with-suite``)
+the plugin cannot be staged.
 """
 from __future__ import annotations
 
@@ -134,6 +150,7 @@ import base64
 import datetime
 import fcntl
 import importlib.util
+import io
 import json
 import math
 import os
@@ -143,15 +160,18 @@ import signal
 import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import uuid
 from decimal import Decimal, ROUND_DOWN
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 REPO = Path(__file__).resolve().parent.parent
-CONFIGS = ("with-skill", "baseline")
+CONFIGS = ("with-skill", "baseline", "with-suite")
+PLUGIN_NAME = "qa-engineering-suite"
+PLUGIN_FILES = (".claude-plugin", "skills", "agents", "LICENSE", "README.md")    # what a staged plugin keeps of the export
 DEFAULT_TIMEOUT = 1800
 SETUP_TIMEOUT = 120
 SETUP_OUTPUT_LIMIT = 1_000_000
@@ -259,16 +279,38 @@ def launcher_variants(entry: str, workdir: Path) -> List[str]:
     found = INSTALLED_SKILL.fullmatch(words[1]) if len(words) == 2 else None
     if found is None or ".." in found.group(1).split("/"):
         return [entry]
-    roots = [str(workdir), os.path.realpath(str(workdir))]
+    forms = [entry]
+    for root in rule_roots(workdir):
+        form = "%s %s/%s" % (words[0], root, found.group(1))
+        if form not in forms:
+            forms.append(form)
+    return forms
+
+
+def rule_roots(directory: Path) -> List[str]:
+    """Every spelling of ``directory`` a host may show, as it was made and resolved, and on macOS under both ``/var/…`` and
+    ``/private/var/…``; a spelling that holds whitespace or a character in ``RULE_BREAKERS`` is left out, because it cannot
+    stand in a ``Bash(<prefix> *)`` rule."""
+    roots = [str(directory), os.path.realpath(str(directory))]
     if sys.platform == "darwin":       # /var is a link to /private/var: the host may show either spelling
         roots += ["/private" + r for r in roots if r.startswith("/var/")] + [r[len("/private"):] for r in roots
                                                                               if r.startswith("/private/var/")]
-    forms = [entry]
-    for root in roots:
-        form = "%s %s/%s" % (words[0], root.rstrip("/"), found.group(1))
-        if form not in forms and not (RULE_BREAKERS & set(root)) and not any(ch.isspace() for ch in root):
-            forms.append(form)
-    return forms
+    found: List[str] = []
+    for root in (r.rstrip("/") for r in roots):
+        if root not in found and not (RULE_BREAKERS & set(root)) and not any(ch.isspace() for ch in root):
+            found.append(root)
+    return found
+
+
+def plugin_launchers(staged: Path) -> Tuple[List[str], int]:
+    """``(Bash prefixes, launcher count)`` for a staged plugin: ``python3 <root>/skills/<skill>/scripts/qa.py`` for each skill
+    of ``staged`` that ships a launcher, under every spelling of ``staged`` (``rule_roots``). Only the launchers: the other
+    scripts of a skill are not allowed. Raises ``Refused`` when there is no launcher or no spelling a rule can hold."""
+    names = sorted(p.parent.parent.name for p in staged.glob("skills/*/scripts/qa.py") if p.is_file() and not p.is_symlink())
+    roots = rule_roots(staged)
+    if not names or not roots:
+        raise Refused("the staged plugin has no launcher, or its directory cannot be written in a Bash rule: %s" % staged)
+    return ["python3 %s/skills/%s/scripts/qa.py" % (root, name) for root in roots for name in names], len(names)
 
 
 def check_keep_work(entries: Any) -> List[str]:
@@ -519,6 +561,70 @@ def build_workdir(case: Dict[str, Any], config: str, setup_home: Optional[Path] 
     return workdir
 
 
+# -- the staged plugin (with-suite) -------------------------------------------------------------------------------------
+
+def head_commit(repo: Path) -> str:
+    """The commit ``HEAD`` names in ``repo``; ``Refused`` when there is none."""
+    try:
+        done = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", "HEAD^{commit}"], env=_git_env(),
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refused("git could not read the repository's HEAD: %s" % type(exc).__name__)
+    if done.returncode != 0 or not done.stdout.strip():
+        raise Refused("the repository has no HEAD commit to stage as the plugin")
+    return done.stdout.strip()
+
+
+def _kept(parts: Tuple[str, ...], is_dir: bool) -> bool:
+    """Whether a staged plugin keeps the export path ``parts``: under ``PLUGIN_FILES``, and never in an ``evals`` directory."""
+    if not parts or parts[0] not in PLUGIN_FILES:
+        return False
+    folders = parts[1:] if is_dir else parts[1:-1]
+    return not (parts[0] == "skills" and "evals" in folders)
+
+
+def stage_plugin(repo: Path, dest: Path, rev: str = "HEAD") -> Path:
+    """Exports ``rev`` of ``repo`` with ``git archive`` to ``dest/qa-engineering-suite/`` (the directory name is the plugin's
+    name) and keeps only ``.claude-plugin/``, ``skills/`` without any ``evals/`` directory, ``agents/``, ``LICENSE`` and
+    ``README.md``. Only regular files and directories are written: a kept member of any other type (a symbolic or hard link,
+    a device) refuses the staging, so nothing in the staged copy can lead back into the repository. ``.claude-plugin/plugin.json``
+    is written as ``{"name": "qa-engineering-suite"}`` when the export has none: without a root manifest the CLI resolves no
+    plugin from the export (deviation 99). Returns the staged directory; raises ``Refused``."""
+    if not rev or rev.startswith("-"):
+        raise Refused("the revision to stage must name a commit: %r" % rev)
+    try:
+        archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", rev], env=_git_env(), capture_output=True,
+                                 timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refused("git archive could not run: %s" % type(exc).__name__)
+    if archive.returncode != 0:
+        raise Refused("git archive of %s failed in %s" % (rev, repo))
+    staged = dest / PLUGIN_NAME
+    staged.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as tar:
+        for member in tar.getmembers():
+            parts = PurePosixPath(member.name).parts
+            if not _kept(parts, member.isdir()):
+                continue
+            if PurePosixPath(member.name).is_absolute() or ".." in parts:
+                raise Refused("the export holds a path outside its root: %s" % member.name)
+            if not (member.isfile() or member.isdir()):
+                raise Refused("the export holds a link or a special file, which a staged plugin refuses: %s" % member.name)
+            target = staged.joinpath(*parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = tar.extractfile(member)
+            target.write_bytes(source.read() if source is not None else b"")
+            target.chmod(0o755 if member.mode & 0o111 else 0o644)
+    manifest = staged / ".claude-plugin" / "plugin.json"
+    if not manifest.exists():
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({"name": PLUGIN_NAME}) + "\n", encoding="utf-8")
+    return staged
+
+
 # -- the ledger -------------------------------------------------------------------------------------------------------
 
 class Ledger:
@@ -634,7 +740,8 @@ def plugin_eval_available(exe: str) -> bool:
 
 def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path, tools: List[str], cap: str,
                    runtime_venv: Optional[str] = None, helper_command: Optional[str] = None,
-                   helper_dir: Optional[Path] = None, allow_write: bool = False) -> Dict[str, Any]:
+                   helper_dir: Optional[Path] = None, allow_write: bool = False,
+                   plugin_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Everything that depends on the installed CLI's flags and settings schema, in one place.
 
     Raises ``Refused`` when an essential flag is missing. Confirmed from the CLI's help and docs: flag names, the ``Bash(prefix *)``
@@ -646,8 +753,9 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
     those matching an allow rule (or the CLI's built-in read-only set) run. The sandbox confines what an allowed command can reach.
     ``allowUnsandboxedCommands: false`` turns off unsandboxed retries (the ``dangerouslyDisableSandbox`` parameter is ignored), and
     ``denyInsteadOfPrompting: true`` denies whatever would otherwise wait on a prompt nobody answers. ``runtime_venv`` (an already validated real path) is added to ``allowRead`` only.
+    ``plugin_dir`` (``with-suite``) is passed as ``--plugin-dir`` and its resolved path is added to ``allowRead``.
     """
-    missing = [f for f in ESSENTIAL_FLAGS if f not in help_text]
+    missing = [f for f in ESSENTIAL_FLAGS + (("--plugin-dir",) if plugin_dir is not None else ()) if f not in help_text]
     if missing:
         raise Refused("the installed claude CLI does not list %s; refusing to run without isolation and a per-run cap"
                       % ", ".join(missing))
@@ -673,11 +781,12 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
                 denied.append(tool + rule[len("Read"):])
     # Built-in file tools run outside the sandbox, so both the permission denies and the sandbox denies are needed. The
     # sandbox is always required: if the CLI cannot start it, the run fails rather than running unconfined.
+    allow_read = [keep] + ([runtime_venv] if runtime_venv else []) + ([os.path.realpath(str(plugin_dir))] if plugin_dir else [])
     settings: Dict[str, Any] = {
         "permissions": {"deny": denied, "denyInsteadOfPrompting": True},
         "sandbox": {"enabled": True, "failIfUnavailable": True,
                     "autoAllowBashIfSandboxed": False, "allowUnsandboxedCommands": False,
-                    "filesystem": {"denyRead": deny_read, "allowRead": [keep] + ([runtime_venv] if runtime_venv else [])},
+                    "filesystem": {"denyRead": deny_read, "allowRead": allow_read},
                     "network": {"allowedDomains": []}}}
     if helper_command:
         settings["apiKeyHelper"] = helper_command
@@ -686,6 +795,8 @@ def isolation_plan(help_text: str, config: str, workdir: Path, config_dir: Path,
     args = ["--setting-sources", "project", "--strict-mcp-config", "--mcp-config", str(mcp), "--allowedTools", ",".join(tools),
             "--max-budget-usd", cap]
     args += ["--settings", str(settings_path)]
+    if plugin_dir is not None:
+        args += ["--plugin-dir", str(plugin_dir)]
     slash_off = config == "baseline" and "--disable-slash-commands" in help_text   # with-skill needs its skill invocable
     if slash_off:
         args.append("--disable-slash-commands")
@@ -922,9 +1033,13 @@ def base_tree(workdir: Path, base: Optional[str]) -> Optional[str]:
 
 def installed_skill_hashes(workdir: Path) -> Dict[str, str]:
     """``{skill name: "sha256:<hex>"}`` of each SKILL.md installed in the copy, read before the agent starts."""
+    return skill_hashes(workdir / ".claude" / "skills")
+
+
+def skill_hashes(skills: Path) -> Dict[str, str]:
+    """``{skill name: "sha256:<hex>"}`` of each ``<skill>/SKILL.md`` under ``skills`` (the copy's or a staged plugin's)."""
     import hashlib
     found: Dict[str, str] = {}
-    skills = workdir / ".claude" / "skills"
     if skills.is_dir() and not skills.is_symlink():
         for folder in sorted(skills.iterdir()):
             path = folder / "SKILL.md"
@@ -1147,6 +1262,7 @@ def extract_metrics(stdout: str) -> Dict[str, Any]:
             "api_key_source": source if isinstance(source, str) else None,
             "skills": [x for x in skills if isinstance(x, str)] if isinstance(skills, list) else None,
             "skill_tool": ("Skill" in tools) if isinstance(tools, list) else None,
+            "tools": [x for x in tools if isinstance(x, str)] if isinstance(tools, list) else None,
             "tokens": {"input": _count(usage.get("input_tokens")), "output": _count(usage.get("output_tokens")),
                        "cache_read": _count(usage.get("cache_read_input_tokens")),
                        "cache_creation": _count(usage.get("cache_creation_input_tokens"))}}
@@ -1351,6 +1467,9 @@ def main(argv: Sequence[str]) -> int:
     signal.signal(signal.SIGTERM, _on_sigterm)       # before anything is created, so a SIGTERM always reaches a ``finally``
     args = parse(argv)
     case = load_case(Path(args.case))
+    suite = args.config == "with-suite"
+    if suite and [field for field in ("skill", "skills", "agents") if field in case]:
+        raise usage_error("a with-suite case names no skill, skills or agents: the staged plugin brings the whole suite")
     out, ledger = Path(args.out), Ledger(Path(args.ledger))
     key = os.environ.get(KEY_VAR, "")
     if not key:
@@ -1364,8 +1483,11 @@ def main(argv: Sequence[str]) -> int:
     if missing:
         return refuse("the installed claude CLI does not list %s; refusing to run without isolation and a per-run cap"
                       % ", ".join(missing))
+    if suite and "--plugin-dir" not in help_text:
+        return refuse("the installed claude CLI does not list --plugin-dir; with-suite cannot load the staged plugin")
 
-    extra_tools = (["Skill"] if args.config == "with-skill" else []) + (["Task"] if case.get("agents") else [])
+    extra_tools = (["Skill"] if args.config in ("with-skill", "with-suite") else []) \
+        + (["Task"] if suite or case.get("agents") else [])
     venv = case.get("runtime_venv")
     venv_real = os.path.realpath(str(resolve(venv))) if venv else None
     run_id = uuid.uuid4().hex[:12]
@@ -1379,26 +1501,36 @@ def main(argv: Sequence[str]) -> int:
         shutil.rmtree(str(setup_home), ignore_errors=True)
     base, skills = base_commit(workdir), installed_skill_hashes(workdir)     # before the agent can change either
     tree, early_keys = base_tree(workdir, base), kernel_keys(workdir)       # the setup's keys, before the agent can change them
-    bash_rules: List[str] = []
-    for entry in case.get("bash_allow", []):
-        for form in launcher_variants(entry.strip(), workdir):
+    helper_dir: Optional[Path] = None
+    plugin_root: Optional[Path] = None
+    try:
+        plugin: Optional[Dict[str, Any]] = None
+        launchers: List[str] = []
+        if suite:     # staged outside the repository and the copy; deleted below, whichever way this ends
+            plugin_root = Path(tempfile.mkdtemp(prefix="qa-eval-plugin-"))
+            commit = head_commit(REPO)
+            staged = stage_plugin(REPO, plugin_root, commit)
+            launchers, count = plugin_launchers(staged)
+            skills = skill_hashes(staged / "skills")
+            plugin = {"dir": str(staged), "resolved": os.path.realpath(str(staged)), "commit": commit, "launchers": count}
+        bash_rules: List[str] = []
+        for form in [f for entry in case.get("bash_allow", []) for f in launcher_variants(entry.strip(), workdir)] + launchers:
             if "Bash(%s *)" % form not in bash_rules:
                 bash_rules.append("Bash(%s *)" % form)
-    tools = list(BASE_TOOLS) + bash_rules + extra_tools
-    if case.get("allow_write") is True:       # the allow covers the copy only; the settings deny the rest
-        scope = os.path.realpath(str(workdir)).lstrip("/")
-        tools += ["%s(//%s/**)" % (tool, scope) for tool in WRITE_TOOLS]
-    helper_dir: Optional[Path] = None
-    try:
+        tools = list(BASE_TOOLS) + bash_rules + extra_tools
+        if case.get("allow_write") is True:       # the allow covers the copy only; the settings deny the rest
+            scope = os.path.realpath(str(workdir)).lstrip("/")
+            tools += ["%s(//%s/**)" % (tool, scope) for tool in WRITE_TOOLS]
         helper_dir = Path(tempfile.mkdtemp(prefix="qa-eval-key-"))   # outside the copy, deleted with it, whichever way this ends
         helper_command = write_key_helper(key, helper_dir)
         return _run_in(args, case, key, exe, help_text, tools, venv_real, run_id, workdir, out, ledger, setup_log,
-                       helper_command, helper_dir, base, skills, tree, early_keys)
+                       helper_command, helper_dir, base, skills, tree, early_keys, plugin)
     except Refused as exc:
         return refuse(str(exc))
     finally:
-        if helper_dir is not None:
-            shutil.rmtree(str(helper_dir), ignore_errors=True)
+        for folder in (helper_dir, plugin_root):
+            if folder is not None:
+                shutil.rmtree(str(folder), ignore_errors=True)
         if not args.keep_workdir:
             shutil.rmtree(str(workdir), ignore_errors=True)
 
@@ -1406,7 +1538,7 @@ def main(argv: Sequence[str]) -> int:
 def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, help_text: str, tools: List[str],
             venv_real: Optional[str], run_id: str, workdir: Path, out: Path, ledger: "Ledger", setup_log: List[str],
             helper_command: str, helper_dir: Path, base: Optional[str] = None, skills: Optional[Dict[str, str]] = None,
-            tree: Optional[str] = None, early_keys: Sequence[bytes] = ()) -> int:
+            tree: Optional[str] = None, early_keys: Sequence[bytes] = (), plugin: Optional[Dict[str, Any]] = None) -> int:
     """Everything after the working copy exists; ``main`` deletes the copy whichever way this ends."""
     home = Path(tempfile.mkdtemp(prefix="qa-eval-home-"))
     try:
@@ -1414,7 +1546,8 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
             with ledger.locked():
                 cap = run_cap(check_budget(ledger.read(), args.budget_usd))
                 plan = isolation_plan(help_text, args.config, workdir, home / "config", tools, cap, venv_real,
-                                      helper_command, helper_dir, case.get("allow_write") is True)
+                                      helper_command, helper_dir, case.get("allow_write") is True,
+                                      Path(plugin["dir"]) if plugin else None)
                 ledger.append({"event": "start", "run_id": run_id, "timestamp": now_utc(), "case_id": case["id"],
                                "config": args.config, "model": args.model})
         except Refused as exc:
@@ -1442,6 +1575,8 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
         status = "ok"
     if (HELPER_KEY_SOURCE is None or metrics["api_key_source"] != HELPER_KEY_SOURCE) and status != "interrupted":
         status = "failed"          # the run was not paid with the helper's key, so it proves nothing
+    granted = {tool.split("(", 1)[0] for tool in tools}
+    listed = metrics["tools"]
     record = {"event": "end", "run_id": run_id, "timestamp": now_utc(), "case_id": case["id"], "config": args.config,
               "model": args.model, "engine": "claude -p", "plugin_eval_available": plugin_eval_available(exe),
               "command": command[1:], "prompt_via": "stdin", "isolation": {k: v for k, v in plan.items() if k != "args"},
@@ -1449,7 +1584,10 @@ def _run_in(args: argparse.Namespace, case: Dict[str, Any], key: str, exe: str, 
               "timed_out": outcome["timed_out"], "cost_usd": cost, "cost_unknown": cost is None,
               "duration_ms": metrics["duration_ms"], "wall_ms": outcome["wall_ms"], "tokens": metrics["tokens"],
               "api_key_source": metrics["api_key_source"], "swept_pids": len(outcome["swept"]), "sweeper_blind": outcome["sweeper_blind"], "skills_listed": metrics["skills"], "skill_tool_present": metrics["skill_tool"],
+              "tools_listed": listed, "tools_beyond_allow": None if listed is None else [t for t in listed if t not in granted],
               "skill_sha256": skills or {}, "base_commit": base, "fixture_tree": tree}
+    if plugin is not None:
+        record["plugin"] = plugin
     try:                                       # first the ledger line, before anything that can fail
         ledger.append(record)
     except OSError as exc:
