@@ -3,7 +3,7 @@
 One finding per problem, each written to `.qa/work/release/<name>.json` with Write and recorded with
 `finding add --json .qa/work/release/<name>.json`. A problem your reading or the skill's checks found is recorded even when
 no linter ran: that is what `suspected` is for. Category `pipeline`, whose anchors are rated in the `FUNC` column of
-`.claude/skills/qa-release/scripts/_kernel/policies/severity-rubric.json`; the kernel refuses an anchor of another column.
+`<skill-dir>/scripts/_kernel/policies/severity-rubric.json`; the kernel refuses an anchor of another column.
 
 ## How sure: `verification_status`
 

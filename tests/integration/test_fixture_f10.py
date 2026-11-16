@@ -133,7 +133,7 @@ def test_f10_files_load_nothing_from_a_real_host():
 
 MOBILE = REPO / "skills" / "qa-mobile"
 MOBILE_TOOLS_MD = MOBILE / "references" / "tools.md"
-MOBILE_PREFIX = ["python3", ".claude/skills/qa-mobile/scripts/qa.py", "--role", "verifier", "--skill", "qa-mobile"]
+MOBILE_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "verifier", "--skill", "qa-mobile"]
 SEED_RULES = {"F10-01": "cleartext-traffic", "F10-02": "exported-without-permission", "F10-03": "ats-arbitrary-loads",
               "F10-04": "backup-enabled"}
 

@@ -50,18 +50,19 @@ def test_no_other_agent_files_ship():
 
 
 ORCHESTRATOR = REPO / "skills" / "qa-orchestrator"
-LITERAL_LAUNCHER = re.compile(r"python3 (?:\.\./\.\./\.\./)?\.claude/skills/[a-z0-9-]+/scripts/qa\.py")
+LITERAL_LAUNCHER = re.compile(r"python3 <skill-dir>/scripts/qa\.py")
 
 
 def test_orchestrator_text_has_no_shell_variable_launcher():
-    """Every launcher call in the orchestrator's text is written out literally: a shorthand, a placeholder directory or a shell
-    variable makes the agent build the command through a variable, which no permission rule matches."""
+    """Every launcher call in the orchestrator's text is written out literally from `<skill-dir>`, the base directory the host
+    shows: a shorthand, another placeholder directory or a shell variable makes the agent build the command through a variable,
+    which no permission rule matches."""
     for path in [ORCHESTRATOR / "SKILL.md"] + sorted((ORCHESTRATOR / "references").glob("*.md")):
         text = path.read_text(encoding="utf-8")
         name = path.relative_to(REPO).as_posix()
-        assert "<skill-dir>" not in text and "<skills-dir>" not in text, name
+        assert "<skills-dir>" not in text and ".claude/skills/" not in text, name
         assert not re.search(r"`qa [a-z<]", text), name                     # the `qa <command>` shorthand
         assert not re.search(r"\$\{?[A-Za-z_]\w*", text), name              # a shell variable expansion
-        assert not re.search(r"(?:^|[`;&\s])[A-Za-z_]\w*=[\"']?(?:python3|\.claude|\S*scripts/)", text, re.M), name  # an assignment
+        assert not re.search(r"(?:^|[`;&\s])[A-Za-z_]\w*=[\"']?(?:python3|\.claude|<skill-dir>|\S*scripts/)", text, re.M), name  # an assignment
         assert len(re.findall(r"scripts/qa\.py", text)) == len(LITERAL_LAUNCHER.findall(text)), name
-    assert "python3 .claude/skills/qa-orchestrator/scripts/qa.py --role coordinator --skill qa-orchestrator" in (ORCHESTRATOR / "SKILL.md").read_text(encoding="utf-8")
+    assert "python3 <skill-dir>/scripts/qa.py --role coordinator --skill qa-orchestrator" in (ORCHESTRATOR / "SKILL.md").read_text(encoding="utf-8")

@@ -52,7 +52,7 @@ Write a driver with the Write tool at `.qa/work/database/trace_driver.py`: one f
 
 ## Finding template
 
-Write each finding with the Write tool under `.qa/work/database/`, then `python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database finding add --json .qa/work/database/<name>.json`. Placeholders are in angle brackets.
+Write each finding with the Write tool under `.qa/work/database/`, then `python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-database finding add --json .qa/work/database/<name>.json`. Placeholders are in angle brackets.
 
 ```json
 {

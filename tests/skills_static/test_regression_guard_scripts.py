@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -454,11 +455,18 @@ def test_fail_to_pass_end_to_end_on_the_f7_fix(tmp_path):
     assert reply["outcome"] == "passed", reply                 # the kernel decides; the script only proposed
 
 
-def test_printed_command_is_root_relative_from_a_worktree(tmp_path):
+def test_printed_command_names_the_launcher_beside_the_script_from_a_worktree(tmp_path):
+    """The printed launcher is the one in the skill's own base directory, as an absolute path built from the script's own
+    location: the same file whatever the working directory and wherever the skill is installed, never an install path."""
     root, _c, runs, tree, _qa = _f7_two_runs(tmp_path)
     code, out, err = run("fail_to_pass.py", "--fix", "FIX-001", "--base-run", runs[0], "--head-run", runs[1], cwd=root / tree)
     assert code == 0 and out["status"] == "proposed", err
     assert out["run_from"] == "Run from the project root:"
-    assert out["command"].startswith("python3 .claude/skills/qa-regression-guard/scripts/qa.py ")
+    assert shlex.split(out["command"])[:2] == ["python3", str((SCRIPTS / "qa.py").resolve())]
     printed = json.dumps(out)
-    assert str(root) not in printed and str(SCRIPTS) not in printed
+    assert str(root) not in printed and ".claude/skills" not in printed
+
+
+def test_the_default_launcher_is_the_one_beside_the_script():
+    out = f2p.select(selection_state(), "FIX-001", "EXE-B", "EXE-H", changed_tests=set())
+    assert shlex.split(out["command"])[:2] == ["python3", str((SCRIPTS / "qa.py").resolve())]

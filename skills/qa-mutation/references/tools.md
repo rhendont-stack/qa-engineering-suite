@@ -2,13 +2,13 @@
 
 This skill installs nothing. A missing tool makes a run `blocked`: report what is missing and what the user could install. Every kernel call is written out in full. From the project root:
 
-`python3 .claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation <command>`
+`python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation <command>`
 
 Inside a suite worktree:
 
-`cd <root>/.qa/work/wt-<hex> && python3 ../../../.claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation <command>`
+`cd <root>/.qa/work/wt-<hex> && python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation <command>`
 
-`<root>` is the absolute path of the project root. The `cd` stays in effect for later Bash calls, so go back with `cd <root> && …`.
+`<root>` is the absolute path of the project root, and `<skill-dir>` the skill's base directory (SKILL.md, Tools). The `cd` stays in effect for later Bash calls, so go back with `cd <root> && …`.
 
 ## Kernel commands used
 
@@ -37,7 +37,7 @@ also_copy = pytest.ini
 
 - `also_copy` lists the test-runner configuration at the project root that the tests need: `pytest.ini`, `conftest.py`, `tox.ini` or `pyproject.toml`, one per line, indented on the lines after the first. Without it, pytest running inside `mutants/` finds the worktree's own configuration one level up. That configuration puts the worktree, with the unmutated code, on the import path, so every mutant "survives" or mutmut reports that no test reaches any mutant. That result is about the setup, not the tests.
 - `source_paths` takes directories. mutmut mutates every file in them, so a file outside the question still gets its own line in the report. Quote the score of the file asked about from `by_file`, and the overall score next to it.
-- The run, with the conversion inside it: `cd <root>/.qa/work/wt-<hex> && python3 ../../../.claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation run --timeout 900 --report 'mutation:{evidence}/mutation-report.json' --shell -- 'mutmut run && python3 ../../../.claude/skills/qa-mutation/scripts/mutmut_to_report.py --root . --out {evidence}/mutation-report.json'`. mutmut exits 0 whatever survives. A non-zero exit means mutmut itself failed (for example, "failed to run the clean tests": the baseline is not green for the selection), and the converter does not run.
+- The run, with the conversion inside it: `cd <root>/.qa/work/wt-<hex> && python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation run --timeout 900 --report 'mutation:{evidence}/mutation-report.json' --shell -- 'mutmut run && python3 <skill-dir>/scripts/mutmut_to_report.py --root . --out {evidence}/mutation-report.json'`. mutmut exits 0 whatever survives. A non-zero exit means mutmut itself failed (for example, "failed to run the clean tests": the baseline is not green for the selection), and the converter does not run.
 - Then, from the root: `ingest mutation .qa/evidence/<EXE>/reports/mutation-report.json --from <EXE>`. Its `strength` is `structured`.
 - Status table, mutmut 3.8.1 → schema: killed → Killed; survived → Survived; no tests → NoCoverage; timeout → Timeout; caught by type check → CompileError; segfault and suspicious → RuntimeError; skipped → Ignored; interrupted and not checked → Pending. `scripts/mutmut_to_report.py` applies it and places each mutant on the line it changes.
 - Read a mutant's change: `cd <root>/.qa/work/wt-<hex> && mutmut show <mutant name>`. The stored report already gives each mutant's line and its "before -> after" in `description`.
@@ -46,7 +46,7 @@ also_copy = pytest.ini
 
 PIT mutates bytecode in memory and changes no source file. It needs the project's build (Gradle `info.solidsoft.pitest` or Maven `pitest-maven`) with `outputFormats` set to `XML`. Without that setting, PIT writes HTML only, and HTML is not converted.
 
-- Run it in a suite worktree on the host, with the conversion in the same run, as for mutmut: `cd <root>/.qa/work/wt-<hex> && python3 ../../../.claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation run --timeout 1800 --report 'mutation:{evidence}/mutation-report.json' --shell -- './gradlew pitest --offline && python3 ../../../.claude/skills/qa-mutation/scripts/pit_to_report.py --xml build/reports/pitest/mutations.xml --out {evidence}/mutation-report.json --source-root src/main/java'`. For Maven, `mvn -o org.pitest:pitest-maven:mutationCoverage` and `--xml target/pit-reports/mutations.xml`. The worktree is the isolation: `build/` and `target/` are written there, never in the user's checkout. It needs a JDK and the build's dependencies in the offline cache. If they are not there, the run fails: report it.
+- Run it in a suite worktree on the host, with the conversion in the same run, as for mutmut: `cd <root>/.qa/work/wt-<hex> && python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation run --timeout 1800 --report 'mutation:{evidence}/mutation-report.json' --shell -- './gradlew pitest --offline && python3 <skill-dir>/scripts/pit_to_report.py --xml build/reports/pitest/mutations.xml --out {evidence}/mutation-report.json --source-root src/main/java'`. For Maven, `mvn -o org.pitest:pitest-maven:mutationCoverage` and `--xml target/pit-reports/mutations.xml`. The worktree is the isolation: `build/` and `target/` are written there, never in the user's checkout. It needs a JDK and the build's dependencies in the offline cache. If they are not there, the run fails: report it.
 - Then, from the root: `ingest mutation .qa/evidence/<EXE>/reports/mutation-report.json --from <EXE>`: `structured`.
 - Not in a container. The kernel keeps in a run's evidence only the files a declared report names, and it has no format for PIT's XML, so an XML copied to `{evidence}` is removed when the run is recorded, and a later conversion has nothing to read. A score converted from a copy taken any other way is `attested`. Without a host JDK, report that no score can be recorded, and why.
 - Status table, PIT 1.30.2 → schema: KILLED → Killed; SURVIVED → Survived; NO_COVERAGE → NoCoverage; TIMED_OUT → Timeout; NON_VIABLE → CompileError; MEMORY_ERROR and RUN_ERROR → RuntimeError; NOT_STARTED and STARTED → Pending; EQUIVALENT → Ignored.
@@ -54,7 +54,7 @@ PIT mutates bytecode in memory and changes no source file. It needs the project'
 
 ## JavaScript and TypeScript: StrykerJS
 
-StrykerJS works in a sandbox copy and writes mutation-testing-report-schema JSON itself (`reporters: ["json"]`, file `reports/mutation/mutation.json`), so no converter is needed. Run it in the pinned Node image, copying the JSON into the run's evidence and declaring it as the run's report, so the kernel keeps it: `python3 .claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation run --container <node image>@sha256:<digest> --report 'mutation:{evidence}/mutation.json' --shell -- 'npx stryker run && cp reports/mutation/mutation.json {evidence}/mutation.json'`. `node_modules` with Stryker must already be in the project. Then `ingest mutation .qa/evidence/<EXE>/reports/mutation.json --from <EXE>`: `structured`.
+StrykerJS works in a sandbox copy and writes mutation-testing-report-schema JSON itself (`reporters: ["json"]`, file `reports/mutation/mutation.json`), so no converter is needed. Run it in the pinned Node image, copying the JSON into the run's evidence and declaring it as the run's report, so the kernel keeps it: `python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation run --container <node image>@sha256:<digest> --report 'mutation:{evidence}/mutation.json' --shell -- 'npx stryker run && cp reports/mutation/mutation.json {evidence}/mutation.json'`. `node_modules` with Stryker must already be in the project. Then `ingest mutation .qa/evidence/<EXE>/reports/mutation.json --from <EXE>`: `structured`.
 
 ## Other languages
 
@@ -64,8 +64,8 @@ cosmic-ray (Python), cargo-mutants (Rust), Infection (PHP), Stryker.NET and grem
 
 Coverage is measured in the same worktree on the same test selection, as two recorded runs:
 
-1. `cd <root>/.qa/work/wt-<hex> && python3 ../../../.claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation run -- python -m coverage run --branch --source=<package> -m pytest -p no:cacheprovider -q <tests>`
-2. `cd <root>/.qa/work/wt-<hex> && python3 ../../../.claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation run --report 'cobertura:{evidence}/coverage.xml' -- python -m coverage xml --include=<file asked about> -o {evidence}/coverage.xml`
+1. `cd <root>/.qa/work/wt-<hex> && python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation run -- python -m coverage run --branch --source=<package> -m pytest -p no:cacheprovider -q <tests>`
+2. `cd <root>/.qa/work/wt-<hex> && python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation run --report 'cobertura:{evidence}/coverage.xml' -- python -m coverage xml --include=<file asked about> -o {evidence}/coverage.xml`
 
 The second run prints `measurements` with `lines_covered`/`lines_total` and `branches_covered`/`branches_total` for the included file. Line coverage is `lines_covered / lines_total`. For JaCoCo, ingest `build/reports/jacoco/test/jacocoTestReport.xml` as `jacoco`. For Jest or Vitest, ingest `coverage/lcov.info` as `lcov`.
 

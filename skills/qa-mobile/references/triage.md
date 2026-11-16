@@ -53,7 +53,7 @@ device check ran: that is what `suspected` is for.
 | `ats-insecure-exception` | `SEC-M1` | whether the domain's exception is justified | `MASTG-TEST-0236` |
 | `get-task-allow` | `SEC-L1` | whether this entitlements file signs the distributed build | none |
 
-The anchors are rated in the `SEC` column of `.claude/skills/qa-mobile/scripts/_kernel/policies/severity-rubric.json`.
+The anchors are rated in the `SEC` column of `<skill-dir>/scripts/_kernel/policies/severity-rubric.json`.
 
 ## Negative evidence: what is not a finding
 

@@ -1,6 +1,6 @@
 # Weakening patterns
 
-`scripts/test_weakening_scan.py` flags each hunk below. A hit is a lead, not a verdict: read the hunk (`python3 .claude/skills/qa-regression-guard/scripts/git_read.py diff --base <base> --head <head> --path <path>`), decide whether the change is legitimate, and either record a `test-quality` finding or clear it in the answer with the reason. Contents: the rules, switching a mechanism off, the finding template.
+`scripts/test_weakening_scan.py` flags each hunk below. A hit is a lead, not a verdict: read the hunk (`python3 <skill-dir>/scripts/git_read.py diff --base <base> --head <head> --path <path>`), decide whether the change is legitimate, and either record a `test-quality` finding or clear it in the answer with the reason. Contents: the rules, switching a mechanism off, the finding template.
 
 ## The rules
 

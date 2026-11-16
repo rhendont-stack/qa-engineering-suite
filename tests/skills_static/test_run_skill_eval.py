@@ -600,6 +600,60 @@ def test_bash_allow_adds_narrow_prefixes_and_refuses_bare_interpreters(world):
         assert run(world).returncode == 2
 
 
+def _permits(rules, command):
+    """Whether a ``Bash(<prefix> *)`` rule in ``rules`` covers ``command``, read as a prefix of the command text."""
+    return any(r.startswith("Bash(") and r.endswith(" *)") and command.startswith(r[5:-3] + " ") for r in rules)
+
+
+def test_bash_allow_accepts_the_absolute_launcher_path(world):
+    """The host shows a loaded skill's base directory as an absolute path, so a skill that calls its launcher from there must
+    be allowed both through the copy's ``mkdtemp`` path and through its resolved path (on macOS ``/var`` is ``/private/var``);
+    the relative form of earlier runs stays allowed, and nothing else is."""
+    link = world.root / "tmplink"
+    link.symlink_to(world.tmp, target_is_directory=True)
+    spec = json.loads(world.case.read_text())
+    spec["bash_allow"] = ["python3 .claude/skills/qa-demo/scripts/qa.py", "python3 ../../../.claude/skills/qa-demo/scripts/qa.py",
+                          "python3 -m pytest"]
+    world.case.write_text(json.dumps(spec))
+    assert run(world, env={"TMPDIR": str(link)}).returncode == 0
+    work = records(world)[0]["workdir"]
+    real = os.path.realpath(work)
+    assert work.startswith(str(link) + os.sep) and real != work           # the two spellings of one directory
+    allowed = _allowed(world)
+    bash = [t for t in allowed if t.startswith("Bash(")]
+    assert len(bash) == len(set(bash))
+    for root in (work, real):
+        assert _permits(allowed, "python3 %s/.claude/skills/qa-demo/scripts/qa.py --role verifier --skill qa-demo init" % root)
+        assert not _permits(allowed, "python3 %s/.claude/skills/qa-other/scripts/qa.py init" % root)
+        assert not _permits(allowed, "python3 %s/app.py" % root)
+    assert _permits(allowed, "python3 .claude/skills/qa-demo/scripts/qa.py init")
+    assert _permits(allowed, "python3 ../../../.claude/skills/qa-demo/scripts/qa.py init")
+    assert [t for t in bash if t.startswith("Bash(python3 -m ")] == ["Bash(python3 -m pytest *)"]   # no variant of it
+    assert not [t for t in bash if ":" in t or not t.endswith(" *)")]
+    assert allowed.index("Skill") > max(allowed.index(t) for t in bash)
+
+
+def test_launcher_variants_name_every_spelling_of_the_copy(monkeypatch):
+    module = _harness_module()
+    entry = "python3 .claude/skills/qa-x/scripts/qa.py"
+    copy = "/var/folders/ab/cd/T/qa-eval-0000"
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    forms = module.launcher_variants(entry, pathlib.Path(copy))
+    assert forms[0] == entry
+    assert set(forms) == {entry, "python3 /var/folders/ab/cd/T/qa-eval-0000/.claude/skills/qa-x/scripts/qa.py",
+                          "python3 /private/var/folders/ab/cd/T/qa-eval-0000/.claude/skills/qa-x/scripts/qa.py"}
+    worktree = module.launcher_variants("python3 ../../../.claude/skills/qa-x/scripts/qa.py", pathlib.Path(copy))
+    assert set(worktree[1:]) == set(forms[1:])
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    plain = module.launcher_variants(entry, pathlib.Path("/tmp/qa-eval-1111"))
+    resolved = os.path.realpath("/tmp/qa-eval-1111")
+    assert set(plain) == {entry, "python3 /tmp/qa-eval-1111/.claude/skills/qa-x/scripts/qa.py",
+                          "python3 %s/.claude/skills/qa-x/scripts/qa.py" % resolved}
+    for other in ("python3 -m pytest", "mutmut run", "python3 tests/run_junit.py"):
+        assert module.launcher_variants(other, pathlib.Path(copy)) == [other]
+    assert module.launcher_variants(entry, pathlib.Path("/tmp/a,b")) == [entry]       # a comma would split the tool list
+
+
 def test_the_ledger_is_independent_of_out(world):
     assert run(world, budget="0.30", env={"FAKE_COST": "0.30"}).returncode == 0
     other = world.root / "elsewhere"

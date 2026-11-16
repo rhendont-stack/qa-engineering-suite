@@ -15,6 +15,8 @@ grade = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(grade)
 
 QA = "python3 .claude/skills/qa-orchestrator/scripts/qa.py --role coordinator --skill qa-orchestrator "
+# The base directory the host shows for a skill installed in an evaluation copy, in both macOS spellings.
+COPY_SKILLS = ("/var/folders/ab/cd/T/qa-eval-0000/.claude/skills", "/private/var/folders/ab/cd/T/qa-eval-0000/.claude/skills")
 EXE = "EXE-01M7131W2HAYFN1Q4XYMYT474T"
 
 
@@ -72,7 +74,9 @@ def test_a_skill_that_is_listed_but_never_called_is_not_used():
 
 
 @pytest.mark.parametrize("command, expected", [(QA + "init", "init"), (QA + "config set project.trust trusted --approval x", "config set project.trust trusted --approval x"),
-                                              ("python3 -m pytest", None), ("ls", None)])
+                                              ("python3 -m pytest", None), ("ls", None)]
+                         + [("python3 %s/qa-orchestrator/scripts/qa.py --role coordinator --skill qa-orchestrator plan status" % c, "plan status")
+                            for c in COPY_SKILLS])
 def test_kernel_words(command, expected):
     assert grade.kernel_words(command) == expected
 
@@ -374,7 +378,8 @@ def test_a_launcher_through_a_shell_variable_is_seen(command):
 
 
 @pytest.mark.parametrize("command", [QA + "plan status", QA + 'config set project.trust trusted --approval "fine, $5 is ok"',
-                                     "git log -n 5 --format='%H %P %s'", "cd /tmp/x/.qa/work/wt-1 && python3 ../../../.claude/skills/qa-regression-guard/scripts/qa.py run"])
+                                     "git log -n 5 --format='%H %P %s'", "cd /tmp/x/.qa/work/wt-1 && python3 ../../../.claude/skills/qa-regression-guard/scripts/qa.py run"]
+                         + ["cd /tmp/x/.qa/work/wt-1 && python3 %s/qa-regression-guard/scripts/qa.py --role verifier run" % c for c in COPY_SKILLS])
 def test_a_literal_launcher_call_is_not_a_variable_form(command):
     assert not grade.VARIABLE_LAUNCHER.search(command)
 

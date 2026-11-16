@@ -43,18 +43,18 @@ A template is used whole. Whether a skill is installed is decided by the kernel,
 
 ## What to hold
 
-Hold a step only with the launcher call `python3 .claude/skills/qa-orchestrator/scripts/qa.py --role coordinator --skill qa-orchestrator plan update <PLAN> <STEP> --status not_run --reason "<reason>"`, and only for one of these reasons:
+Hold a step only with the launcher call `python3 <skill-dir>/scripts/qa.py --role coordinator --skill qa-orchestrator plan update <PLAN> <STEP> --status not_run --reason "<reason>"`, and only for one of these reasons:
 
 - The user descoped it in their own words. Quote them in the reason.
 - It cannot apply to this target. Example: S01 of a targeted review for a change that touches only documentation. Say what you saw that makes it inapplicable.
-- A `qa-regression-guard` step (installed, and `ready` or `pending`) with no base commit: the head commit has an empty `parents` list in `python3 .claude/skills/qa-orchestrator/scripts/git_read.py log --count 1`, or that call fails. Reason: `no base commit to compare`.
+- A `qa-regression-guard` step (installed, and `ready` or `pending`) with no base commit: the head commit has an empty `parents` list in `python3 <skill-dir>/scripts/git_read.py log --count 1`, or that call fails. Reason: `no base commit to compare`.
 - The time or cost limit the user gave is used up: reason `out_of_budget`, lowest-priority steps first.
 
 Never hold a step because it is hard, slow, or because its skill is missing (that is `blocked`, by itself).
 
 ## Scope
 
-- "Scoped" means the paths the change touches. Pass them to the mapping step. With a base branch, the paths are the `files` that `python3 .claude/skills/qa-orchestrator/scripts/git_read.py diff --base <base> --head HEAD --merge-base --name-only` lists.
+- "Scoped" means the paths the change touches. Pass them to the mapping step. With a base branch, the paths are the `files` that `python3 <skill-dir>/scripts/git_read.py diff --base <base> --head HEAD --merge-base --name-only` lists.
 - With a single commit, or with no base to compare against, the scope is the whole tree at `HEAD`. State that as an assumption in the first answer. It is not a reason to ask the user anything.
 - A dirty tree is noted in the summary: results are tied to the commit and to the working-tree diff the kernel recorded.
 

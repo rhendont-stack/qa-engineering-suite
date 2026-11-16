@@ -24,10 +24,17 @@ from helpers import REPO
 SKILL = REPO / "skills" / "qa-mutation"
 CAPTURE = REPO / "tests" / "corpus" / "producers" / "mutmut_mutation"
 APPROVAL = "This is our own project; I approve running its tests on this machine."
-# The skill's mutation run, as SKILL.md writes it: the tool, then the converter, the converted file declared as the report.
+# The skill's mutation run, as SKILL.md writes it: the tool, then the converter from the skill's base directory (here the
+# installed copy's absolute path), the converted file declared as the report.
 CONVERTED = "{evidence}/mutation-report.json"
-SHELL = ("mutmut run && python3 ../../../.claude/skills/qa-mutation/scripts/mutmut_to_report.py --root . --out "
-         + CONVERTED)
+
+
+def skill_dir(work):
+    return work / ".claude" / "skills" / "qa-mutation"
+
+
+def shell_of(work):
+    return "mutmut run && python3 %s/scripts/mutmut_to_report.py --root . --out %s" % (skill_dir(work), CONVERTED)
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="tool missing: git")
 
@@ -86,7 +93,7 @@ def mutation_run(tmp_path):
     wt = work / tree["path"]
     shutil.copytree(str(CAPTURE / "captured" / "mutants"), str(wt / "mutants"))   # what mutmut run leaves in the worktree
     (wt / "setup.cfg").write_text("[mutmut]\nsource_paths = shipping/\npytest_add_cli_args_test_selection = tests/\n")
-    code, run = kernel(work, env, "run", "--timeout", "300", "--report", "mutation:" + CONVERTED, "--shell", "--", SHELL, cwd=wt)
+    code, run = kernel(work, env, "run", "--timeout", "300", "--report", "mutation:" + CONVERTED, "--shell", "--", shell_of(work), cwd=wt)
     assert code == 0 and run["status"] == "passed", run
     return work, env, tree["commit"], run
 
@@ -166,8 +173,8 @@ def test_pit_converted_inside_its_run_in_a_worktree_is_structured(tmp_path):
     kernel(work, env, "config", "set", "project.trust", "trusted", "--approval", APPROVAL, role="user", skill="user")
     code, tree = kernel(work, env, "worktree", "add", "HEAD")
     assert code == 0, tree
-    shell = ("./gradlew pitest --offline && python3 ../../../.claude/skills/qa-mutation/scripts/pit_to_report.py"
-             " --xml build/reports/pitest/mutations.xml --out " + CONVERTED + " --source-root src/main/java")
+    shell = ("./gradlew pitest --offline && python3 %s/scripts/pit_to_report.py" % skill_dir(work)
+             + " --xml build/reports/pitest/mutations.xml --out " + CONVERTED + " --source-root src/main/java")
     code, run = kernel(work, env, "run", "--report", "mutation:" + CONVERTED, "--shell", "--", shell, cwd=work / tree["path"])
     assert code == 0 and run["status"] == "passed", run
     counts = {}
@@ -205,7 +212,7 @@ def test_a_conversion_run_of_its_own_would_give_a_gate_score_no_mutation_run_pro
     shutil.copytree(str(CAPTURE / "captured" / "mutants"), str(wt / "mutants"))
     (wt / "setup.cfg").write_text("[mutmut]\nsource_paths = shipping/\n")
     code, run = kernel(work, env, "run", "--report", "mutation:" + CONVERTED, "--", "python3",
-                       "../../../.claude/skills/qa-mutation/scripts/mutmut_to_report.py", "--root", ".", "--out", CONVERTED, cwd=wt)
+                       str(skill_dir(work) / "scripts" / "mutmut_to_report.py"), "--root", ".", "--out", CONVERTED, cwd=wt)
     assert run["status"] == "passed" and [m["kind"] for m in run["measurements"]] == ["mutants"], run
     code, shown = kernel(work, env, "state", "show")
     assert not any("mutmut run" in " ".join(r["command"]["argv"]) for r in shown["state"]["executions"].values())

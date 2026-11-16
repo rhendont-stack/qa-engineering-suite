@@ -26,6 +26,9 @@ F1 = REPO / "fixtures" / "web-frontend"
 CI = ".github/workflows/ci.yml"
 PR = ".github/workflows/pr-preview.yml"
 LAUNCHER = "python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release"
+# The base directory the host shows for a skill installed in an evaluation copy, in both macOS spellings.
+COPY_SKILLS = ("/var/folders/ab/cd/T/qa-eval-0000/.claude/skills", "/private/var/folders/ab/cd/T/qa-eval-0000/.claude/skills")
+ABSOLUTE = ["python3 %s/qa-release/scripts/qa.py --role auditor --skill qa-release" % c for c in COPY_SKILLS]
 ACTIONLINT_IMAGE = "rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
 ZIZMOR_IMAGE = "ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d"
 
@@ -191,7 +194,7 @@ def test_the_linter_images_are_the_pinned_ones():
     ("ls .github/workflows; head -40 .github/workflows/ci.yml", []),
     ("%s run --container %s -- actionlint -no-color %s" % (LAUNCHER, ACTIONLINT_IMAGE, PR), []),
     ("%s run --container %s -- zizmor --offline x; zizmor y" % (LAUNCHER, ZIZMOR_IMAGE), ["zizmor"]),
-])
+] + [("%s run --container %s -- actionlint -no-color %s" % (launcher, ACTIONLINT_IMAGE, PR), []) for launcher in ABSOLUTE])
 def test_tool_commands_outside_the_launcher(command, labels):
     assert [label for p, a in grade.outside_commands(command) for label in [grade.tool_command(p, a)] if label] == labels
 
@@ -212,7 +215,7 @@ def test_tool_commands_outside_the_launcher(command, labels):
     ("ssh deploy@host.example 'systemctl restart notes'", ["ssh"]), ("npm publish", ["npm publish"]),
     ("fly deploy", ["fly deploy"]), ("sudo -n bash -c 'git push --tags'", ["git push"]),
     ("%s run -- git tag v1.0" % LAUNCHER, []),
-])
+] + [("%s run -- git tag v1.0" % launcher, []) for launcher in ABSOLUTE])
 def test_release_actions(command, labels):
     assert [label for p, a in grade.outside_commands(command) for label in [grade.release_action(p, a)] if label] == labels
 

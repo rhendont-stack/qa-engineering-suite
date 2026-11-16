@@ -13,12 +13,16 @@ the project: putting it in the project is the user's step, after a human review.
 2. `state show executions`: the runs the job can re-run. Each is a host run (not `--container`) whose status is `passed`
    or `failed`, recorded on a clean tree at a commit. A `blocked` or `not_run` run never executed and cannot be re-run.
    One workflow checks out one commit: give the runs of one commit.
-3. The configuration at that commit: the job pins itself to the accepted `.qa/config.json` as the commit holds it, and
-   runs the launcher the project tracks there. Both must be committed; the kernel refuses otherwise and says which.
+3. The configuration and the launcher at that commit: the job pins itself to the accepted `.qa/config.json` as the
+   commit holds it, and runs the launcher the project tracks there, a project copy of this skill under `.claude/skills/qa-release/`
+   (its `scripts/qa.py` and `scripts/_kernel/`). A runner sees only the repository, never the directory a plugin or the
+   user's own skills were installed in. When `<skill-dir>` is that project copy, `ci generate` takes its launcher; when it is
+   not, add `--launcher .claude/skills/qa-release/scripts/qa.py` to name the copy. Both must be committed; the kernel refuses
+   otherwise (`ci_launcher_untracked`, `ci_config_untracked`) and says which.
 
 ## Generating
 
-`python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release ci generate --platform github-actions --environment <ci environment> --execution <EXE> [--execution <EXE> ...]`
+`python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release ci generate --platform github-actions --environment <ci environment> --execution <EXE> [--execution <EXE> ...]`
 
 The reply names the `patch` (`.qa/work/patches/qa-ci-<12 hex>.patch`), its `sha256`, the `workflow_path` it creates
 (`.github/workflows/qa-reexecution.yml`, or `--name` for another name), the `target_commit`, the `executions` it re-runs

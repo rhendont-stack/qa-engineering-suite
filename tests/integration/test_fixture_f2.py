@@ -242,7 +242,7 @@ def test_f2_runs_as_a_service(live):  # noqa: F811
 
 TOOLS_MD = REPO / "skills" / "qa-api-testing" / "references" / "tools.md"
 INVENTORY_SCRIPT = REPO / "skills" / "qa-api-testing" / "scripts" / "endpoint_inventory.py"
-LEG_PREFIX = ["python3", ".claude/skills/qa-api-testing/scripts/qa.py", "--role", "verifier", "--skill", "qa-api-testing"]
+LEG_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "verifier", "--skill", "qa-api-testing"]
 SERVE = "cd /work && exec python3 -m orders_api.server --host 127.0.0.1 --port 8080"
 APPROVAL = "Hacer lo necesario para ejecutar el requerimiento, no me preguntes, ejecute de forma autonoma."
 LEG_IMAGES = {"spectral": "spectral", "schemathesis-baseline": "schemathesis", "schemathesis-active": "schemathesis", "hurl": "hurl"}
@@ -393,7 +393,7 @@ def test_f2_hurl_leg(api_project):
 # orders API started as the run's service on 127.0.0.1:8000 (ZAP listens on 8080 itself).
 
 SECURITY = REPO / "skills" / "qa-security"
-SECURITY_PREFIX = ["python3", ".claude/skills/qa-security/scripts/qa.py", "--role", "auditor", "--skill", "qa-security"]
+SECURITY_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "auditor", "--skill", "qa-security"]
 ZAP_SERVE = "cd /work && exec python3 -m orders_api.server --host 127.0.0.1 --port 8000"
 
 
@@ -456,7 +456,7 @@ def test_f2_zap_api_active_leg(api_project):
 # with the user's words. The k6 legs run one at a time, never beside another leg.
 
 PERFORMANCE = REPO / "skills" / "qa-performance"
-PERFORMANCE_PREFIX = ["python3", ".claude/skills/qa-performance/scripts/qa.py", "--role", "verifier", "--skill", "qa-performance"]
+PERFORMANCE_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "verifier", "--skill", "qa-performance"]
 K6_SERVE = SERVE + " --preload 300"
 LOAD_LIMITS = {"max_vus": 10, "max_rps": 100, "max_duration_s": 60}
 LEG_SCRIPT = "f2-orders-listing"

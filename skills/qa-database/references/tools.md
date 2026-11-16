@@ -4,7 +4,7 @@ This skill installs nothing and downloads nothing. Its own scripts use only Pyth
 
 Every kernel call is written out in full, from the project root:
 
-`python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database <command>`
+`python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-database <command>`
 
 ## Kernel commands used
 
@@ -12,10 +12,10 @@ Every kernel call is written out in full, from the project root:
 |---|---|
 | `init`, `config show` | The workspace; `project.trust` and the declared environments |
 | `authorize --environment local --activity db-ephemeral --approval "<the user's words>"` | The grant a migration roundtrip on a throwaway SQLite file needs. Only words in which the user approves throwaway or test databases on this machine; it expires at the end of the day |
-| `run --activity db-ephemeral --category data-integrity --report junit:{evidence}/roundtrip.xml -- python3 .claude/skills/qa-database/scripts/migration_roundtrip.py --migrations <dir> --db .qa/work/database/roundtrip.sqlite --junit {evidence}/roundtrip.xml` | The roundtrip (up, down, up) on a fresh SQLite file under `.qa/work/database/`, reported as JUnit. On the host it needs `project.trust` `trusted` as well as the grant; in an untrusted project it is `blocked`, `not_authorized`, with `untrusted project` in its limitations, and the roundtrip's route is the pinned Python image (below). Exit codes of `run`: 0 passed, 1 failed, 3 blocked, 4 inconclusive, 5 not_run |
+| `run --activity db-ephemeral --category data-integrity --report junit:{evidence}/roundtrip.xml -- python3 <skill-dir>/scripts/migration_roundtrip.py --migrations <dir> --db .qa/work/database/roundtrip.sqlite --junit {evidence}/roundtrip.xml` | The roundtrip (up, down, up) on a fresh SQLite file under `.qa/work/database/`, reported as JUnit. On the host it needs `project.trust` `trusted` as well as the grant; in an untrusted project it is `blocked`, `not_authorized`, with `untrusted project` in its limitations, and the roundtrip's route is the pinned Python image (below). Exit codes of `run`: 0 passed, 1 failed, 3 blocked, 4 inconclusive, 5 not_run |
 | `config set project.trust trusted --approval "<the user's words>"` | Only from words that approve running the project's code on this machine; needed for every host run but static analysis: the roundtrip, a race test, a query trace. Words that approve throwaway or test databases are not such words |
 | `run --category data-integrity --report junit:{evidence}/race.xml -- python3 -B -m pytest -p no:cacheprovider .qa/work/database/<test>.py --junitxml={evidence}/race.xml` | A race test you wrote from `assets/race_template.py` (`references/integrity-checks.md`) |
-| `run --category performance --report junit:{evidence}/trace.xml -- python3 .claude/skills/qa-database/scripts/query_trace.py --driver .qa/work/database/trace_driver.py --junit {evidence}/trace.xml` | Statements per call, through `sqlite3.set_trace_callback` |
+| `run --category performance --report junit:{evidence}/trace.xml -- python3 <skill-dir>/scripts/query_trace.py --driver .qa/work/database/trace_driver.py --junit {evidence}/trace.xml` | Statements per call, through `sqlite3.set_trace_callback` |
 | `run --container IMAGE@DIGEST [--service IMAGE@DIGEST --service-run SHELL --service-user UID:GID] [--input .qa/work/database/FILE] [--report FORMAT:{evidence}/FILE] --shell -- 'SHELL'` | One tool run in a container. The project is copied to `/work`; an `--input` file under `.qa/work/` is at `/work/.qa-input/<path below .qa/work/>`; `{evidence}` is `/qa-evidence` inside. Without a `--report`, the run's stdout is what is kept (`.qa/evidence/<EXE>/stdout.log`) |
 | `ingest sarif .qa/work/database/<file>.sarif --from <EXE> --category data-integrity` | Attach a converted SARIF report to the run that produced it |
 | `finding add --json .qa/work/database/<name>.json` | One finding (template in `references/integrity-checks.md`) |
@@ -23,9 +23,9 @@ Every kernel call is written out in full, from the project root:
 
 The scripts that only read files run directly, from the project root, and write only under `.qa/work/database/`:
 
-- `python3 .claude/skills/qa-database/scripts/schema_model.py --migrations <dir> [--code <package dir>]` writes `.qa/work/database/schema-model.json` and prints the leads (`missing-foreign-key`, `missing-uniqueness`, `drop-without-copy`, `missing-down-step`, `unindexed-foreign-key`, `not-null-without-value`), each with `path:line` and `approximate: true`, and the statements it could not read (`unreadable`).
-- `python3 .claude/skills/qa-database/scripts/squawk_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out .qa/work/database/squawk.sarif` turns a stored squawk JSON report into SARIF 2.1.0.
-- `python3 .claude/skills/qa-database/scripts/migration_roundtrip.py --copy-to-work` copies the roundtrip script to `.qa/work/database/`, for a container run's `--input`.
+- `python3 <skill-dir>/scripts/schema_model.py --migrations <dir> [--code <package dir>]` writes `.qa/work/database/schema-model.json` and prints the leads (`missing-foreign-key`, `missing-uniqueness`, `drop-without-copy`, `missing-down-step`, `unindexed-foreign-key`, `not-null-without-value`), each with `path:line` and `approximate: true`, and the statements it could not read (`unreadable`).
+- `python3 <skill-dir>/scripts/squawk_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out .qa/work/database/squawk.sarif` turns a stored squawk JSON report into SARIF 2.1.0.
+- `python3 <skill-dir>/scripts/migration_roundtrip.py --copy-to-work` copies the roundtrip script to `.qa/work/database/`, for a container run's `--input`.
 
 ## The images
 
@@ -35,7 +35,7 @@ The scripts that only read files run directly, from the project root, and write 
 | PostgreSQL | 17.11 (alpine) | `postgres@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0` (server user uid 70) |
 | Python, for the SQLite roundtrip | 3 (slim) | `python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928` |
 
-An image not in `.claude/skills/qa-database/scripts/_kernel/policies/container-images.json` is not used.
+An image not in `<skill-dir>/scripts/_kernel/policies/container-images.json` is not used.
 
 ## squawk: lint PostgreSQL migrations
 
@@ -50,17 +50,17 @@ An image not in `.claude/skills/qa-database/scripts/_kernel/policies/container-i
 squawk skips files under dot directories (`.qa/`, `.git/`, `.github/`) when it walks a directory, so pass the files by an explicit glob or path, as below. Exit 1 means violations were found, so a run with violations is `failed`; the violations are in the run's `stdout.log`.
 
 ```qa-leg squawk grant=none report=none
-python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database run --container ghcr.io/sbdchd/squawk@sha256:b7c8c1ad82439744e676c0c0b2447d95ea0866f72ae1f4095d8653dfc89db916 --activity static-analysis --category data-integrity --timeout 300 --shell -- 'squawk --reporter json /work/<migrations>/*.sql'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-database run --container ghcr.io/sbdchd/squawk@sha256:b7c8c1ad82439744e676c0c0b2447d95ea0866f72ae1f4095d8653dfc89db916 --activity static-analysis --category data-integrity --timeout 300 --shell -- 'squawk --reporter json /work/<migrations>/*.sql'
 ```
 
 Then convert the stored JSON and attach it to that run, `<EXE>` being the run's execution id:
 
 ```qa-leg squawk-sarif grant=none report=sarif
-python3 .claude/skills/qa-database/scripts/squawk_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out .qa/work/database/squawk.sarif
+python3 <skill-dir>/scripts/squawk_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out .qa/work/database/squawk.sarif
 ```
 
 ```qa-leg squawk-ingest grant=none report=sarif
-python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database ingest sarif .qa/work/database/squawk.sarif --from <EXE> --category data-integrity
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-database ingest sarif .qa/work/database/squawk.sarif --from <EXE> --category data-integrity
 ```
 
 Quote rule ids and lines from the stored SARIF, never from memory. A squawk alert is provisional: confirm a data loss with the roundtrip.
@@ -78,7 +78,7 @@ Quote rule ids and lines from the stored SARIF, never from memory. A squawk aler
 On the host when the project is trusted (see Kernel commands used). In an untrusted project, the route is the pinned Python image (`python-newest`), after `migration_roundtrip.py --copy-to-work`, with the copied script passed by `--input`; without a container engine that run is `blocked` too, so name it as the route instead of starting it:
 
 ```qa-leg sqlite-roundtrip grant=none report=junit
-python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category data-integrity --timeout 300 --input .qa/work/database/migration_roundtrip.py --report 'junit:{evidence}/roundtrip.xml' --shell -- 'cd /work && python3 -I -B /work/.qa-input/database/migration_roundtrip.py --migrations <migrations> --db .qa/work/database/roundtrip.sqlite --junit /qa-evidence/roundtrip.xml'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-database run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category data-integrity --timeout 300 --input .qa/work/database/migration_roundtrip.py --report 'junit:{evidence}/roundtrip.xml' --shell -- 'cd /work && python3 -I -B /work/.qa-input/database/migration_roundtrip.py --migrations <migrations> --db .qa/work/database/roundtrip.sqlite --junit /qa-evidence/roundtrip.xml'
 ```
 
 ## PostgreSQL: roundtrip and query plan on a throwaway server
@@ -105,7 +105,7 @@ EXPLAIN (FORMAT JSON) SELECT * FROM order_items WHERE order_id = 42;
 ```
 
 ```qa-leg postgres-roundtrip grant=db-ephemeral report=none
-python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database run --environment fixture-pg --activity db-ephemeral --category data-integrity --container postgres@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0 --service postgres@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0 --service-run 'export POSTGRES_HOST_AUTH_METHOD=trust PGDATA=/tmp/pgdata; exec docker-entrypoint.sh postgres -c listen_addresses=127.0.0.1 -c fsync=off' --service-user 70:70 --timeout 600 --input .qa/work/database/pg-plan.sql --shell -- 'export QA_FIXTURE_DSN="host=127.0.0.1 port=5432 user=postgres dbname=postgres"
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-database run --environment fixture-pg --activity db-ephemeral --category data-integrity --container postgres@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0 --service postgres@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0 --service-run 'export POSTGRES_HOST_AUTH_METHOD=trust PGDATA=/tmp/pgdata; exec docker-entrypoint.sh postgres -c listen_addresses=127.0.0.1 -c fsync=off' --service-user 70:70 --timeout 600 --input .qa/work/database/pg-plan.sql --shell -- 'export QA_FIXTURE_DSN="host=127.0.0.1 port=5432 user=postgres dbname=postgres"
 for i in $(seq 1 200); do pg_isready -q -d "$QA_FIXTURE_DSN" && break; sleep 0.3; done
 cd /work/<migrations> || exit 10
 failed=0

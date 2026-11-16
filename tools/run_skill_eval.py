@@ -18,7 +18,10 @@ commands, and always passes a settings file that denies reading the repository, 
 home and the key helper's directory. Real confinement depends on the CLI's sandbox, which is always required (``failIfUnavailable``), with no network
 domains allowed. ``--bare`` is not used: it removes the Skill tool and the skill listing, so a skill could never be found by
 its description. Bash is limited to read-only prefixes plus the narrow prefixes a case
-lists in ``bash_allow``; never allow a bare interpreter there. The ``--allowedTools`` list is the Bash allow-list: the settings
+lists in ``bash_allow``; never allow a bare interpreter there. An entry naming a file of an installed skill
+(``python3 .claude/skills/<skill>/scripts/<x>.py``) also allows that file's absolute path in the copy, every spelling of it
+(``launcher_variants``), because a skill calls its scripts from the base directory the host shows when it loads. The
+``--allowedTools`` list is the Bash allow-list: the settings
 turn off ``sandbox.autoAllowBashIfSandboxed`` (being sandboxed approves nothing by itself), turn off
 ``sandbox.allowUnsandboxedCommands`` (no unsandboxed retry) and set ``permissions.denyInsteadOfPrompting`` (an unanswered
 prompt is a denial). The sandbox then confines what an allowed command can reach.
@@ -240,6 +243,32 @@ def load_case(path: Path) -> Dict[str, Any]:
         if not real.startswith(root + os.sep) or not os.path.isdir(os.path.join(real, "bin")):
             raise usage_error("runtime_venv must be a directory with a bin inside the repository: %s" % venv)
     return case
+
+
+INSTALLED_SKILL = re.compile(r"(?:\.\./)*(\.claude/skills/\S+)")
+RULE_BREAKERS = frozenset(",()*")      # a root holding one of these would change the rule or split the comma-joined list
+
+
+def launcher_variants(entry: str, workdir: Path) -> List[str]:
+    """The Bash prefixes one ``bash_allow`` entry stands for, the entry itself first. An entry that names a file of a skill
+    installed in the copy (``python3 .claude/skills/<skill>/scripts/<x>.py``, or its worktree form with ``../`` steps) also
+    stands for that file's absolute path in this copy, the form a skill writes from the base directory the host shows when it
+    loads: under the ``mkdtemp`` path and under its resolved path, and on macOS under both ``/var/…`` and ``/private/var/…``.
+    A root that holds whitespace or a character in ``RULE_BREAKERS`` gives no variant. Any other entry stands for itself."""
+    words = entry.split()
+    found = INSTALLED_SKILL.fullmatch(words[1]) if len(words) == 2 else None
+    if found is None or ".." in found.group(1).split("/"):
+        return [entry]
+    roots = [str(workdir), os.path.realpath(str(workdir))]
+    if sys.platform == "darwin":       # /var is a link to /private/var: the host may show either spelling
+        roots += ["/private" + r for r in roots if r.startswith("/var/")] + [r[len("/private"):] for r in roots
+                                                                              if r.startswith("/private/var/")]
+    forms = [entry]
+    for root in roots:
+        form = "%s %s/%s" % (words[0], root.rstrip("/"), found.group(1))
+        if form not in forms and not (RULE_BREAKERS & set(root)) and not any(ch.isspace() for ch in root):
+            forms.append(form)
+    return forms
 
 
 def check_keep_work(entries: Any) -> List[str]:
@@ -1336,11 +1365,7 @@ def main(argv: Sequence[str]) -> int:
         return refuse("the installed claude CLI does not list %s; refusing to run without isolation and a per-run cap"
                       % ", ".join(missing))
 
-    tools = list(BASE_TOOLS) + ["Bash(%s *)" % b.strip() for b in case.get("bash_allow", [])]
-    if args.config == "with-skill":
-        tools.append("Skill")
-    if case.get("agents"):
-        tools.append("Task")
+    extra_tools = (["Skill"] if args.config == "with-skill" else []) + (["Task"] if case.get("agents") else [])
     venv = case.get("runtime_venv")
     venv_real = os.path.realpath(str(resolve(venv))) if venv else None
     run_id = uuid.uuid4().hex[:12]
@@ -1354,6 +1379,12 @@ def main(argv: Sequence[str]) -> int:
         shutil.rmtree(str(setup_home), ignore_errors=True)
     base, skills = base_commit(workdir), installed_skill_hashes(workdir)     # before the agent can change either
     tree, early_keys = base_tree(workdir, base), kernel_keys(workdir)       # the setup's keys, before the agent can change them
+    bash_rules: List[str] = []
+    for entry in case.get("bash_allow", []):
+        for form in launcher_variants(entry.strip(), workdir):
+            if "Bash(%s *)" % form not in bash_rules:
+                bash_rules.append("Bash(%s *)" % form)
+    tools = list(BASE_TOOLS) + bash_rules + extra_tools
     if case.get("allow_write") is True:       # the allow covers the copy only; the settings deny the rest
         scope = os.path.realpath(str(workdir)).lstrip("/")
         tools += ["%s(//%s/**)" % (tool, scope) for tool in WRITE_TOOLS]
