@@ -151,8 +151,9 @@ def test_verify_install_never_uses_the_callers_config(repo, tmp_path):
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(calls) == 2 + 1 + 2 * 3
     for call in calls:
-        # LC_CTYPE is set by the fake's own interpreter (locale coercion), not by the tool
-        assert set(call["env"]) - {"LC_CTYPE"} == {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "DISABLE_TELEMETRY",
+        # The fake's own process adds these, not the tool: LC_CTYPE (locale coercion), __CF_USER_TEXT_ENCODING (macOS)
+        os_added = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
+        assert set(call["env"]) - os_added == {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "DISABLE_TELEMETRY",
                                                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
         assert call["env"]["DISABLE_TELEMETRY"] == "1" and call["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
         assert call["env"]["HOME"] != str(tmp_path / "callers-home") and call["env"]["CLAUDE_CONFIG_DIR"] != str(tmp_path / "callers")

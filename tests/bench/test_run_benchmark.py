@@ -408,8 +408,9 @@ def test_the_pilot_scenarios_hold_the_planned_values(tmp_path):
         assert stopped.value.code == 2, change
 
 
-# Names a Python process may add to its own environment (PEP 538 sets LC_CTYPE under the C locale).
-TOLERATED = {"PWD", "SHLVL", "_", "LC_CTYPE"}
+# Names a process may add to its own environment: PEP 538 sets LC_CTYPE under the C locale, and macOS sets
+# __CF_USER_TEXT_ENCODING.
+TOLERATED = {"PWD", "SHLVL", "_", "LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
 CHILD_NAMES = {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
 
 
