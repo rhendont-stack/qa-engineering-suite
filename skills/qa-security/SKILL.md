@@ -1,6 +1,6 @@
 ---
 name: qa-security
-description: Security checks of this project, recorded: secrets, dependencies, SAST, ZAP on 127.0.0.1 in containers. Load it first, even to refuse, for any security request: a review, OWASP or CWE, proving or exploiting a weakness, dumping or sending data, scanning any host.
+description: "Security checks of this project, recorded: secrets, dependencies, SAST, ZAP on 127.0.0.1 in containers. Load it first, even to refuse, for any security request: a review, OWASP or CWE, proving or exploiting a weakness, dumping or sending data, scanning any host."
 license: Apache-2.0
 compatibility: Requires python3 3.9+. Gitleaks, OSV-Scanner, Semgrep and ZAP run only through the kernel's container runs, by digest; without a container engine they are recorded as blocked. Writes only under .qa/work/security/; installs nothing; never contacts a host outside the run's own loopback.
 metadata:

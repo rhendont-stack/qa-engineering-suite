@@ -6,6 +6,7 @@ import re
 import pytest
 
 from helpers import REPO
+from qa import catalog
 
 AGENTS = REPO / "agents"
 NAMES = ["qa-auditor", "qa-verifier", "qa-evaluator"]
@@ -13,10 +14,12 @@ EDITING = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 
 def frontmatter(name):
+    """The agent's fields, each value read as the kernel reads a frontmatter value (a double-quoted one decoded), and its body."""
     text = (AGENTS / (name + ".md")).read_text(encoding="utf-8")
     block = re.match(r"---\n(.*?)\n---\n", text, re.S)
     assert block, name
-    fields = dict(line.split(": ", 1) for line in block.group(1).splitlines())
+    fields = {key: catalog._unquote(value) for key, value in (line.split(": ", 1) for line in block.group(1).splitlines())}
+    assert None not in fields.values(), fields
     return fields, text[block.end():]
 
 

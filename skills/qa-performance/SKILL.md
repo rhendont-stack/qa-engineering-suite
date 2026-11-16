@@ -1,6 +1,6 @@
 ---
 name: qa-performance
-description: Load tests of this project's own service with k6, in a container on 127.0.0.1, every number labelled. Load it first, even to refuse: any load, stress or speed question, a p95, latency or throughput target, "is it fast enough", or a load test of any host, production included.
+description: "Load tests of this project's own service with k6, in a container on 127.0.0.1, every number labelled. Load it first, even to refuse: any load, stress or speed question, a p95, latency or throughput target, \"is it fast enough\", or a load test of any host, production included."
 license: Apache-2.0
 compatibility: Requires python3 3.9+. k6 runs only through the kernel's container runs, by digest, against the project's own service started in the same run on 127.0.0.1; without a container engine the run is recorded as blocked. Writes only under .qa/work/performance/; installs nothing; never contacts another host.
 metadata:

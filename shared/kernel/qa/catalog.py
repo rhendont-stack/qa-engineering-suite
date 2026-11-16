@@ -6,8 +6,9 @@ as is anything that is not a regular file or is over ``_MAX_BYTES``. Only skills
 ``qa-engineering-suite`` are listed, so a neighbour from another publisher never joins a plan.
 
 The kernel has no YAML dependency, so the frontmatter is read by a line parser that understands exactly what the suite
-writes: top-level ``key: value`` lines and one level of indented ``key: value`` lines under ``metadata:``. Anything else
-is ignored.
+writes: top-level ``key: value`` lines and one level of indented ``key: value`` lines under ``metadata:``. A value is
+plain, single-quoted (the quotes removed), or double-quoted with ``\\"`` and ``\\\\`` as its only escapes. Anything else is
+ignored, a double-quoted value that does not keep to that form included.
 """
 from __future__ import annotations
 
@@ -27,11 +28,33 @@ _NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 _KEY = re.compile(r"([A-Za-z0-9_-]+):(?:\s+(.*))?$")
 
 
-def _unquote(value: str) -> str:
+def _unquote(value: str) -> Optional[str]:
+    """The text of one frontmatter value; None for a double-quoted value this reader does not decode.
+
+    A double-quoted value decodes ``\\"`` and ``\\\\``, the two escapes the suite writes. Any other backslash sequence, a
+    bare ``"`` inside, or no closing quote of its own gives None: YAML would read such a value otherwise or refuse it, and
+    the reader does not guess. A single-quoted value loses its quotes; any other value is returned as written.
+    """
     value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-        return value[1:-1]
-    return value
+    if value[:1] != '"':
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            return value[1:-1]
+        return value
+    text: List[str] = []
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if char == "\\":
+            if value[index + 1:index + 2] not in ('"', "\\"):
+                return None
+            text.append(value[index + 1])
+            index += 2
+        elif char == '"':
+            return "".join(text) if index == len(value) - 1 else None
+        else:
+            text.append(char)
+            index += 1
+    return None
 
 
 def parse_frontmatter(text: str) -> Optional[Dict[str, object]]:
@@ -54,8 +77,10 @@ def parse_frontmatter(text: str) -> Optional[Dict[str, object]]:
             continue
         key, value = found.group(1), _unquote(found.group(2) or "")
         if indented:
-            if nested is not None:
+            if nested is not None and value is not None:
                 nested[key] = value
+        elif value is None:  # a double-quoted value it does not decode: the field is ignored, not guessed at
+            nested = None
         elif key == "metadata" and not value:
             nested = fields["metadata"] = {}
         else:

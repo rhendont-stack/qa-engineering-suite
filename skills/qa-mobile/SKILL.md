@@ -1,6 +1,6 @@
 ---
 name: qa-mobile
-description: Security review of a mobile app's configuration, recorded: Android manifest, network security config, Gradle SDK levels, iOS Info.plist and entitlements, mapped to OWASP MASVS. Load it first for any mobile app check, a request to install an SDK or emulator, or a device result to record.
+description: "Security review of a mobile app's configuration, recorded: Android manifest, network security config, Gradle SDK levels, iOS Info.plist and entitlements, mapped to OWASP MASVS. Load it first for any mobile app check, a request to install an SDK or emulator, or a device result to record."
 license: Apache-2.0
 compatibility: Requires python3 3.9+. Reads configuration files only; the static check's container leg runs through the kernel by digest. Installs and downloads nothing (no SDK, emulator, Xcode or simulator) and drives no device; device checks are recorded not_run or blocked, with how to run them elsewhere. Writes only under .qa/work/mobile/.
 metadata:

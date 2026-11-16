@@ -1,8 +1,8 @@
 ---
 name: qa-release
-description: Release and CI/CD pipeline review, recorded: workflow, Dockerfile and deploy-doc findings, actionlint and zizmor legs, the release gate's verdict, and a CI re-execution job as a patch. Load it first for any pipeline review, release readiness, deploy, tag or push request, or CI job.
+description: "Release and CI/CD pipeline review, recorded: workflow, Dockerfile and deploy-doc findings, actionlint and zizmor legs, the release gate's verdict, and a CI re-execution job as a patch. Load it first for any pipeline review, release readiness, deploy, tag or push request, or CI job."
 license: Apache-2.0
-compatibility: Requires python3 3.9+. Reads workflow, CI, Dockerfile and documentation files; actionlint and zizmor run only through the kernel, in containers pinned by digest, offline. Deploys, tags, pushes and publishes nothing, runs no gh, and never writes under .github/: the CI job is a patch under .qa/work/patches/ that a person reviews and applies. Writes only under .qa/work/release/.
+compatibility: "Requires python3 3.9+. Reads workflow, CI, Dockerfile and documentation files; actionlint and zizmor run only through the kernel, in containers pinned by digest, offline. Deploys, tags, pushes and publishes nothing, runs no gh, and never writes under .github/: the CI job is a patch under .qa/work/patches/ that a person reviews and applies. Writes only under .qa/work/release/."
 metadata:
   suite: qa-engineering-suite
   suite-version: "0.1.0"

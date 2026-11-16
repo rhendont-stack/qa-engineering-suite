@@ -1,6 +1,6 @@
 ---
 name: qa-api-testing
-description: Checks that an HTTP API does what its OpenAPI contract says: inventories documented and routed operations, runs recorded checks and Spectral, Schemathesis or Hurl in pinned containers on loopback only. Use when asked to test, fuzz or verify an API, its contract, its auth, or for an API pass rate.
+description: "Checks that an HTTP API does what its OpenAPI contract says: inventories documented and routed operations, runs recorded checks and Spectral, Schemathesis or Hurl in pinned containers on loopback only. Use when asked to test, fuzz or verify an API, its contract, its auth, or for an API pass rate."
 license: Apache-2.0
 compatibility: Requires python3 3.9+. Spectral, Schemathesis and Hurl run only through the kernel's container runs, by digest, on 127.0.0.1; without a container engine they are recorded as blocked. Never edits the project; installs nothing; never contacts a host other than loopback.
 metadata:

@@ -1,6 +1,6 @@
 ---
 name: qa-frontend
-description: Front-end checks of this project, recorded: phones, keyboard, page states, WCAG 2.2 A and AA, with Playwright, axe-core and Lighthouse on 127.0.0.1 in containers. Load it first, even to refuse: any UI, mobile or accessibility request, a WCAG yes or no, a live or public site.
+description: "Front-end checks of this project, recorded: phones, keyboard, page states, WCAG 2.2 A and AA, with Playwright, axe-core and Lighthouse on 127.0.0.1 in containers. Load it first, even to refuse: any UI, mobile or accessibility request, a WCAG yes or no, a live or public site."
 license: Apache-2.0
 compatibility: Requires python3 3.9+. Playwright, axe-core and Lighthouse run only through the kernel's container runs, by digest, against the project's own server started in the same run on 127.0.0.1; without a container engine they are recorded as blocked. Writes only under .qa/work/frontend/; installs nothing on this machine; never contacts another host.
 metadata:

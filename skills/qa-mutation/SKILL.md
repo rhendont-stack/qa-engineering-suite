@@ -1,6 +1,6 @@
 ---
 name: qa-mutation
-description: Measures whether tests catch faults: runs a mutation tool in a suite worktree, ingests its report and names the survivors, with line coverage beside the score. Use whenever someone asks if tests are good, effective or enough, asks for a mutation score, or says coverage proves the tests.
+description: "Measures whether tests catch faults: runs a mutation tool in a suite worktree, ingests its report and names the survivors, with line coverage beside the score. Use whenever someone asks if tests are good, effective or enough, asks for a mutation score, or says coverage proves the tests."
 license: Apache-2.0
 compatibility: Requires python3 3.9+ and git. Runs the project's tests and the mutation tool (mutmut or PIT in a suite worktree; StrykerJS through a kernel container run) only through the kernel's run command, in a suite worktree under .qa/work/, with the user's approval. Never edits the project; installs nothing and needs no network.
 metadata:

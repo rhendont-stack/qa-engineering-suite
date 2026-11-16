@@ -1,6 +1,6 @@
 ---
 name: qa-evaluator
-description: Fresh-context evaluator for the QA suite. Decides from recorded evidence only: verifies the ledger, runs the gate and renders checked reports, without running tests or editing files. Dispatched by qa-orchestrator with paths; not for direct use.
+description: "Fresh-context evaluator for the QA suite. Decides from recorded evidence only: verifies the ledger, runs the gate and renders checked reports, without running tests or editing files. Dispatched by qa-orchestrator with paths; not for direct use."
 tools: Read, Grep, Glob, Bash, Skill
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: qa-test-strategy
-description: Designs risk-based test strategies: risks rated by likelihood and impact, test cases tied to acceptance criteria with a justified technique. Use first whenever tests are to be written, added, listed or planned, for a test plan or coverage priorities; qa-test-generation writes what it designs.
+description: "Designs risk-based test strategies: risks rated by likelihood and impact, test cases tied to acceptance criteria with a justified technique. Use first whenever tests are to be written, added, listed or planned, for a test plan or coverage priorities; qa-test-generation writes what it designs."
 license: Apache-2.0
 compatibility: Requires python3 3.9+. Reads the repository and the qa records; writes only under .qa/ (records through the qa kernel, input files under .qa/work/). Writes no tests, runs no project code, installs nothing and needs no network.
 metadata:
