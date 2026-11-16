@@ -48,7 +48,8 @@ stage that reaches its cap while grading stops with ``stage_cap_reached`` and ex
 ``refused`` and exit 3; a judge line missing from ``DIR/costs.jsonl`` stops it with ``evidence_incomplete`` and exit 1;
 a grader that fails on one run records ``grader_error`` for it and exits 1. Each judge call's id is kept in
 ``DIR/runs.json`` (``judge_calls``), so a later invocation counts it from the ledger even if ``DIR/costs.jsonl`` lost it.
-The grades and the runs' end lines are then aggregated (``metrics.aggregate``) into ``DIR/metrics.json`` and
+The grades and the runs' end lines are then aggregated (``metrics.aggregate``, its groups the runs ``DIR/runs.json`` records,
+its hard metrics the scenario grader's) into ``DIR/metrics.json`` and
 ``DIR/metrics.md`` (``metrics.render_md``). The invocation records ``"graded"`` (true when every run of the stage has a
 grade) and ``"ungraded"`` (each run left without one, and why).
 
@@ -512,7 +513,7 @@ def main(argv: Sequence[str]) -> int:
             break
     grading_stop, grader_failed = None, False
     if stop is None or stop.status == "stage_cap_reached":
-        grading_stop, grader_failed = grade_stage(args, doc, invocation, out, ledger)
+        grading_stop, grader_failed = grade_stage(args, doc, invocation, out, ledger, scenario.get("grader"))
     else:
         invocation["ungraded"] = [{"run_id": run["run_id"], "reason": "stage_stopped:%s" % stop.status}
                                   for run in doc["runs"] if not (out / "grades" / ("%s.json" % run["run_id"])).is_file()]
@@ -549,9 +550,10 @@ def _end_lines(out: Path, ledger: Any, run_ids: Sequence[str]) -> List[Dict[str,
 
 
 def grade_stage(args: argparse.Namespace, doc: Dict[str, Any], invocation: Dict[str, Any], out: Path,
-                ledger: Any) -> Tuple[Optional[Stop], bool]:
+                ledger: Any, grader: Optional[str] = None) -> Tuple[Optional[Stop], bool]:
     """Grades each run of the stage that has evidence and no grade yet, then writes ``DIR/metrics.json`` and
-    ``DIR/metrics.md``: ``(the reason grading stopped, or None; whether a grader failed on a run)``."""
+    ``DIR/metrics.md`` over the runs ``DIR/runs.json`` records (one with no end line or no grade holds no hard metric) and
+    the hard metrics of ``grader``: ``(the reason grading stopped, or None; whether a grader failed on a run)``."""
     graders, metrics = _load("qa_bench_grade_run", GRADE_RUN), _load("qa_bench_metrics", METRICS)
     key = os.environ.get(KEY_VAR, "")
     doc.setdefault("judge_calls", [])
@@ -606,7 +608,8 @@ def grade_stage(args: argparse.Namespace, doc: Dict[str, Any], invocation: Dict[
             grades.append(json.loads((out / "grades" / ("%s.json" % run_id)).read_text(encoding="utf-8")))
         except (OSError, ValueError):
             continue
-    summary = metrics.aggregate(grades, _end_lines(out, ledger, run_ids))
+    summary = metrics.aggregate(grades, _end_lines(out, ledger, run_ids), recorded=doc["runs"], scenario=doc.get("scenario"),
+                                grader=grader)
     for name, text in (("metrics.json", json.dumps(summary, indent=2, sort_keys=True) + "\n"),
                        ("metrics.md", metrics.render_md(summary))):
         scratch = out / (name + ".tmp")
