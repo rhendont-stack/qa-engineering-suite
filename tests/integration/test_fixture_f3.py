@@ -362,7 +362,7 @@ def test_postgres_variant_applies_as_a_service(live, qa_cli, tmp_path):  # noqa:
 
 DB_TOOLS_MD = REPO / "skills" / "qa-database" / "references" / "tools.md"
 DB_SCRIPTS = REPO / "skills" / "qa-database" / "scripts"
-DB_LEG_PREFIX = ["python3", ".claude/skills/qa-database/scripts/qa.py", "--role", "auditor", "--skill", "qa-database"]
+DB_LEG_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "auditor", "--skill", "qa-database"]
 A5_APPROVAL = "Hacer lo necesario para ejecutar el requerimiento, no me preguntes, ejecute de forma autonoma."
 PG_EXECUTION_APPROVAL = "Sí, apruébalo"       # the user's answer of 2026-11-12 to: approve test-execution-local on fixture-pg in this test's own workspace
 FIXTURE_PG = {"id": "fixture-pg", "class": "ephemeral", "base_urls": [], "dsn_env": "QA_FIXTURE_DSN", "ephemeral_basis": "user-declared"}
@@ -408,8 +408,8 @@ def db_leg_cli(project, words, timeout=1500):
 
 
 def db_script(project, words):
-    """A ``python3 .claude/skills/qa-database/scripts/<name>`` block, run from the project root with the repository's copy."""
-    assert words[0] == "python3" and words[1].startswith(".claude/skills/qa-database/scripts/"), words[:2]
+    """A ``python3 <skill-dir>/scripts/<name>`` block, run from the project root with the repository's copy."""
+    assert words[0] == "python3" and words[1].startswith("<skill-dir>/scripts/"), words[:2]
     done = subprocess.run([sys.executable, "-I", "-B", str(DB_SCRIPTS / words[1].rsplit("/", 1)[1])] + words[2:], cwd=str(project.root),
                           capture_output=True, text=True, timeout=120)
     return done.returncode, json.loads(done.stdout)

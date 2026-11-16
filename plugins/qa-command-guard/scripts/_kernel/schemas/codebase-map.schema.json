@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codebase map",
+  "description": "The factual, commit-pinned map of a repository that qa-codebase-intelligence writes to .qa/map/codebase-map.json. Every statement in it (every entry of every list, and the summary) carries evidence: a path inside the repository or the ID of a recorded execution. What could not be established is listed under unknowns, never described elsewhere.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": 1},
+    "commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "dirty": {"type": "boolean"},
+    "tree": {"$ref": "#/$defs/sha256"},
+    "generated_at": {"$ref": "defs.schema.json#/$defs/timestamp"},
+    "summary": {"$ref": "#/$defs/statement"},
+    "stack": {"type": "array", "items": {"$ref": "#/$defs/stack_entry"}},
+    "entry_points": {"type": "array", "items": {"$ref": "#/$defs/entry_point"}},
+    "modules": {"type": "array", "items": {"$ref": "#/$defs/module"}},
+    "data_stores": {"type": "array", "items": {"$ref": "#/$defs/data_store"}},
+    "integrations": {"type": "array", "items": {"$ref": "#/$defs/integration"}},
+    "critical_components": {"type": "array", "items": {"$ref": "#/$defs/critical_component"}},
+    "hotspots": {"type": "array", "items": {"$ref": "#/$defs/hotspot"}},
+    "tests": {"type": "array", "items": {"$ref": "#/$defs/test_suite"}},
+    "unknowns": {"type": "array", "items": {"$ref": "#/$defs/unknown"}}
+  },
+  "required": ["schema_version", "commit", "dirty", "tree", "generated_at", "summary", "stack", "entry_points", "modules",
+               "data_stores", "integrations", "critical_components", "hotspots", "tests", "unknowns"],
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "path": {
+      "type": "string",
+      "description": "A path below the repository root, with / separators: no leading slash, no .. segment, no drive letter, no backslash, no control character; spaces are allowed.",
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(^|/)\\.\\.(/|$))[^\\x00-\\x1f\\\\]+$",
+      "maxLength": 512
+    },
+    "evidence_item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {"$ref": "#/$defs/path"},
+            "lines": {"type": "string", "pattern": "^[0-9]+(-[0-9]+)?$"}
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {"exe": {"$ref": "defs.schema.json#/$defs/exe_id"}},
+          "required": ["exe"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_item"}, "minItems": 1, "maxItems": 50},
+    "text": {"type": "string", "minLength": 1, "maxLength": 600},
+    "statement": {
+      "type": "object",
+      "properties": {"text": {"$ref": "#/$defs/text"}, "evidence": {"$ref": "#/$defs/evidence"}},
+      "required": ["text", "evidence"],
+      "additionalProperties": false
+    },
+    "stack_entry": {
+      "type": "object",
+      "properties": {
+        "language": {"type": "string", "minLength": 1},
+        "frameworks": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["language", "frameworks", "evidence"],
+      "additionalProperties": false
+    },
+    "entry_point": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["main", "cli", "route", "handler", "worker", "scheduler", "consumer", "library-api", "other"]},
+        "name": {"$ref": "#/$defs/text"},
+        "path": {"$ref": "#/$defs/path"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["kind", "name", "path", "evidence"],
+      "additionalProperties": false
+    },
+    "module": {
+      "type": "object",
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "language": {"type": "string", "minLength": 1},
+        "purpose": {"$ref": "#/$defs/text"},
+        "imports": {"type": "array", "items": {"$ref": "#/$defs/path"}},
+        "fan_in": {"type": "integer", "minimum": 0},
+        "fan_out": {"type": "integer", "minimum": 0},
+        "approximate": {"type": "boolean"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["path", "language", "purpose", "imports", "fan_in", "fan_out", "approximate", "evidence"],
+      "additionalProperties": false
+    },
+    "data_store": {
+      "type": "object",
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "name": {"$ref": "#/$defs/text"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["kind", "name", "evidence"],
+      "additionalProperties": false
+    },
+    "integration": {
+      "type": "object",
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "name": {"$ref": "#/$defs/text"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["kind", "name", "evidence"],
+      "additionalProperties": false
+    },
+    "critical_component": {
+      "type": "object",
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "tags": {"type": "array", "items": {"enum": ["auth", "payments", "pii", "persistence-writes", "money-arithmetic", "external-calls", "other"]}, "minItems": 1},
+        "reason": {"$ref": "#/$defs/text"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["path", "tags", "reason", "evidence"],
+      "additionalProperties": false
+    },
+    "hotspot": {
+      "type": "object",
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "commits": {"type": "integer", "minimum": 0},
+        "lines_changed": {"type": "integer", "minimum": 0},
+        "complexity": {"type": "integer", "minimum": 0},
+        "score": {"type": "number", "minimum": 0},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["path", "commits", "lines_changed", "complexity", "score", "evidence"],
+      "additionalProperties": false
+    },
+    "test_suite": {
+      "type": "object",
+      "properties": {
+        "framework": {"type": "string", "minLength": 1},
+        "command": {"type": ["string", "null"]},
+        "files": {"type": "array", "items": {"$ref": "#/$defs/path"}},
+        "test_count": {"type": "integer", "minimum": 0},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["framework", "command", "files", "test_count", "evidence"],
+      "additionalProperties": false
+    },
+    "unknown": {
+      "type": "object",
+      "properties": {
+        "topic": {"$ref": "#/$defs/text"},
+        "why": {"$ref": "#/$defs/text"},
+        "searched": {"type": "array", "items": {"$ref": "#/$defs/text"}}
+      },
+      "required": ["topic", "why", "searched"],
+      "additionalProperties": false
+    }
+  }
+}

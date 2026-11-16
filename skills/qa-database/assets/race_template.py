@@ -1,7 +1,7 @@
 """Two-connection race test. Copy it to .qa/work/database/test_race_<name>.py, fill the parts marked FILL, run it with qa run.
 
 Run from the project root, after `config set project.trust trusted` from the user's words:
-    python3 .claude/skills/qa-database/scripts/qa.py --role auditor --skill qa-database run --category data-integrity \
+    python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-database run --category data-integrity \
         --report junit:{evidence}/race.xml -- python3 -B -m pytest -p no:cacheprovider \
         .qa/work/database/test_race_<name>.py --junitxml={evidence}/race.xml
 

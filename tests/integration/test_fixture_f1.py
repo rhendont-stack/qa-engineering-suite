@@ -198,7 +198,7 @@ def test_f1_runs_as_a_service(live):  # noqa: F811
 
 FRONTEND = REPO / "skills" / "qa-frontend"
 FRONTEND_TOOLS_MD = FRONTEND / "references" / "tools.md"
-FRONTEND_PREFIX = ["python3", ".claude/skills/qa-frontend/scripts/qa.py", "--role", "verifier", "--skill", "qa-frontend"]
+FRONTEND_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "verifier", "--skill", "qa-frontend"]
 F1_SERVE = "cd /work && exec python3 -B server.py --host 127.0.0.1 --port 8080"
 APPROVAL = "Hacer lo necesario para ejecutar el requerimiento, no me preguntes, ejecute de forma autonoma."
 FRONTEND_LEG_IMAGES = {"frontend-static": "python-newest", "frontend-checks": "playwright", "frontend-axe": "playwright",

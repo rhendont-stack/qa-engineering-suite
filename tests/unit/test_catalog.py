@@ -89,6 +89,31 @@ def test_crlf_comments_and_quotes_are_read(tmp_path):
     assert catalog.list_skills(tmp_path) == [{"name": "qa-x", "dir": "qa-x", "role": "orchestrator", "consumes": [], "produces": []}]
 
 
+def test_a_double_quoted_value_decodes_an_escaped_quote_and_an_escaped_backslash():
+    text = '---\nname: qa-x\ndescription: "Load it first: \\"is it fast enough\\", or C:\\\\work."\n---\n'
+    assert catalog.parse_frontmatter(text)["description"] == 'Load it first: "is it fast enough", or C:\\work.'
+    assert catalog._unquote('"a\\\\\\"b"') == 'a\\"b' and catalog._unquote('""') == ""
+
+
+# Input class: a double-quoted value that YAML would read otherwise or refuse. The reader does not guess at it: the field is
+# left out, as every line it does not understand is.
+@pytest.mark.parametrize("raw", [
+    '"a\\nb"', '"a\\tb"', '"a\\x41"', '"a\\u0041"', '"a\\/b"', '"a\\ b"',   # an escape other than \" and \\
+    '"a"b"', '"say "hi""',                                                   # a bare quote inside
+    '"ends with a backslash\\"', '"no closing quote', '"a" # comment',        # no closing quote of its own
+], ids=["newline", "tab", "hex", "unicode", "slash", "space", "bare-quote", "bare-quotes", "escaped-close", "unclosed",
+        "trailing-comment"])
+def test_a_double_quoted_value_with_any_other_form_is_left_out(raw):
+    assert catalog._unquote(raw) is None
+    fields = catalog.parse_frontmatter("---\nname: qa-x\ndescription: %s\nmetadata:\n  role: %s\n---\n" % (raw, raw))
+    assert fields == {"name": "qa-x", "metadata": {}}
+
+
+def test_plain_and_single_quoted_values_are_read_as_before():
+    assert catalog._unquote("plain text, with a backslash \\n kept") == "plain text, with a backslash \\n kept"
+    assert catalog._unquote("'single'") == "single" and catalog._unquote('  "spaced"  ') == "spaced"
+
+
 def test_a_missing_directory_is_refused(tmp_path):
     with pytest.raises(QaError) as caught:
         catalog.list_skills(tmp_path / "nope")

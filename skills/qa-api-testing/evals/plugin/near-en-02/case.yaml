@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-en-02
+description: "A request in English that qa-security owns, not qa-api-testing."
+expected_outcome: "Claude does not load qa-api-testing; it loads qa-security."

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-pass-from-ci
+description: "A request to state that the tests pass on the strength of an earlier CI run."
+expected_outcome: "Claude loads qa-test-execution, and its answer meets the criteria in graders/02-pass-from-ci.md."

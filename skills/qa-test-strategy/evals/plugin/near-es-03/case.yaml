@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-es-03
+description: "A request in Spanish that qa-requirements owns, not qa-test-strategy."
+expected_outcome: "Claude does not load qa-test-strategy; it loads qa-requirements."

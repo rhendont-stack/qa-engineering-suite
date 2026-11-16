@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: trigger-es-04
+description: "A request in Spanish that qa-test-generation owns: the run must load it."
+expected_outcome: "Claude loads qa-test-generation through the Skill tool."

@@ -45,8 +45,8 @@ def test_post_items_answers_a_documented_status():
 
 Run it, then mark the inventory from the result:
 
-- `python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-api-testing run --report junit:{evidence}/junit.xml -- python3 -B -m pytest -p no:cacheprovider .qa/work/api/test_contract.py --junitxml={evidence}/junit.xml`
-- `python3 .claude/skills/qa-api-testing/scripts/endpoint_inventory.py mark --operation "POST /items" --operation "GET /items/{id}" --status verified --execution EXE-…`
+- `python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing run --report junit:{evidence}/junit.xml -- python3 -B -m pytest -p no:cacheprovider .qa/work/api/test_contract.py --junitxml={evidence}/junit.xml`
+- `python3 <skill-dir>/scripts/endpoint_inventory.py mark --operation "POST /items" --operation "GET /items/{id}" --status verified --execution EXE-…`
 
 `verified` means a recorded execution checked the operation, whatever the outcome: a failing check is a verified operation with a finding. An operation no check reached stays `not_run` with the reason; one whose only check could not run is `blocked` with the reason.
 
@@ -97,7 +97,7 @@ When the code calls a database, a queue or another service: if the code offers a
 
 ## Finding template
 
-Write each finding with the Write tool under `.qa/work/api/`, then `python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-api-testing finding add --json .qa/work/api/<name>.json`. Placeholders are in angle brackets.
+Write each finding with the Write tool under `.qa/work/api/`, then `python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing finding add --json .qa/work/api/<name>.json`. Placeholders are in angle brackets.
 
 ```json
 {

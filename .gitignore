@@ -12,6 +12,8 @@ fixtures/**/build/
 fixtures/**/.gradle/
 fixtures/**/.pytest_cache/
 .superpowers/
+# Output of a local `claude plugin eval` run over a skill's eval cases
+skills/*/evals/plugin/results/
 # Internal design documents: kept on disk, not published
 docs/proposal/
 docs/requirements/

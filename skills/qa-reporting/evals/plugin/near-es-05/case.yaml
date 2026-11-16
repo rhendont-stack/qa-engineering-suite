@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-es-05
+description: "A request in Spanish near qa-reporting's area that no skill of the suite owns."
+expected_outcome: "Claude does not load qa-reporting."

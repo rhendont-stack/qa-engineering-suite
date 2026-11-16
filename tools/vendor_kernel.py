@@ -1,12 +1,13 @@
-"""Vendors the shared kernel into every skill, or checks that the vendored copies are current.
+"""Vendors the shared kernel into every skill and the guard plugin, or checks that the vendored copies are current.
 
 Usage: python3 -I tools/vendor_kernel.py [--check] [--root <repository>]
 
 For each ``skills/<skill>/`` it writes ``scripts/_kernel/`` (``qa/``, ``schemas/``, ``policies/``, ``templates/`` from
 ``shared/``, plus ``MANIFEST.sha256``) and ``scripts/qa.py`` (the launcher). ``__pycache__`` and ``*.pyc`` are never
-copied, and neither is anything in ``shared/`` that is not a regular file. ``--check`` writes nothing: it prints one line
-per difference and exits 1 if there is any. With no ``skills/`` directory, or no skill in it, both modes report that
-they checked nothing and exit 0.
+copied, and neither is anything in ``shared/`` that is not a regular file. Every ``plugins/<name>/`` that holds a
+``scripts/`` directory gets the same ``scripts/_kernel/`` and no launcher. ``--check`` writes nothing: it prints one line
+per difference and exits 1 if there is any. With no skill and no such plugin, both modes report that they checked nothing
+and exit 0.
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ def _regular(path: str) -> bool:
 
 
 def source_tree(root: Path) -> Dict[str, bytes]:
-    """``{path relative to scripts/: content}`` that every skill must hold, including the manifest."""
+    """``{path relative to scripts/: content}`` that every skill must hold, including the manifest and the launcher."""
     tree: Dict[str, bytes] = {}
     for target, parts in KERNEL_DIRECTORIES:
         base = root.joinpath(*parts)
@@ -75,6 +76,14 @@ def skill_directories(root: Path) -> List[Path]:
     return sorted(p for p in skills.iterdir() if p.is_dir() and not p.is_symlink())
 
 
+def plugin_directories(root: Path) -> List[Path]:
+    """The plugins under ``plugins/`` that keep scripts: they get the kernel, without the launcher."""
+    plugins = root / "plugins"
+    if not plugins.is_dir():
+        return []
+    return sorted(p for p in plugins.iterdir() if p.is_dir() and not p.is_symlink() and os.path.lexists(str(p / "scripts")))
+
+
 def unsafe(skill: Path) -> List[str]:
     """Why ``skill`` cannot be vendored or checked: a link or non-directory where ``scripts``, ``_kernel`` or ``qa.py`` goes.
 
@@ -106,6 +115,7 @@ def differences(expected: Dict[str, bytes], actual: Dict[str, bytes]) -> List[st
 
 
 def write(scripts: Path, expected: Dict[str, bytes]) -> None:
+    """Replaces ``scripts/_kernel`` with ``expected``; the launcher is written, and made non-executable, only if expected."""
     kernel = scripts / "_kernel"
     if kernel.exists():  # unsafe() has already refused a link here
         shutil.rmtree(str(kernel))
@@ -114,7 +124,8 @@ def write(scripts: Path, expected: Dict[str, bytes]) -> None:
         target = scripts / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-    launcher.chmod(0o644)  # it is run as ``python3 qa.py``, never as an executable
+    if "qa.py" in expected:
+        launcher.chmod(0o644)  # it is run as ``python3 qa.py``, never as an executable
 
 
 def main(argv: List[str]) -> int:
@@ -130,35 +141,39 @@ def main(argv: List[str]) -> int:
         print("vendor_kernel.py: not a repository root: %s" % root)
         return 2
     skills = skill_directories(root)
-    if not skills:
+    plugins = plugin_directories(root)
+    if not skills and not plugins:
         print("0 skill(s) found under skills/: nothing to %s" % ("check" if check else "vendor"))
         return 0
-    refused = [(skill, reason) for skill in skills for reason in unsafe(skill)]
+    targets = skills + plugins
+    refused = [(target, reason) for target in targets for reason in unsafe(target)]
     if refused and not check:  # all refusals come before the first write or delete
-        for skill, reason in refused:
-            print("%s: %s" % (skill.relative_to(root).as_posix() + "/scripts", reason))
+        for target, reason in refused:
+            print("%s: %s" % (target.relative_to(root).as_posix() + "/scripts", reason))
         print("refused: nothing was written")
         return 1
     expected = source_tree(root)
+    without_launcher = {name: data for name, data in expected.items() if name != "qa.py"}
     problems = 0
-    for skill in skills:
-        scripts = skill / "scripts"
+    for target in targets:
+        scripts = target / "scripts"
+        wanted = without_launcher if target in plugins else expected
         if check:
-            for reason in unsafe(skill):
+            for reason in unsafe(target):
                 print("%s: %s" % (scripts.relative_to(root).as_posix(), reason))
                 problems += 1
-            if unsafe(skill):
+            if unsafe(target):
                 continue
-            for line in differences(expected, vendored_tree(scripts)):
+            for line in differences(wanted, vendored_tree(scripts)):
                 print("%s: %s" % (scripts.relative_to(root).as_posix(), line))
                 problems += 1
         else:
-            write(scripts, expected)
-            print("vendored %s" % skill.relative_to(root).as_posix())
+            write(scripts, wanted)
+            print("vendored %s" % target.relative_to(root).as_posix())
     if check:
-        print("%d skill(s) checked, %d difference(s)" % (len(skills), problems))
+        print("%d skill(s) and %d plugin(s) checked, %d difference(s)" % (len(skills), len(plugins), problems))
         return 1 if problems else 0
-    print("%d skill(s) vendored" % len(skills))
+    print("%d skill(s) and %d plugin(s) vendored" % (len(skills), len(plugins)))
     return 0
 
 

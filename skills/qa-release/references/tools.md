@@ -9,7 +9,7 @@ install`, `npx`, a binary found on the PATH, a hosted scanner, a GitHub App), an
 
 Every kernel call is written out in full, from the project root:
 
-`python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release <command>`
+`python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release <command>`
 
 ## Kernel commands used
 
@@ -29,11 +29,11 @@ and an accepted override are the user's own decisions, made with their own words
 
 The skill's scripts read files and write only under `.qa/work/release/`; they run directly, from the project root:
 
-- `python3 .claude/skills/qa-release/scripts/workflow_scan.py --root . --out .qa/work/release/workflow-scan.sarif`: the
+- `python3 <skill-dir>/scripts/workflow_scan.py --root . --out .qa/work/release/workflow-scan.sarif`: the
   GitHub workflows (below). `--copy-to-work` copies the script to `.qa/work/release/workflow_scan.py` for its container leg.
-- `python3 .claude/skills/qa-release/scripts/release_check.py --root . --out .qa/work/release/release-check.sarif`: rollback
+- `python3 <skill-dir>/scripts/release_check.py --root . --out .qa/work/release/release-check.sarif`: rollback
   documentation, base images, other CI systems (below). `--copy-to-work` copies it to `.qa/work/release/release_check.py`.
-- `python3 .claude/skills/qa-release/scripts/actionlint_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out
+- `python3 <skill-dir>/scripts/actionlint_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out
   .qa/work/release/actionlint.sarif`: turns a stored actionlint JSON report into SARIF of category `pipeline`.
 
 ## The images
@@ -44,7 +44,7 @@ The skill's scripts read files and write only under `.qa/work/release/`; they ru
 | zizmor | 1.32.0 | `ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d` |
 | Python, for the skill's own checks | 3 (slim) | `python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928` |
 
-An image not in `.claude/skills/qa-release/scripts/_kernel/policies/container-images.json` is not used. No image of a
+An image not in `<skill-dir>/scripts/_kernel/policies/container-images.json` is not used. No image of a
 deploy tool, a registry client or a GitHub client is used, and none is added: this skill never deploys or publishes.
 
 ## The workflow scan
@@ -69,7 +69,7 @@ deploy tool, a registry client or a GitHub client is used, and none is added: th
 7. Reason selected: it runs everywhere with no install and no engine, and cites the file and line.
 
 ```qa-leg workflow-scan grant=none report=sarif
-python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category pipeline --timeout 300 --input .qa/work/release/workflow_scan.py --report 'sarif:{evidence}/workflow-scan.sarif' --shell -- 'cd /work && python3 -I -B /work/.qa-input/release/workflow_scan.py --root . --out /qa-evidence/workflow-scan.sarif'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category pipeline --timeout 300 --input .qa/work/release/workflow_scan.py --report 'sarif:{evidence}/workflow-scan.sarif' --shell -- 'cd /work && python3 -I -B /work/.qa-input/release/workflow_scan.py --root . --out /qa-evidence/workflow-scan.sarif'
 ```
 
 ## The release check
@@ -97,7 +97,7 @@ python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-releas
 7. Reason selected: the release process lives in documents and files no workflow linter reads.
 
 ```qa-leg release-check grant=none report=sarif
-python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category pipeline --timeout 300 --input .qa/work/release/release_check.py --report 'sarif:{evidence}/release-check.sarif' --shell -- 'cd /work && python3 -I -B /work/.qa-input/release/release_check.py --root . --out /qa-evidence/release-check.sarif'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category pipeline --timeout 300 --input .qa/work/release/release_check.py --report 'sarif:{evidence}/release-check.sarif' --shell -- 'cd /work && python3 -I -B /work/.qa-input/release/release_check.py --root . --out /qa-evidence/release-check.sarif'
 ```
 
 The kernel reads each leg's SARIF: a run with results is `failed`, and each result opens a provisional finding of the run's
@@ -123,18 +123,18 @@ sighting of that finding, not a second record.
 Exit 1 means errors were found, so a run with errors is `failed`; the errors are in the run's `stdout.log`.
 
 ```qa-leg actionlint grant=none report=none
-python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release run --container rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 --activity static-analysis --category pipeline --timeout 300 --shell -- 'actionlint -no-color -format "{{json .}}" .github/workflows/*.y*ml'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release run --container rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 --activity static-analysis --category pipeline --timeout 300 --shell -- 'actionlint -no-color -format "{{json .}}" .github/workflows/*.y*ml'
 ```
 
 Then convert the stored JSON and attach it to that run, `<EXE>` being the run's execution id. Only for a run that is
 `failed` or `passed`: a `blocked` run stored nothing.
 
 ```qa-leg actionlint-sarif grant=none report=sarif
-python3 .claude/skills/qa-release/scripts/actionlint_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out .qa/work/release/actionlint.sarif
+python3 <skill-dir>/scripts/actionlint_to_sarif.py --input .qa/evidence/<EXE>/stdout.log --out .qa/work/release/actionlint.sarif
 ```
 
 ```qa-leg actionlint-ingest grant=none report=sarif
-python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release ingest sarif .qa/work/release/actionlint.sarif --from <EXE> --category pipeline
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release ingest sarif .qa/work/release/actionlint.sarif --from <EXE> --category pipeline
 ```
 
 ## zizmor: find security weaknesses in workflows
@@ -152,7 +152,7 @@ python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-releas
 7. Reason selected: the reference security analyzer for workflows, with SARIF output and stable rule ids.
 
 ```qa-leg zizmor grant=none report=sarif
-python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release run --container ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d --activity static-analysis --category pipeline --timeout 300 --report 'sarif:{evidence}/zizmor.sarif' --shell -- 'zizmor --offline --no-progress --format sarif . > {evidence}/zizmor.sarif'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release run --container ghcr.io/zizmorcore/zizmor@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d --activity static-analysis --category pipeline --timeout 300 --report 'sarif:{evidence}/zizmor.sarif' --shell -- 'zizmor --offline --no-progress --format sarif . > {evidence}/zizmor.sarif'
 ```
 
 zizmor exits 0 with `--format sarif` even when it reports results; the kernel reads the SARIF, so a run with results is

@@ -201,7 +201,7 @@ def test_f7_c4_passes_its_test_while_neighbouring_inputs_stay_wrong(qa_on_genera
 # The command is read from the ``qa-leg`` block of the skill's references/tools.md, the one text the skill follows.
 
 TOOLS_MD = REPO / "skills" / "qa-regression-guard" / "references" / "tools.md"
-LEG_PREFIX = ["python3", ".claude/skills/qa-regression-guard/scripts/qa.py", "--role", "verifier", "--skill", "qa-regression-guard"]
+LEG_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "verifier", "--skill", "qa-regression-guard"]
 
 
 def pinned_image(image_id):

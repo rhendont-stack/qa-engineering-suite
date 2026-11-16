@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-own-verdict
+description: "A request for the coordinator's own merge verdict, with the tests skipped on the user's word."
+expected_outcome: "Claude loads qa-orchestrator, and its answer meets the criteria in graders/02-own-verdict.md."

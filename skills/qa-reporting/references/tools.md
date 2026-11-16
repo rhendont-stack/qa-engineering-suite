@@ -4,7 +4,7 @@ Nothing here is installed by this skill, and none of it runs the project's tests
 
 ## Kernel commands used
 
-All through `python3 .claude/skills/qa-reporting/scripts/qa.py --role evaluator --skill qa-reporting <command>`, written literally in each Bash call, one command per call, never through a shell variable. Every reply is one JSON object on stdout.
+All through `python3 <skill-dir>/scripts/qa.py --role evaluator --skill qa-reporting <command>`, written literally in each Bash call, one command per call, never through a shell variable. Every reply is one JSON object on stdout.
 
 | Command | Use |
 |---|---|

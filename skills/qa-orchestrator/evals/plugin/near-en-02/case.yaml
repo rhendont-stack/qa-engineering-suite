@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-en-02
+description: "A request in English that qa-codebase-intelligence owns, not qa-orchestrator."
+expected_outcome: "Claude does not load qa-orchestrator; it loads qa-codebase-intelligence."

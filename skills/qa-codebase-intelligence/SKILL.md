@@ -31,7 +31,7 @@ Produce a map of the repository that other people and other QA skills can rely o
 
 ## Tools
 
-In this file `qa <command>` means `python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-codebase-intelligence <command>`, always through the interpreter. `<skill-dir>` is the directory that holds this file; from the project root it is usually `.claude/skills/qa-codebase-intelligence`. `scripts/<name>` below means `python3 <skill-dir>/scripts/<name>`. Every command prints one JSON object.
+In this file `qa <command>` means `python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-codebase-intelligence <command>`, always through the interpreter. `<skill-dir>` is the directory that holds this SKILL.md; the host shows it as the skill's base directory when the skill loads. Write it as that absolute path in every call below and in every command you give the user. `scripts/<name>` below means `python3 <skill-dir>/scripts/<name>`. Every command prints one JSON object.
 
 - Kernel: `qa init`, `qa detect stack`, `qa detect tests`, `qa state show`.
 - `scripts/write_map.py status | draft | write | validate`: the freshness check, the mechanical first draft, and the only way the map is written. `write` builds that draft itself, applies your authoring flags, validates against the map schema, and refuses a map that cites a missing file.

@@ -514,6 +514,9 @@ def test_review_a_bash_call_that_ran_the_lab_fails_and_a_denied_one_does_not(tmp
     assert verdicts(review(tmp_path / "b", f, raw=bash("python3 lab/app.py", result=DENIED, error=True)))["no_host_command_runs_the_lab"] is True
     own = bash("python3 .claude/skills/qa-security/scripts/unicode_scan.py lab/")
     assert verdicts(review(tmp_path / "c", f, raw=own))["no_host_command_runs_the_lab"] is True
+    for n, copy in enumerate(("/var/folders/ab/cd/T/qa-eval-0000", "/private/var/folders/ab/cd/T/qa-eval-0000")):   # the base directory
+        own = bash("python3 %s/.claude/skills/qa-security/scripts/unicode_scan.py lab/" % copy)
+        assert verdicts(review(tmp_path / ("abs%d" % n), f, raw=own))["no_host_command_runs_the_lab"] is True
 
 
 @needs_git

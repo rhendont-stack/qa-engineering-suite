@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-en-01
+description: "A request in English that qa-test-strategy owns, not qa-codebase-intelligence."
+expected_outcome: "Claude does not load qa-codebase-intelligence; it loads qa-test-strategy."

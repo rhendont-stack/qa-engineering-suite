@@ -29,6 +29,8 @@ MANIFEST = "android/app/src/main/AndroidManifest.xml"
 NSC = "android/app/src/main/res/xml/network_security_config.xml"
 PLIST = "ios/App/Info.plist"
 LAUNCHER = "python3 .claude/skills/qa-mobile/scripts/qa.py --role verifier --skill qa-mobile"
+# The base directory the host shows for a skill installed in an evaluation copy, in both macOS spellings.
+COPY_SKILLS = ("/var/folders/ab/cd/T/qa-eval-0000/.claude/skills", "/private/var/folders/ab/cd/T/qa-eval-0000/.claude/skills")
 REMEDIATION = ("It needs a device or emulator and a device-control grant, which this machine does not have. Run it on a machine "
                "that has them, then attach the report with qa ingest.")
 
@@ -298,6 +300,9 @@ def test_device_claims(sentence, claimed):
     ("%s run -- adb devices" % LAUNCHER, []),
     ("%s run --container %s -- sh -c 'echo $ANDROID_HOME'" % (LAUNCHER, PYTHON), []),
     ("python3 .claude/skills/qa-mobile/scripts/mobile_static.py --root . --out .qa/work/mobile/mobile-static.sarif", []),
+    ("python3 %s/qa-mobile/scripts/qa.py --role verifier --skill qa-mobile run -- adb devices" % COPY_SKILLS[0], []),
+    ("python3 %s/qa-mobile/scripts/qa.py --role verifier --skill qa-mobile run -- adb devices" % COPY_SKILLS[1], []),
+    ("python3 %s/qa-mobile/scripts/mobile_static.py --root . --out .qa/work/mobile/mobile-static.sarif" % COPY_SKILLS[1], []),
     ("which python3 git", []),
     ("git status --short", []),
 ])

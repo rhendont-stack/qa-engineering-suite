@@ -9,7 +9,7 @@ a hosted scanner).
 
 Every kernel call is written out in full, from the project root:
 
-`python3 .claude/skills/qa-mobile/scripts/qa.py --role verifier --skill qa-mobile <command>`
+`python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mobile <command>`
 
 ## Kernel commands used
 
@@ -27,12 +27,12 @@ run needs and this machine has no use for, not for `install-dependencies`, not f
 
 The skill's scripts read files and write only under `.qa/work/mobile/`; they run directly, from the project root:
 
-- `python3 .claude/skills/qa-mobile/scripts/mobile_static.py --root . --out .qa/work/mobile/mobile-static.sarif` reads the
+- `python3 <skill-dir>/scripts/mobile_static.py --root . --out .qa/work/mobile/mobile-static.sarif` reads the
   Android manifests, network security configurations and `build.gradle` SDK levels, and the iOS `Info.plist` and
   entitlements files, and lists every setting its seven rules name, with `path:line` and its MASVS, MASTG, MASWE and CWE
   references (`references/masvs-mapping.md`). `--format json` writes its own JSON instead of SARIF. `--copy-to-work` copies
   the script to `.qa/work/mobile/mobile_static.py` for the container leg.
-- `python3 .claude/skills/qa-mobile/scripts/dynamic_checks.py [--blocked-execution EXE]` writes
+- `python3 <skill-dir>/scripts/dynamic_checks.py [--blocked-execution EXE]` writes
   `.qa/work/mobile/dynamic-checks.json`: the six device checks of `references/dynamic-checks.md`, each `not_run`, or
   `blocked` with the EXE of the blocked device run, and each with its remediation. It has no option for any other status.
 
@@ -42,7 +42,7 @@ The skill's scripts read files and write only under `.qa/work/mobile/`; they run
 |---|---|---|
 | Python, for the static check | 3 (slim) | `python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928` |
 
-No image of `.claude/skills/qa-mobile/scripts/_kernel/policies/container-images.json` holds a device tool, an emulator or a
+No image of `<skill-dir>/scripts/_kernel/policies/container-images.json` holds a device tool, an emulator or a
 simulator, and none is added: a device check runs on a machine that has a device, not here.
 
 ## The static check
@@ -69,7 +69,7 @@ simulator, and none is added: a device check runs on a machine that has a device
 7. Reason selected: it runs everywhere, needs no build, no SDK and no device, and cites the file and line.
 
 ```qa-leg mobile-static grant=none report=sarif
-python3 .claude/skills/qa-mobile/scripts/qa.py --role verifier --skill qa-mobile run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category security --timeout 300 --input .qa/work/mobile/mobile_static.py --report 'sarif:{evidence}/mobile-static.sarif' --shell -- 'cd /work && python3 -I -B /work/.qa-input/mobile/mobile_static.py --root . --out /qa-evidence/mobile-static.sarif'
+python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mobile run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category security --timeout 300 --input .qa/work/mobile/mobile_static.py --report 'sarif:{evidence}/mobile-static.sarif' --shell -- 'cd /work && python3 -I -B /work/.qa-input/mobile/mobile_static.py --root . --out /qa-evidence/mobile-static.sarif'
 ```
 
 The kernel reads the SARIF: a run with results is `failed`, and each result opens a provisional finding of the run's
@@ -86,7 +86,7 @@ guard's `device-control` rule covers the programs that do that (`adb`, `emulator
 route is closed here: the guard blocks it before anything starts, and nothing is installed or downloaded.
 
 ```qa-leg device-check grant=device-control report=none
-python3 .claude/skills/qa-mobile/scripts/qa.py --role verifier --skill qa-mobile run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category security --timeout 60 -- adb devices
+python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mobile run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category security --timeout 60 -- adb devices
 ```
 
 Its record is `blocked`, reason `not_authorized`, naming `device-control`. Give its EXE to

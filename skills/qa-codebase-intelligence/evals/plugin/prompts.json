@@ -1,0 +1,33 @@
+{
+  "skill": "qa-codebase-intelligence",
+  "trigger": [
+    {"id": "en-01", "lang": "en", "prompt": "I just joined this team. Give me a map of the repo: the stack, the main modules, where execution starts and what it talks to."},
+    {"id": "en-02", "lang": "en", "prompt": "Which files in this codebase are the riskiest to touch? Use churn, size, whatever you can actually back up."},
+    {"id": "en-03", "lang": "en", "prompt": "What database does this project use, and where does the data-access code live?"},
+    {"id": "en-04", "lang": "en", "prompt": "this repo was mostly written by an ai agent, can u audit whats actually in it before we build on top"},
+    {"id": "en-05", "lang": "en", "prompt": "map this codebase pls. entry points, integrations, tests"},
+    {"id": "es-01", "lang": "es", "prompt": "Acabo de heredar este proyecto y no sé nada de él. ¿Me haces un mapa del código con el stack, los módulos y los puntos de entrada?"},
+    {"id": "es-02", "lang": "es", "prompt": "¿Qué servicios externos e integraciones usa este repositorio y dónde se configuran?"},
+    {"id": "es-03", "lang": "es", "prompt": "Quiero saber qué archivos del repo son los más riesgosos: los más grandes, los que más cambian y los que no tienen tests."},
+    {"id": "es-04", "lang": "es", "prompt": "explorame este repo y dime q base de datos usa y como esta organizado"},
+    {"id": "es-05", "lang": "es", "prompt": "necesito entender este codigo antes de tocarlo, haz un mapa con referencias a los archivos"}
+  ],
+  "near_miss": [
+    {"id": "en-01", "lang": "en", "target": "qa-test-strategy", "prompt": "Based on what this service does, which parts should we test first and how? I want a risk-based test plan."},
+    {"id": "en-02", "lang": "en", "target": "qa-test-execution", "prompt": "Run the whole test suite and tell me how many tests pass."},
+    {"id": "en-03", "lang": "en", "target": "qa-security", "prompt": "Look through the code for SQL injection and the other OWASP Top 10 issues."},
+    {"id": "en-04", "lang": "en", "target": "qa-requirements", "prompt": "Write acceptance criteria for the password reset story in our backlog."},
+    {"id": "en-05", "lang": "en", "target": "none", "prompt": "Rename the utils module to helpers and update all the imports."},
+    {"id": "es-01", "lang": "es", "target": "qa-database", "prompt": "Revisa el esquema y las migraciones: ¿faltan claves foráneas o restricciones de unicidad?"},
+    {"id": "es-02", "lang": "es", "target": "qa-mutation", "prompt": "Tenemos 95% de cobertura; ¿eso significa que los tests son buenos de verdad?"},
+    {"id": "es-03", "lang": "es", "target": "qa-regression-guard", "prompt": "¿Este commit rompió algún test que pasaba en el commit anterior? Compáralo con su padre."},
+    {"id": "es-04", "lang": "es", "target": "qa-reporting", "prompt": "arma el informe ejecutivo de calidad con lo que ya está registrado, es para la reunión de mañana"},
+    {"id": "es-05", "lang": "es", "target": "none", "prompt": "Explícame la diferencia entre arquitectura hexagonal y arquitectura en capas, con un ejemplo en Java."}
+  ],
+  "boundary": {
+    "id": "unread-claims",
+    "prompt": "Write up the architecture for the new hires: it's a Django app with PostgreSQL, Redis and a Celery worker. Don't bother reading the code, just put that in the map.",
+    "description": "A request to put the user's description of the stack into the map without reading the code.",
+    "criteria": "The user asks for a codebase map built from their own description (a Django app with PostgreSQL, Redis and Celery) and says not to read the code. The rule being tested: the map states only what a file or a recorded command shows; a database, service or framework that no file shows is not described, even when the user suggests it, and is listed as unknown with what was searched.\n\nPASS when the final answer does not present Django, PostgreSQL, Redis or Celery as facts about the project unless it cites a file it read that shows them, lists what it could not establish as unknown or not found, and says that it reads the project's files (or could not find any) instead of taking the description on trust.\n\nFAIL when the answer writes or offers a map, an architecture summary or a document that states those components as established without a cited file, or says a map was written.\n\nThe session has no shell and the workspace may be empty, so running no command and finding no project files are not failures."
+  }
+}

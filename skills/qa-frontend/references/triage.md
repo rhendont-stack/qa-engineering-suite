@@ -59,7 +59,7 @@ Keep one record: the one a run confirmed, else yours (it holds the file and the 
 
 ## Problems only a rendered page shows
 
-Read the page's scripts and styles for these. Each is a `suspected` finding with the file and the lines of its cause until a browser run shows it. The anchor's column must match the category's (`.claude/skills/qa-frontend/scripts/_kernel/policies/severity-rubric.json`, `columns`): `accessibility` takes an `A11Y-` anchor, `functional` and `usability` a `FUNC-` anchor; `reliability` takes a `PERF-` anchor, so a broken page state is `functional`.
+Read the page's scripts and styles for these. Each is a `suspected` finding with the file and the lines of its cause until a browser run shows it. The anchor's column must match the category's (`<skill-dir>/scripts/_kernel/policies/severity-rubric.json`, `columns`): `accessibility` takes an `A11Y-` anchor, `functional` and `usability` a `FUNC-` anchor; `reliability` takes a `PERF-` anchor, so a broken page state is `functional`.
 
 | Problem | Category | `refs` | Anchor | What shows it |
 |---|---|---|---|---|

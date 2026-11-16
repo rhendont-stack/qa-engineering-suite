@@ -41,7 +41,7 @@ A confirmed smell in a test of code that has survivors is evidence for the same 
 
 ## Finding template
 
-Record one `test-quality` finding per real gap (per function and cause) and one per confirmed smell. Write each with the Write tool under `.qa/work/`, then run `python3 .claude/skills/qa-mutation/scripts/qa.py --role verifier --skill qa-mutation finding add --json .qa/work/<name>.json`. Placeholders are in angle brackets.
+Record one `test-quality` finding per real gap (per function and cause) and one per confirmed smell. Write each with the Write tool under `.qa/work/`, then run `python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-mutation finding add --json .qa/work/<name>.json`. Placeholders are in angle brackets.
 
 ```json
 {

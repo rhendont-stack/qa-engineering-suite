@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,8 @@ RUNNER = textwrap.dedent('''\
 ''')
 # Names the platform adds to a child's environment on its own: Python sets LC_CTYPE, macOS sets __CF_USER_TEXT_ENCODING.
 OS_ADDED = {"LC_CTYPE", "__CF_USER_TEXT_ENCODING"}
+# Every environment the harness gives the CLI (the agent's and each --help probe's) holds exactly these names.
+AGENT_ENV = {"PATH", "HOME", "CLAUDE_CONFIG_DIR", "DISABLE_TELEMETRY", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"}
 
 # The fake CLI. The agent's environment is minimal on purpose, so the fake reads its behaviour (MODE, COST, HELP_OMIT, MARKER)
 # from claude.cfg beside it; LOG is a file it appends one JSON line per call to.
@@ -52,12 +55,12 @@ FAKE = textwrap.dedent('''\
     mode = cfg.get("MODE", "ok")
     if cfg.get("HELP_LOG") and (argv[:1] in (["--help"], ["plugin"])):
         with open(cfg["HELP_LOG"], "a") as fh:
-            fh.write(json.dumps({"argv": argv, "env": dict(os.environ)}) + "\\n")
+            fh.write(json.dumps({"argv": argv, "env": dict(os.environ), "cwd": os.getcwd()}) + "\\n")
     if argv[:1] == ["--help"]:
         omit = cfg.get("HELP_OMIT", "").split(",")
         for flag in ("-p, --print", "--output-format <f>", "--allowedTools <tools>", "--model <m>", "--setting-sources <s>",
                      "--strict-mcp-config", "--mcp-config <f>", "--settings <f>", "--disable-slash-commands",
-                     "--max-budget-usd <amount>", "--verbose"):
+                     "--max-budget-usd <amount>", "--verbose", "--plugin-dir <path>"):
             if flag.split()[0].split(",")[-1].strip() not in omit:
                 print("  " + flag)
         sys.exit(0)
@@ -83,10 +86,18 @@ FAKE = textwrap.dedent('''\
                 extra["settings"] = open(argv[argv.index("--settings") + 1]).read()
             if "--mcp-config" in argv:
                 extra["mcp"] = open(argv[argv.index("--mcp-config") + 1]).read()
+            if "--plugin-dir" in argv:          # what a loaded plugin directory holds, as the agent would find it
+                plugin = argv[argv.index("--plugin-dir") + 1]
+                extra["plugin_files"] = sorted(os.path.relpath(os.path.join(base, name), plugin)
+                                               for base, _dirs, names in os.walk(plugin) for name in names)
+                extra["plugin_manifest"] = open(os.path.join(plugin, ".claude-plugin", "plugin.json")).read()
+                if cfg.get("PLUGIN_COPY"):      # the whole staged copy, kept for a test to read after the run deletes it
+                    import shutil
+                    shutil.copytree(plugin, cfg["PLUGIN_COPY"], symlinks=True)
             fh.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "env": dict(os.environ), "helper": helper_info,
                                  "helper_key": KEY, "has_key": "ANTHROPIC_API_KEY" in os.environ, **extra}) + "\\n")
     init = {"type": "system", "subtype": "init", "apiKeySource": cfg.get("API_KEY_SOURCE", "FAKE_SOURCE_PLACEHOLDER"),
-            "skills": cfg.get("SKILLS", ["qa-demo"]), "tools": ["Read", "Skill"]}
+            "skills": cfg.get("SKILLS", ["qa-demo"]), "tools": cfg.get("TOOLS", ["Read", "Skill"])}
     if mode != "noinit":
         print(json.dumps(init), flush=True)
     if mode == "hang":
@@ -441,7 +452,8 @@ def test_the_child_gets_a_minimal_environment_and_no_user_config(world):
     assert r.returncode == 0, r.stderr
     call = calls(world)[0]
     assert call["has_key"] is False and call["helper_key"] == SECRET        # the key arrives through the helper only
-    assert sorted(set(call["env"]) - OS_ADDED) == ["CLAUDE_CONFIG_DIR", "HOME", "PATH"]
+    assert sorted(set(call["env"]) - OS_ADDED) == sorted(AGENT_ENV)
+    assert call["env"]["DISABLE_TELEMETRY"] == "1" and call["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
     assert call["env"]["HOME"] != str(world.root / "realhome") and call["env"]["CLAUDE_CONFIG_DIR"].startswith(call["env"]["HOME"])
     assert not os.path.exists(call["env"]["HOME"])                      # the temporary home is gone afterwards
     argv = call["argv"]
@@ -598,6 +610,60 @@ def test_bash_allow_adds_narrow_prefixes_and_refuses_bare_interpreters(world):
         spec["bash_allow"] = [bad]
         world.case.write_text(json.dumps(spec))
         assert run(world).returncode == 2
+
+
+def _permits(rules, command):
+    """Whether a ``Bash(<prefix> *)`` rule in ``rules`` covers ``command``, read as a prefix of the command text."""
+    return any(r.startswith("Bash(") and r.endswith(" *)") and command.startswith(r[5:-3] + " ") for r in rules)
+
+
+def test_bash_allow_accepts_the_absolute_launcher_path(world):
+    """The host shows a loaded skill's base directory as an absolute path, so a skill that calls its launcher from there must
+    be allowed both through the copy's ``mkdtemp`` path and through its resolved path (on macOS ``/var`` is ``/private/var``);
+    the relative form of earlier runs stays allowed, and nothing else is."""
+    link = world.root / "tmplink"
+    link.symlink_to(world.tmp, target_is_directory=True)
+    spec = json.loads(world.case.read_text())
+    spec["bash_allow"] = ["python3 .claude/skills/qa-demo/scripts/qa.py", "python3 ../../../.claude/skills/qa-demo/scripts/qa.py",
+                          "python3 -m pytest"]
+    world.case.write_text(json.dumps(spec))
+    assert run(world, env={"TMPDIR": str(link)}).returncode == 0
+    work = records(world)[0]["workdir"]
+    real = os.path.realpath(work)
+    assert work.startswith(str(link) + os.sep) and real != work           # the two spellings of one directory
+    allowed = _allowed(world)
+    bash = [t for t in allowed if t.startswith("Bash(")]
+    assert len(bash) == len(set(bash))
+    for root in (work, real):
+        assert _permits(allowed, "python3 %s/.claude/skills/qa-demo/scripts/qa.py --role verifier --skill qa-demo init" % root)
+        assert not _permits(allowed, "python3 %s/.claude/skills/qa-other/scripts/qa.py init" % root)
+        assert not _permits(allowed, "python3 %s/app.py" % root)
+    assert _permits(allowed, "python3 .claude/skills/qa-demo/scripts/qa.py init")
+    assert _permits(allowed, "python3 ../../../.claude/skills/qa-demo/scripts/qa.py init")
+    assert [t for t in bash if t.startswith("Bash(python3 -m ")] == ["Bash(python3 -m pytest *)"]   # no variant of it
+    assert not [t for t in bash if ":" in t or not t.endswith(" *)")]
+    assert allowed.index("Skill") > max(allowed.index(t) for t in bash)
+
+
+def test_launcher_variants_name_every_spelling_of_the_copy(monkeypatch):
+    module = _harness_module()
+    entry = "python3 .claude/skills/qa-x/scripts/qa.py"
+    copy = "/var/folders/ab/cd/T/qa-eval-0000"
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    forms = module.launcher_variants(entry, pathlib.Path(copy))
+    assert forms[0] == entry
+    assert set(forms) == {entry, "python3 /var/folders/ab/cd/T/qa-eval-0000/.claude/skills/qa-x/scripts/qa.py",
+                          "python3 /private/var/folders/ab/cd/T/qa-eval-0000/.claude/skills/qa-x/scripts/qa.py"}
+    worktree = module.launcher_variants("python3 ../../../.claude/skills/qa-x/scripts/qa.py", pathlib.Path(copy))
+    assert set(worktree[1:]) == set(forms[1:])
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    plain = module.launcher_variants(entry, pathlib.Path("/tmp/qa-eval-1111"))
+    resolved = os.path.realpath("/tmp/qa-eval-1111")
+    assert set(plain) == {entry, "python3 /tmp/qa-eval-1111/.claude/skills/qa-x/scripts/qa.py",
+                          "python3 %s/.claude/skills/qa-x/scripts/qa.py" % resolved}
+    for other in ("python3 -m pytest", "mutmut run", "python3 tests/run_junit.py"):
+        assert module.launcher_variants(other, pathlib.Path(copy)) == [other]
+    assert module.launcher_variants(entry, pathlib.Path("/tmp/a,b")) == [entry]       # a comma would split the tool list
 
 
 def test_the_ledger_is_independent_of_out(world):
@@ -999,7 +1065,8 @@ def test_the_agent_environment_holds_no_key(world):
     assert SECRET not in call["settings"] and call["helper_key"] == SECRET        # only the helper hands it over
     harness = _harness_module()
     assert harness.child_env(pathlib.Path("/h"), pathlib.Path("/c")) == {"PATH": os.environ.get("PATH", os.defpath), "HOME": "/h",
-                                                                         "CLAUDE_CONFIG_DIR": "/c"}
+                                                                         "CLAUDE_CONFIG_DIR": "/c", "DISABLE_TELEMETRY": "1",
+                                                                         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
 
 def test_settings_name_the_helper_and_deny_its_directory(world):
@@ -1218,6 +1285,30 @@ def test_cli_help_and_plugin_probe_get_no_key(world):
     assert {tuple(x["argv"][:1]) for x in seen} == {("--help",), ("plugin",)}
     for item in seen:
         assert "ANTHROPIC_API_KEY" not in item["env"] and SECRET not in json.dumps(item["env"])
+
+
+def test_cli_probes_get_a_fresh_home_and_config_of_their_own_and_leave_nothing(world):
+    """The ``--help`` probes never get the caller's HOME or configuration: each gets the agent's set of names, with a HOME and
+    a CLAUDE_CONFIG_DIR made for it and removed after it, and the two switches."""
+    caller_home, caller_config = world.root / "realhome", world.root / "callers-config"
+    caller_home.mkdir()
+    caller_config.mkdir()
+    r = run(world, env={"HOME": str(caller_home), "CLAUDE_CONFIG_DIR": str(caller_config)}, keep=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = [json.loads(line) for line in (world.root / "help.log").read_text().splitlines()]
+    assert sorted(tuple(x["argv"][:1]) for x in seen) == [("--help",), ("plugin",)]
+    for item in seen:
+        env = item["env"]
+        assert sorted(set(env) - OS_ADDED) == sorted(AGENT_ENV)
+        assert env["DISABLE_TELEMETRY"] == "1" and env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+        for name in ("HOME", "CLAUDE_CONFIG_DIR"):
+            assert not _names_path(env[name], caller_home) and not _names_path(env[name], caller_config)
+            assert not _names_path(env[name], REPO) and not os.path.exists(env[name])     # gone after the probe
+        assert env["HOME"] != env["CLAUDE_CONFIG_DIR"]
+        assert not _names_path(item["cwd"], caller_home) and not _names_path(item["cwd"], REPO)
+        assert not os.path.exists(item["cwd"])
+    assert len({x["env"]["HOME"] for x in seen}) == len(seen)                  # one fresh home per probe
+    assert _left_in_tmp(world) == []                                          # no probe directory is left behind
 
 
 def test_the_helper_script_names_cat_by_absolute_path_and_refuses_without_one(tmp_path, monkeypatch):
@@ -1791,3 +1882,304 @@ def test_keep_work_takes_only_plain_directory_names(world, value):
     _case_with(world, keep_work=value)
     r = run(world)
     assert r.returncode == 2 and "keep_work" in r.stderr and not records(world)
+
+
+# -- the with-suite configuration: the whole suite as a staged plugin (milestone 5a) ------------------------------------------
+
+SUITE_FILES = {".claude-plugin", "skills", "agents", "LICENSE"}
+ANSWER_DIRS = {"evals", "benchmark", "fixtures", "tests", "docs"}
+# Text that refers to an answer key's content or location: "answer key" with a determiner before it ("as the answer key
+# expects"), or a path to answer keys. Narrowed from the bare phrase so a format reference such as "the alerts as answer-key
+# detections" in a script's docstring, which names no key and no result, is not a hit.
+ANSWER_PHRASE = re.compile(r"(?i)\b(?:the|an|its|their|this|that|these|those|each|every|our|your)\s+answer[ -]keys?\b"
+                           r"|answer[-_ ]keys?/|\banswer_keys?\b")
+BENCH_SCENARIOS = REPO / "benchmark" / "scenarios"
+
+
+def _answer_patterns():
+    """What a staged copy must not hold: the seed-ID pattern the benchmark refuses in a prompt, each benchmark scenario's
+    fixture and answer-key stem, and ``ANSWER_PHRASE``."""
+    spec = importlib.util.spec_from_file_location("run_benchmark_for_patterns", str(REPO / "benchmark" / "harness" / "run_benchmark.py"))
+    bench = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bench)
+    stems = set()
+    for path in sorted(BENCH_SCENARIOS.glob("*.json")):
+        scenario = json.loads(path.read_text())
+        stems |= {pathlib.PurePosixPath(scenario["fixture"]).name, scenario["answer_key"]}
+    assert {"blocked-env", "rest-api"} <= stems                  # the scan is never vacuous
+    return [bench.SEED_ID, ANSWER_PHRASE] + [re.compile(r"(?<![\w-])%s(?![\w-])" % re.escape(s)) for s in sorted(stems)]
+
+
+def _answer_hits(root):
+    patterns = _answer_patterns()
+    hits = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink()):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for pattern in patterns:
+            found = pattern.search(text)
+            if found:
+                hits.append((str(path.relative_to(root)), found.group(0)))
+    return hits
+
+
+def _suite_case(w, **fields):
+    """A case for ``with-suite``: it names no skill, because the staged plugin brings every one."""
+    case = w.root / "suite.json"
+    spec = {"id": "suite-1", "prompt": "Run the tests and report.", "fixture": str(w.root / "fixture")}
+    spec.update(fields)
+    case.write_text(json.dumps(spec))
+    return case
+
+
+def _head_files(*paths):
+    return subprocess.run(["git", "-C", str(REPO), "ls-tree", "-r", "--name-only", "HEAD", "--"] + list(paths),
+                          capture_output=True, text=True, check=True).stdout.split()
+
+
+def _launchers():
+    """The skills of the repository's HEAD that ship a ``scripts/qa.py`` launcher: what a staged plugin holds."""
+    return sorted(p.split("/")[1] for p in _head_files("skills") if re.fullmatch(r"skills/[^/]+/scripts/qa\.py", p))
+
+
+def _entry_scripts():
+    """``skills/<skill>/scripts/<name>.py`` of the repository's HEAD for each top-level script whose name does not start with
+    ``_``: the scripts a skill runs (``_``-prefixed ones are helper modules it imports)."""
+    return sorted(p for p in _head_files("skills") if re.fullmatch(r"skills/[^/]+/scripts/[^/_][^/]*\.py", p))
+
+
+def _helper_scripts():
+    return sorted(p for p in _head_files("skills") if re.fullmatch(r"skills/[^/]+/scripts/_[^/]*\.py", p))
+
+
+def _names_path(text, root):
+    """Whether ``text`` names ``root``, or a path under it, in either spelling of it."""
+    edge = re.escape(os.pathsep) + r"\s\"'="
+    return any(re.search(r"(?:^|[%s])%s(?=$|[/%s])" % (edge, re.escape(spelling), edge), text)
+               for spelling in {str(root), os.path.realpath(str(root))})
+
+
+def test_staged_copies_hold_no_answer_material(world):
+    """Review Focus 3. The staged plugin holds the plugin's own files and nothing a grader reads; the fixture copy holds one
+    fresh commit, no other ref and no answer material; neither the prompt nor the agent's environment names the repository."""
+    fixture = world.root / "fixture"
+    (fixture / "benchmark" / "answer-keys").mkdir(parents=True)
+    (fixture / "benchmark" / "answer-keys" / "app.json").write_text('{"issues": ["secret expected result"]}\n')
+    (fixture / "answer_key.txt").write_text("secret expected result\n")
+    case = _suite_case(world)
+    seen = world.root / "plugin-seen"
+    for config in ("with-suite", "baseline"):
+        r = run(world, config=config, case=case, env={"FAKE_PLUGIN_COPY": str(seen)})
+        assert r.returncode == 0, r.stdout + r.stderr
+    suite_call, base_call = calls(world)
+    staged = suite_call["argv"][suite_call["argv"].index("--plugin-dir") + 1]
+    files = suite_call["plugin_files"]
+    assert pathlib.PurePath(staged).name == "qa-engineering-suite"
+    # The content of the copy the agent was given: no seed ID, no scenario's fixture or answer-key stem, no answer key.
+    assert sorted(str(p.relative_to(seen)) for p in seen.rglob("*") if p.is_file()) == files
+    assert _answer_hits(seen) == []
+    assert ANSWER_PHRASE.search("as the answer key expects") and not ANSWER_PHRASE.search("the alerts as answer-key detections")
+    # And the names: the plugin's own files only.
+    assert files and {f.split("/")[0] for f in files} <= SUITE_FILES and "README.md" not in files
+    assert not [f for f in files if set(f.split("/")[:-1]) & ANSWER_DIRS]
+    assert {f.split("/")[1] for f in files if f.endswith("/SKILL.md")} == set(_launchers())
+    assert json.loads(suite_call["plugin_manifest"]) == {"name": "qa-engineering-suite"}      # scratch only: deviation 99
+    assert not os.path.exists(staged)                                                         # deleted after the run
+    for call, rec in zip((suite_call, base_call), records(world)):
+        work = pathlib.Path(rec["workdir"])
+        assert len(git(work, "rev-list", "--all")) == 1
+        assert git(work, "for-each-ref", "--format=%(refname)") == git(work, "symbolic-ref", "HEAD")    # the one branch
+        assert git(work, "tag") == [] and git(work, "remote") == []
+        assert git(work, "rev-parse", "HEAD") != git(fixture, "rev-parse", "HEAD")
+        listed = listing(work)
+        assert "app.py" in listed and not [f for f in listed if "answer" in f or "benchmark" in f]
+        assert "secret expected result" not in "".join((work / f).read_text(errors="replace") for f in listed)
+        assert not (work / ".claude").exists()
+        assert call["stdin"] == "Run the tests and report." and not _names_path(call["stdin"], REPO)
+        assert not [name for name, value in call["env"].items() if _names_path(value, REPO)]
+        assert not _names_path(os.path.realpath(call["cwd"]), REPO)
+    assert not _names_path(os.path.realpath(os.path.dirname(staged)), REPO)
+
+
+def _scratch_repo(root):
+    """A repository holding the plugin's files and everything a staged plugin must leave out."""
+    files = {".claude-plugin/marketplace.json": "{}\n", "skills/qa-a/SKILL.md": "---\nname: qa-a\n---\n",
+             "skills/qa-a/scripts/qa.py": "print(1)\n", "skills/qa-a/evals/case.json": "{}\n",
+             "skills/qa-a/evals/plugin/trigger-x/prompt.md": "x\n", "skills/qa-a/references/evals/grader.md": "x\n",
+             "skills/qa-a/references/evals.md": "a file, not an evals directory\n", "agents/qa-x.md": "---\nname: qa-x\n---\n",
+             "benchmark/answer-keys/k.json": "{}\n", "fixtures/f/app.py": "x\n", "tests/test_x.py": "x\n", "docs/d.md": "x\n",
+             "tools/t.py": "x\n", "LICENSE": "license\n", "README.md": "readme\n", "CHANGELOG.md": "x\n"}
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "c1"]):
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
+                        "commit.gpgsign=false"] + args, check=True, capture_output=True)
+    (root / "skills" / "qa-a" / "uncommitted.md").write_text("not in HEAD\n")
+    return root
+
+
+def test_stage_plugin_exports_head_keeps_only_the_plugin_files_and_refuses_links(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("tool missing: git")
+    harness = _harness_module()
+    repo = _scratch_repo(tmp_path / "repo")
+    staged = harness.stage_plugin(repo, tmp_path / "dest")
+    assert staged == tmp_path / "dest" / "qa-engineering-suite"
+    assert listing(staged) == [".claude-plugin/marketplace.json", ".claude-plugin/plugin.json", "LICENSE",
+                               "agents/qa-x.md", "skills/qa-a/SKILL.md", "skills/qa-a/references/evals.md",
+                               "skills/qa-a/scripts/qa.py"]                  # no README.md: Review Focus 3
+    assert json.loads((staged / ".claude-plugin" / "plugin.json").read_text()) == {"name": "qa-engineering-suite"}
+    first = git(repo, "rev-parse", "HEAD")[0]
+
+    def commit(message):
+        for args in (["add", "-A"], ["commit", "-qm", message]):
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c",
+                            "commit.gpgsign=false"] + args, check=True, capture_output=True)
+
+    (repo / ".claude-plugin" / "plugin.json").write_text('{"name": "qa-engineering-suite", "version": "9"}\n')
+    commit("c2")
+    kept = harness.stage_plugin(repo, tmp_path / "dest-2")                  # a manifest the export holds is left as it is
+    assert json.loads((kept / ".claude-plugin" / "plugin.json").read_text())["version"] == "9"
+    os.symlink("../../benchmark", str(repo / "skills" / "qa-a" / "keys"))
+    commit("c3")
+    with pytest.raises(harness.Refused):
+        harness.stage_plugin(repo, tmp_path / "dest-3")
+    again = harness.stage_plugin(repo, tmp_path / "dest-4", first)          # a named commit, never the work tree
+    assert listing(again) == listing(staged)
+    with pytest.raises(harness.Refused):
+        harness.stage_plugin(repo, tmp_path / "dest-5", "--output=/tmp/x")
+
+
+def test_with_suite_loads_the_plugin_dir_and_allows_its_launchers(world):
+    link = world.root / "tmplink"
+    link.symlink_to(world.tmp, target_is_directory=True)        # two spellings of one directory, as /var and /private/var
+    case = _suite_case(world, bash_allow=["python3 -m pytest"], allow_write=True)
+    r = run(world, config="with-suite", case=case, env={"TMPDIR": str(link)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    call, rec = calls(world)[0], records(world)[0]
+    argv = call["argv"]
+    staged = argv[argv.index("--plugin-dir") + 1]
+    real = os.path.realpath(staged)
+    assert staged.startswith(str(link) + os.sep) and real != staged
+    allowed = _allowed(world)
+    assert "Task" in allowed and "--disable-slash-commands" not in argv
+    names = _launchers()
+    assert len(names) == 16
+    # The Skill grant names the staged skills only, in the namespaced and the bare form, so the CLI's own skills stay out.
+    assert "Skill" not in allowed
+    skill_rules = [t for t in allowed if t.startswith("Skill")]
+    assert skill_rules == [rule for name in names for rule in (
+        "Skill(qa-engineering-suite:%s)" % name, "Skill(qa-engineering-suite:%s *)" % name, "Skill(%s)" % name,
+        "Skill(%s *)" % name)]
+    assert {re.sub(r"^qa-engineering-suite:", "", t[len("Skill("):-1].split(" ")[0]) for t in skill_rules} == set(names)
+    # Every script a skill runs is allowed under both spellings of the staged copy; helper modules and anything else are not.
+    entries, helpers = _entry_scripts(), _helper_scripts()
+    assert "skills/qa-api-testing/scripts/endpoint_inventory.py" in entries and helpers
+    for root in (staged, real):
+        for name in names:
+            assert _permits(allowed, "python3 %s/skills/%s/scripts/qa.py --role verifier --skill %s init" % (root, name, name))
+        for script in entries:
+            assert _permits(allowed, "python3 %s/%s --help" % (root, script)), script
+        for script in helpers:
+            assert not _permits(allowed, "python3 %s/%s x" % (root, script)), script
+        assert not _permits(allowed, "python3 %s/skills/qa-api-testing/scripts/_kernel/qa_kernel/cli.py x" % root)
+        assert not _permits(allowed, "python3 %s/skills/qa-api-testing/references/x.py x" % root)
+        assert not _permits(allowed, "python3 %s/README.md x" % root)
+    assert not _permits(allowed, "python3 skills/qa-api-testing/scripts/qa.py init")
+    assert not _permits(allowed, "python3 %s/tools/run_skill_eval.py x" % REPO)
+    scripts = [t for t in allowed if t.startswith("Bash(python3 /")]
+    assert len(scripts) == len(set(scripts)) and len(scripts) >= 2 * len(entries)
+    assert {t[len("Bash(python3 "):-len(" *)")].split("/qa-engineering-suite/", 1)[1] for t in scripts} == set(entries)
+    assert [t for t in allowed if t.startswith("Bash(python3 -m ")] == ["Bash(python3 -m pytest *)"]
+    settings = json.loads(call["settings"])
+    assert settings["sandbox"]["filesystem"]["allowRead"] == [os.path.realpath(call["cwd"]), real]
+    assert os.path.realpath(str(REPO)) in settings["sandbox"]["filesystem"]["denyRead"]
+    assert not (pathlib.Path(rec["workdir"]) / ".claude").exists()           # nothing is installed into the copy
+    head = git(REPO, "rev-parse", "HEAD")[0]
+    assert rec["config"] == "with-suite" and rec["status"] == "ok"
+    assert rec["plugin"] == {"dir": staged, "resolved": real, "commit": head, "launchers": len(names),
+                             "scripts": len(entries), "skills": len(names)}
+    assert sorted(rec["skill_sha256"]) == sorted(p.split("/")[1] for p in _head_files("skills") if p.endswith("/SKILL.md"))
+    assert not os.path.exists(staged) and not [p for p in world.tmp.iterdir() if p.name.startswith("qa-eval-plugin-")]
+    # A with-suite case names no skill: the staged plugin brings every one. Refused before anything runs.
+    for field, value in (("skill", str(world.root / "skills" / "qa-demo")), ("skills", ["skills/qa-api-testing"]),
+                         ("agents", ["agents/qa-auditor.md"])):
+        r = run(world, config="with-suite", case=_suite_case(world, **{field: value}))
+        assert r.returncode == 2 and "with-suite" in r.stderr, field
+    # A CLI that does not list --plugin-dir is refused before the ledger is touched.
+    r = run(world, config="with-suite", case=_suite_case(world), env={"FAKE_HELP_OMIT": "--plugin-dir"})
+    assert r.returncode == 3 and "--plugin-dir" in r.stderr
+    assert len(calls(world)) == 1 and len(records(world)) == 1
+    assert run(world, config="baseline", case=_suite_case(world), env={"FAKE_HELP_OMIT": "--plugin-dir"}).returncode == 0
+
+
+def test_with_suite_and_a_runtime_venv_expose_only_the_venv_of_the_repository(world, monkeypatch):
+    """Review Focus 3 with a runtime venv (f2-audit): the venv's ``bin`` is the one repository path in the agent's environment,
+    and the sandbox lets the agent read only the run copy, the venv and the staged plugin, the rest of the repository denied."""
+    repo = _scratch_repo(world.root / "repo")
+    shutil.copy(str(HARNESS), str(repo / "tools" / "run_skill_eval.py"))
+    monkeypatch.setattr(sys.modules[__name__], "HARNESS", repo / "tools" / "run_skill_eval.py")
+    (repo / ".venv-eval" / "bin").mkdir(parents=True)
+    case = _suite_case(world, runtime_venv=".venv-eval", system_path_only=True, bash_allow=["python3 -m pytest"],
+                       allow_write=True)
+    r = run(world, config="with-suite", case=case)
+    assert r.returncode == 0, r.stdout + r.stderr
+    call = calls(world)[0]
+    venv = os.path.realpath(str(repo / ".venv-eval"))
+    staged = call["argv"][call["argv"].index("--plugin-dir") + 1]
+    assert [name for name, value in call["env"].items() if _names_path(value, repo)] == ["PATH"]
+    assert [p for p in call["env"]["PATH"].split(os.pathsep) if _names_path(p, repo)] == [os.path.join(venv, "bin")]
+    assert not _names_path(call["stdin"], repo) and not _names_path(os.path.realpath(call["cwd"]), repo)
+    assert not _names_path(staged, repo) and not _names_path(os.path.realpath(staged), repo)
+    filesystem = json.loads(call["settings"])["sandbox"]["filesystem"]
+    assert filesystem["allowRead"] == [os.path.realpath(call["cwd"]), venv, os.path.realpath(staged)]
+    assert os.path.realpath(str(repo)) in filesystem["denyRead"] and venv not in filesystem["denyRead"]
+    assert [p for p in filesystem["allowRead"] if _names_path(p, repo)] == [venv]
+
+
+def test_grant_task_gives_task_to_a_case_of_any_configuration(world):
+    """``grant_task: true`` (the benchmark's cases set it) grants ``Task`` in every configuration, so both benchmark arms get
+    it; a case without it keeps its tool list (no ``Task`` unless it declares ``agents``); anything but a boolean is refused."""
+    plain = _suite_case(world)
+    granted = world.root / "granted.json"
+    granted.write_text(json.dumps(dict(json.loads(plain.read_text()), grant_task=True)))
+    for config, case, task in (("baseline", plain, False), ("baseline", granted, True), ("with-suite", granted, True)):
+        assert run(world, config=config, case=case).returncode == 0
+        assert ("Task" in _allowed(world, len(calls(world)) - 1)) is task, (config, case.name)
+    for bad in ("yes", 1, None):
+        granted.write_text(json.dumps(dict(json.loads(plain.read_text()), grant_task=bad)))
+        assert run(world, config="baseline", case=granted).returncode == 2, bad
+
+
+def test_a_stage_remainder_caps_the_run_when_it_is_the_smaller(world):
+    """``--stage-remaining-usd`` (passed by the benchmark) lowers the per-run cap to the stage's remainder when that is below
+    the ledger's; otherwise the ledger's remainder stands, and without it nothing changes."""
+    def cap(index):
+        argv = calls(world)[index]["argv"]
+        return argv[argv.index("--max-budget-usd") + 1]
+
+    assert run(world, "--stage-remaining-usd", "0.5", budget="5").returncode == 0
+    assert cap(0) == "0.5000" and records(world)[0]["stage_remaining_usd"] == 0.5
+    assert run(world, "--stage-remaining-usd", "9", budget="5").returncode == 0        # 4.75 left in the ledger
+    assert cap(1) == "4.7500" and records(world)[1]["stage_remaining_usd"] == 9.0
+    assert run(world, budget="5").returncode == 0
+    assert cap(2) == "4.5000" and records(world)[2]["stage_remaining_usd"] is None
+    for bad in ("0", "-1", "nan", "inf", "x"):
+        r = run(world, "--stage-remaining-usd", bad, budget="5")
+        assert r.returncode == 2, bad
+    assert len(calls(world)) == 3
+    r = run(world, "--stage-remaining-usd", "0.00001", budget="5")                    # below the smallest cap: refused
+    assert r.returncode == 3 and len(calls(world)) == 3
+
+
+def test_the_init_tools_and_those_beyond_the_allow_list_are_recorded(world):
+    """The session lists tools of its own beside the granted ones (Task, TaskStop, ToolSearch, Agent were seen): each run
+    records the init event's list and names the tools its allow list does not hold."""
+    listed = ["Read", "Grep", "Bash", "Skill", "Task", "TaskStop", "ToolSearch", "Agent"]
+    assert run(world, env={"FAKE_TOOLS": listed}).returncode == 0
+    assert run(world, config="with-suite", case=_suite_case(world), env={"FAKE_TOOLS": listed}).returncode == 0
+    assert run(world, env={"FAKE_TOOLS": "not a list"}).returncode == 0
+    skill, suite, unreadable = records(world)
+    assert skill["tools_listed"] == listed and skill["tools_beyond_allow"] == ["Task", "TaskStop", "ToolSearch", "Agent"]
+    assert suite["tools_listed"] == listed and suite["tools_beyond_allow"] == ["TaskStop", "ToolSearch", "Agent"]
+    assert unreadable["tools_listed"] is None and unreadable["tools_beyond_allow"] is None

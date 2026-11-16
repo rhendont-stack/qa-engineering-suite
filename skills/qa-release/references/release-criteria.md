@@ -8,7 +8,7 @@ release.
 
 ## Evaluating
 
-`python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release gate evaluate --profile release`
+`python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release gate evaluate --profile release`
 
 Evaluate after the findings and the legs are recorded, so the verdict counts them. The reply holds `id` (`GATE-...`),
 `verdict`, `criteria` (each with `id`, `blocking`, `outcome`, `detail`, `evidence`) and `conditions`. The exit code is the
@@ -55,7 +55,7 @@ an accepted override with a reason).
 When a file shows that a criterion does not apply to this project (no database and no migrations directory, so there are
 no migrations to validate), propose an override with a rationale that cites what shows it:
 
-`python3 .claude/skills/qa-release/scripts/qa.py --role auditor --skill qa-release gate policy propose migrations_validated --override '{"not_applicable": "The project has no database: no migrations directory, no database client in its dependencies"}' --rationale "No file in the project defines a schema or a migration (read: the whole tree)"`
+`python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-release gate policy propose migrations_validated --override '{"not_applicable": "The project has no database: no migrations directory, no database client in its dependencies"}' --rationale "No file in the project defines a schema or a migration (read: the whole tree)"`
 
 - A proposal changes nothing. The verdict stays what the gate said, and the answer gives that verdict, not the one the
   proposal might give.

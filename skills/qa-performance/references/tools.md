@@ -4,7 +4,7 @@ This skill installs nothing on this machine. k6 runs only through the kernel, in
 
 Every kernel call is written out in full, from the project root:
 
-`python3 .claude/skills/qa-performance/scripts/qa.py --role verifier --skill qa-performance <command>`
+`python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-performance <command>`
 
 ## Kernel commands used
 
@@ -20,8 +20,8 @@ The kernel compares a k6 report with the grant that covered its run: `vus_max.ma
 
 The skill's scripts run directly, from the project root:
 
-- `python3 .claude/skills/qa-performance/scripts/k6_script.py --workload .qa/work/performance/<name>.json --max-vus N --max-duration-s S --max-rps R --out .qa/work/performance/<name>.js` writes the k6 script from `assets/k6-template.js` and the workload (`references/workload-model.md`). It refuses users or a rate above the limits, a duration that does not leave 5 seconds of the grant's for the stop, a duration above 272 seconds (the most the leg's `--timeout 300` can finish), any URL, and a workload without thresholds. Pass the limits the user's grant carries, or the ones you will propose to them. It prints the path the run sees, `/work/.qa-input/performance/<name>.js`.
-- `python3 .claude/skills/qa-performance/scripts/perf_table.py --execution EXE-…` reads one recorded run through the kernel and lists its numbers with their labels (`references/labels.md`): percentiles, error rate, throughput, peak users, the threshold verdicts. A run that is not `passed` or `failed` gives `"measured": false` and no number. A k6 summary attached to the run that the run did not produce is listed under `attested` and gives no number. It writes `.qa/work/performance/perf-<EXE>.json`.
+- `python3 <skill-dir>/scripts/k6_script.py --workload .qa/work/performance/<name>.json --max-vus N --max-duration-s S --max-rps R --out .qa/work/performance/<name>.js` writes the k6 script from `assets/k6-template.js` and the workload (`references/workload-model.md`). It refuses users or a rate above the limits, a duration that does not leave 5 seconds of the grant's for the stop, a duration above 272 seconds (the most the leg's `--timeout 300` can finish), any URL, and a workload without thresholds. Pass the limits the user's grant carries, or the ones you will propose to them. It prints the path the run sees, `/work/.qa-input/performance/<name>.js`.
+- `python3 <skill-dir>/scripts/perf_table.py --execution EXE-…` reads one recorded run through the kernel and lists its numbers with their labels (`references/labels.md`): percentiles, error rate, throughput, peak users, the threshold verdicts. A run that is not `passed` or `failed` gives `"measured": false` and no number. A k6 summary attached to the run that the run did not produce is listed under `attested` and gives no number. It writes `.qa/work/performance/perf-<EXE>.json`.
 
 ## The images
 
@@ -30,7 +30,7 @@ The skill's scripts run directly, from the project root:
 | k6 | 2.3.0 | `grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8` |
 | Python, for a Python service | 3 (slim) | `python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928` |
 
-A service in another runtime uses its image from `.claude/skills/qa-performance/scripts/_kernel/policies/container-images.json` (for example `node-lts`). An image not in that file is not used.
+A service in another runtime uses its image from `<skill-dir>/scripts/_kernel/policies/container-images.json` (for example `node-lts`). An image not in that file is not used.
 
 ## k6: load on the project's own service
 
@@ -45,7 +45,7 @@ A service in another runtime uses its image from `.claude/skills/qa-performance/
 Write the script first (`k6_script.py`, above), then, with the `load-test` grant recorded:
 
 ```qa-leg k6 grant=load-test report=k6
-python3 .claude/skills/qa-performance/scripts/qa.py --role verifier --skill qa-performance run --container grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --activity load-test --category performance --timeout 300 --input .qa/work/performance/<script>.js --report 'k6:{evidence}/k6-summary.json' --shell -- 'sleep 3; k6 run --no-usage-report -e BASE_URL=http://127.0.0.1:8080 -e SUMMARY_PATH=/qa-evidence/k6-summary.json /work/.qa-input/performance/<script>.js'
+python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-performance run --container grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --activity load-test --category performance --timeout 300 --input .qa/work/performance/<script>.js --report 'k6:{evidence}/k6-summary.json' --shell -- 'sleep 3; k6 run --no-usage-report -e BASE_URL=http://127.0.0.1:8080 -e SUMMARY_PATH=/qa-evidence/k6-summary.json /work/.qa-input/performance/<script>.js'
 ```
 
 - `<serve>` starts the service on `127.0.0.1:8080` from the copy at `/work`, in the foreground, as the project's README or entry point says, for example `cd /work && exec python3 -m orders_api.server --host 127.0.0.1 --port 8080`. Add the service's own options for the data volume the objective is about (for example `--preload 1000`), never a change to its code.

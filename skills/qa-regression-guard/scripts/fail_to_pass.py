@@ -31,6 +31,7 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -88,7 +89,8 @@ def _commit(st: Dict[str, Any], execution: str) -> Optional[str]:
 
 
 def select(st: Dict[str, Any], fix_id: str, base_exe: str, head_exe: str, changed_tests: Optional[Set[str]] = None,
-           launcher: str = ".claude/skills/qa-regression-guard/scripts/qa.py") -> Dict[str, Any]:
+           launcher: Optional[str] = None) -> Dict[str, Any]:
+    launcher = shown_launcher() if launcher is None else launcher
     fix = st.get("fixes", {}).get(fix_id)
     if fix is None:
         raise ChangeError("unknown_fix", "the state holds no such fix", fix=fix_id)
@@ -203,8 +205,9 @@ def read_state(launcher: str) -> Dict[str, Any]:
 
 
 def shown_launcher() -> str:
-    """The launcher as the agent calls it: always relative to the project root, whatever the working directory (a worktree too)."""
-    return ".claude/skills/qa-regression-guard/scripts/qa.py"
+    """The launcher as the agent calls it: its absolute path beside this script, in the skill's base directory, so the printed
+    command runs the same file whatever the working directory (a worktree too) and wherever the skill is installed."""
+    return str(Path(__file__).resolve().parent / "qa.py")
 
 
 def main(argv: Optional[List[str]] = None) -> int:

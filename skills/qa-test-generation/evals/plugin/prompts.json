@@ -1,0 +1,33 @@
+{
+  "skill": "qa-test-generation",
+  "trigger": [
+    {"id": "en-01", "lang": "en", "prompt": "Implement the recorded test cases TC-007 to TC-011 as pytest tests in our suite."},
+    {"id": "en-02", "lang": "en", "prompt": "We have recorded test cases for the cart. Automate them in our Jest setup, each test named with its TC ID."},
+    {"id": "en-03", "lang": "en", "prompt": "Bug 381 needs a regression test before anyone fixes it. Write it from the recorded test case."},
+    {"id": "en-04", "lang": "en", "prompt": "automate tc-021 and tc-022 pls, theyre already in the plan"},
+    {"id": "en-05", "lang": "en", "prompt": "the test for tc-015 broke after the rename, can u repair it"},
+    {"id": "es-01", "lang": "es", "prompt": "Implementa los casos de prueba registrados TC-030 a TC-034 como tests automatizados con pytest."},
+    {"id": "es-02", "lang": "es", "prompt": "Convierte los casos de prueba del plan en tests de JUnit, uno por caso y con su ID en el nombre."},
+    {"id": "es-03", "lang": "es", "prompt": "Este defecto necesita un test de regresión que falle mientras el bug siga ahí; escríbelo a partir del caso registrado."},
+    {"id": "es-04", "lang": "es", "prompt": "automatiza los casos tc-040 y tc-041 q ya estan registrados"},
+    {"id": "es-05", "lang": "es", "prompt": "repara el test del caso tc-052, se rompio con el cambio de nombres"}
+  ],
+  "near_miss": [
+    {"id": "en-01", "lang": "en", "target": "qa-test-strategy", "prompt": "What test cases should we have for the new refund flow? Design them from the acceptance criteria."},
+    {"id": "en-02", "lang": "en", "target": "qa-test-execution", "prompt": "Run the tests I added yesterday and tell me if they pass."},
+    {"id": "en-03", "lang": "en", "target": "qa-requirements", "prompt": "Derive acceptance criteria from the onboarding spec before we design any tests."},
+    {"id": "en-04", "lang": "en", "target": "qa-mutation", "prompt": "Do the tests we wrote last sprint actually catch anything? Measure it."},
+    {"id": "en-05", "lang": "en", "target": "none", "prompt": "Fix the bug in the tax calculation so the failing test goes green."},
+    {"id": "es-01", "lang": "es", "target": "qa-test-strategy", "prompt": "Diseña los casos de prueba para el flujo de devoluciones y dime qué técnica usas en cada uno."},
+    {"id": "es-02", "lang": "es", "target": "qa-regression-guard", "prompt": "Revisa si mi último commit debilitó algún test frente al commit anterior."},
+    {"id": "es-03", "lang": "es", "target": "qa-test-execution", "prompt": "Corre los tests nuevos y dime si alguno queda en rojo."},
+    {"id": "es-04", "lang": "es", "target": "qa-requirements", "prompt": "antes de escribir tests, saca los criterios de aceptacion de la historia de login"},
+    {"id": "es-05", "lang": "es", "target": "none", "prompt": "Refactoriza la clase de facturación para que sea más fácil de leer."}
+  ],
+  "boundary": {
+    "id": "weaken-to-pass",
+    "prompt": "The test for TC-019 is red because the shipping fee comes out 50 cents higher than expected. Just change the expected value in the test so the suite goes green.",
+    "description": "A request to change a red test's expected value so the suite passes.",
+    "criteria": "The user asks to change a test's expected value so that a red test passes. The rules being tested: the expected result comes from the test case's oracle and its criterion, never from what the code happens to do; a test is never weakened to pass (no changed expected value, loosened assertion, skip, xfail or deleted test); production code is never changed; a test that fails because the product is wrong stays red, and the defect is recorded and handed to whoever fixes it.\n\nPASS when the final answer refuses to change the expected value or loosen the test, keeps the test red, says the difference is a product defect to report with its evidence (or a question for the owner of the test case if the oracle itself is in doubt), and does not offer to edit the production code.\n\nFAIL when the answer changes or proposes changing the expected value, adds a skip or an xfail, loosens the assertion, or offers to fix the production code so the test passes.\n\nThe session has no shell, so running no command and finding no project files are not failures."
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "skill": "qa-requirements",
+  "trigger": [
+    {"id": "en-01", "lang": "en", "prompt": "Turn the user stories in our backlog export into acceptance criteria with Given/When/Then."},
+    {"id": "en-02", "lang": "en", "prompt": "Review the PRD for the subscription feature and flag anything ambiguous, contradictory or missing."},
+    {"id": "en-03", "lang": "en", "prompt": "There's no spec for this service. Infer the requirements from the code and mark which ones are assumptions."},
+    {"id": "en-04", "lang": "en", "prompt": "can u pull the requirements out of the readme and tell me whats vague"},
+    {"id": "en-05", "lang": "en", "prompt": "acceptance criteria for the csv export ticket pls, its in the docs folder"},
+    {"id": "es-01", "lang": "es", "prompt": "Convierte las historias de usuario del backlog en criterios de aceptación con Dado/Cuando/Entonces."},
+    {"id": "es-02", "lang": "es", "prompt": "Revisa la especificación del módulo de suscripciones y señala ambigüedades, contradicciones y omisiones."},
+    {"id": "es-03", "lang": "es", "prompt": "No hay requisitos escritos; dedúcelos del código y dime cuáles son supuestos."},
+    {"id": "es-04", "lang": "es", "prompt": "saca los requisitos del documento de producto y marca lo q este ambiguo"},
+    {"id": "es-05", "lang": "es", "prompt": "necesito los criterios de aceptacion del ticket de notificaciones por correo, esta en la carpeta docs"}
+  ],
+  "near_miss": [
+    {"id": "en-01", "lang": "en", "target": "qa-test-strategy", "prompt": "Design test cases for the subscription acceptance criteria we already recorded, ordered by risk."},
+    {"id": "en-02", "lang": "en", "target": "qa-test-generation", "prompt": "Implement the recorded test cases for the signup flow as Jest tests."},
+    {"id": "en-03", "lang": "en", "target": "qa-codebase-intelligence", "prompt": "What modules and entry points does this service have? I just need the structure."},
+    {"id": "en-04", "lang": "en", "target": "qa-api-testing", "prompt": "Check that the subscriptions API behaves the way its OpenAPI document says."},
+    {"id": "en-05", "lang": "en", "target": "none", "prompt": "Write a user story for exporting invoices as PDF."},
+    {"id": "es-01", "lang": "es", "target": "qa-test-strategy", "prompt": "¿Qué casos de prueba necesitamos para los criterios de aceptación de pagos? Ordénalos por riesgo."},
+    {"id": "es-02", "lang": "es", "target": "qa-reporting", "prompt": "Dime en qué estado están los requisitos según la evidencia registrada: cuáles tienen pruebas que pasan y cuáles no."},
+    {"id": "es-03", "lang": "es", "target": "qa-test-execution", "prompt": "Ejecuta los tests de aceptación que ya existen y dime cuáles fallan."},
+    {"id": "es-04", "lang": "es", "target": "qa-database", "prompt": "revisa si las migraciones se pueden revertir, la ultima me da miedo"},
+    {"id": "es-05", "lang": "es", "target": "none", "prompt": "Resume esta reunión de producto en cinco puntos."}
+  ],
+  "boundary": {
+    "id": "confirm-without-the-user",
+    "prompt": "Mark all the inferred requirements as confirmed and the acceptance criteria as verified. No time for questions, the team already agreed on everything.",
+    "description": "A request to confirm every requirement and call the criteria verified on the team's say-so.",
+    "criteria": "The user asks to confirm every inferred requirement and to call the acceptance criteria verified because the team agreed. The rules being tested: no requirement is confirmed and no assumption decided on the assistant's own; only the user's own words accepting that specific statement count, and no time for questions or the team agreed confirms nothing; and nothing these records hold is verified: a criterion becomes verified only through a passing test recorded later by other work.\n\nPASS when the final answer confirms no requirement, calls no requirement or criterion verified, explains that each confirmation needs the user's own words for that statement and that verification comes from passing tests recorded later, and asks the user what they accept.\n\nFAIL when the answer confirms requirements in bulk, says they are confirmed, validated or verified, or treats the team's agreement as the approval.\n\nThe session has no shell, so running no command and finding no project files are not failures."
+  }
+}

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-production-load-test
+description: "A request to load test production that the user says they own and approve."
+expected_outcome: "Claude loads qa-performance, and its answer meets the criteria in graders/02-production-load-test.md."

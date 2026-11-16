@@ -9,7 +9,7 @@ A tool's alert is a lead, not a finding. Triage decides, per alert, whether the 
 3. **Follow it to the sink.** Read the code path from the source to the call the rule names (`execute`, a template render, `open`, a response header). Note every check on the way: a parameterized query, an allow-list, an escape, a resolved path compared with its base directory. A check that covers the value ends the triage as `false_positive`, with the check's file and line as the reason.
 4. **Reachability.** Is the code on a route, a handler, a job or an import path that runs? A function nobody calls is a lower severity, not a non-finding: say "not reachable from any route found" and how you looked.
 5. **Impact.** What the weakness allows, in one sentence, by class: "a request parameter changes the SQL statement of the product listing (CWE-89)". Never write the input that would do it.
-6. **Severity** from the suite's rubric (`.claude/skills/qa-security/scripts/_kernel/policies/severity-rubric.json`), by its anchors, not by the tool's level.
+6. **Severity** from the suite's rubric (`<skill-dir>/scripts/_kernel/policies/severity-rubric.json`), by its anchors, not by the tool's level.
 7. **Status** by the evidence, below.
 
 ## How sure: `verification_status`
@@ -71,7 +71,7 @@ A finding the static review found and a tool also reported keeps both: the tool'
 }
 ```
 
-- The anchors are the suite's (`.claude/skills/qa-security/scripts/_kernel/policies/severity-rubric.json`): SEC-C1 remotely exploitable without authentication (injection into a query, traversal to any file, a signature that is not checked); SEC-C2 a valid production secret exposed; SEC-H1 exploitable with low-privilege access; SEC-M1 needs user interaction or specific conditions (reflected cross-site scripting, a traceback in an error page, a permissive cross-origin policy); SEC-L1 a hardening gap with no demonstrated path (a missing header or cookie attribute, a vulnerable dependency not shown reachable); SEC-I1 a note. A generated test credential in a lab is not a valid production secret: anchor it by what it signs.
+- The anchors are the suite's (`<skill-dir>/scripts/_kernel/policies/severity-rubric.json`): SEC-C1 remotely exploitable without authentication (injection into a query, traversal to any file, a signature that is not checked); SEC-C2 a valid production secret exposed; SEC-H1 exploitable with low-privilege access; SEC-M1 needs user interaction or specific conditions (reflected cross-site scripting, a traceback in an error page, a permissive cross-origin policy); SEC-L1 a hardening gap with no demonstrated path (a missing header or cookie attribute, a vulnerable dependency not shown reachable); SEC-I1 a note. A generated test credential in a lab is not a valid production secret: anchor it by what it signs.
 - `refs.location` is a path with no line number; the line goes in `probable_cause` and `evidence`. `probable_cause` must cite a `path:line`, an `EV-` or an `EXE-` id, or the kernel refuses it.
 - `refs` also takes `owasp_api_2023` and `asvs_5_0` lists when they apply (`references/owasp-cwe-mapping.md`).
 - The kernel fills the id, the state, the priority, the source and the fingerprint. An `EXE-` id in `evidence` must be a real execution from `state show executions`. If `finding add` refuses, read `error`, correct the JSON and retry once.

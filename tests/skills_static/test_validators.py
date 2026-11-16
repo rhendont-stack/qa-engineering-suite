@@ -68,6 +68,26 @@ def test_vendor_never_copies_bytecode_and_check_flags_an_extra_file(tmp_repo):
     assert tool("vendor_kernel.py", "--root", tmp_repo)[0] == 0 and tool("vendor_kernel.py", "--check", "--root", tmp_repo)[0] == 0
 
 
+def test_vendor_kernel_covers_the_guard_plugin(tmp_repo):
+    scripts = tmp_repo / "plugins" / "qa-command-guard" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "guard_hook.py").write_text("x = 1\n")
+    assert tool("vendor_kernel.py", "--check", "--root", tmp_repo)[0] == 1   # nothing vendored there yet
+    code, out = tool("vendor_kernel.py", "--root", tmp_repo)
+    assert code == 0 and "vendored plugins/qa-command-guard" in out, out
+    assert (scripts / "_kernel" / "MANIFEST.sha256").is_file() and (scripts / "_kernel" / "qa" / "guard.py").is_file()
+    assert not (scripts / "qa.py").exists() and (scripts / "guard_hook.py").read_text() == "x = 1\n"   # no launcher; the hook is its own file
+    assert tool("vendor_kernel.py", "--check", "--root", tmp_repo)[0] == 0
+    changed = scripts / "_kernel" / "qa" / "ids.py"
+    data = bytearray(changed.read_bytes()); data[10] ^= 1; changed.write_bytes(bytes(data))
+    code, out = tool("vendor_kernel.py", "--check", "--root", tmp_repo)
+    assert code == 1 and "plugins/qa-command-guard/scripts: differs: _kernel/qa/ids.py" in out and "1 difference" in out
+    (scripts / "qa.py").write_text("")   # a launcher does not belong in the plugin
+    assert "extra: qa.py" in tool("vendor_kernel.py", "--check", "--root", tmp_repo)[1]
+    assert tool("vendor_kernel.py", "--root", tmp_repo)[0] == 0   # writing replaces the kernel; the stray file is for a human
+    assert (scripts / "guard_hook.py").read_text() == "x = 1\n"
+
+
 @pytest.mark.parametrize("name", ["vendor_kernel.py", "validate_skills.py", "check_catalog.py"])
 def test_tools_pass_on_a_repository_with_no_skills(tmp_path, name):
     shutil.copytree(REPO / "shared", tmp_path / "shared", ignore=shutil.ignore_patterns("__pycache__"))
@@ -120,16 +140,55 @@ def _break(tmp_skill, defect):
         (tmp_skill / "references" / "notes.md").write_text("")
     elif defect == "section_sign":
         (tmp_skill / "references" / "notes.md").write_text("See the design, § 6.4.\n")
+    elif defect == "plain_colon":    # strict YAML reads ": " in a plain scalar as a nested mapping
+        md.write_text(md.read_text().replace("Demonstrates the layout.", "Demonstrates the layout: one skill."))
+    elif defect == "plain_hash":     # and " #" as the start of a comment
+        md.write_text(md.read_text().replace("Requires python3 3.9+.", "Requires python3 3.9+ #1."))
+    elif defect == "plain_metadata":
+        md.write_text(md.read_text().replace("role: verifier", "role: verifier: always"))
+    elif defect == "bad_escape":     # an escape other than \" and \\ in a double-quoted value
+        md.write_text(md.read_text().replace("Requires python3 3.9+.", '"Requires python3\\t3.9+."'))
+
+
+PLAIN_SCALAR = {"plain_colon": "plain_scalar_indicator", "plain_hash": "plain_scalar_indicator",
+                "plain_metadata": "plain_scalar_indicator", "bad_escape": "bad_quoted_scalar"}
 
 
 @pytest.mark.parametrize("defect", ["flow_list", "long_description", "unknown_field", "wrong_name", "missing_section",
-                                    "section_out_of_order", "over_500_lines", "broken_link", "empty_file", "section_sign"])
+                                    "section_out_of_order", "over_500_lines", "broken_link", "empty_file", "section_sign"]
+                         + sorted(PLAIN_SCALAR))
 def test_validator_rejects(tmp_skill, tmp_repo, defect):
     _break(tmp_skill, defect)
     code, out = tool("validate_skills.py", tmp_repo)
-    kind = {"flow_list": "flow_style"}.get(defect, defect)
+    kind = dict(PLAIN_SCALAR, flow_list="flow_style").get(defect, defect)
     assert code == 1 and (": %s:" % kind) in out, out
     assert "1 problem(s)" in out, out  # exactly the one defect, nothing collateral
+
+
+def test_a_double_quoted_value_with_both_escapes_passes_and_reads_as_its_text(tmp_skill, tmp_repo):
+    md = tmp_skill / "SKILL.md"
+    md.write_text(md.read_text().replace("description: Demonstrates the layout.",
+                                         'description: "Demonstrates the layout: \\"one\\" skill, C:\\\\demo.'))
+    md.write_text(md.read_text().replace("needs a valid skill.\n", 'needs a valid skill."\n', 1))
+    code, out = tool("validate_skills.py", tmp_repo)
+    assert code == 0 and "0 problem(s)" in out, out
+    from qa import catalog   # the repository's kernel; tmp_repo holds a copy of it
+    read = catalog.parse_frontmatter(md.read_text())["description"]
+    assert read == 'Demonstrates the layout: "one" skill, C:\\demo. Use when a test needs a valid skill.'
+
+
+def test_validator_rejects_a_plain_scalar_indicator_in_an_agent_frontmatter(tmp_skill, tmp_repo):
+    agents = tmp_repo / "agents"
+    agents.mkdir()
+    (agents / "qa-demo.md").write_text('---\nname: qa-demo\ndescription: "Quoted: fine."\ntools: Read\n---\n\nBody.\n')
+    assert tool("validate_skills.py", tmp_repo)[0] == 0
+    (agents / "qa-demo.md").write_text("---\nname: qa-demo\ndescription: Plain: not fine.\ntools: Read # Grep\n---\n\nBody.\n")
+    code, out = tool("validate_skills.py", tmp_repo)
+    assert code == 1 and "2 problem(s)" in out, out
+    assert out.count("agents/qa-demo.md: plain_scalar_indicator:") == 2, out
+    (agents / "qa-demo.md").write_text('---\nname: qa-demo\ndescription: "Bad \\x escape."\ntools: Read\n---\n\nBody.\n')
+    code, out = tool("validate_skills.py", tmp_repo)
+    assert code == 1 and "agents/qa-demo.md: bad_quoted_scalar:" in out and "1 problem(s)" in out, out
 
 
 def test_validator_ignores_the_vendored_kernel_but_not_a_link_out_of_the_skill(tmp_skill, tmp_repo):

@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-tag-and-push
+description: "A request to tag and push a release, or else to hand over the exact commands."
+expected_outcome: "Claude loads qa-release, and its answer meets the criteria in graders/02-tag-and-push.md."

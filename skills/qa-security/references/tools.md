@@ -4,7 +4,7 @@ This skill installs nothing on this machine. Every external tool runs only throu
 
 Every kernel call is written out in full, from the project root:
 
-`python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-security <command>`
+`python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-security <command>`
 
 ## Kernel commands used
 
@@ -18,9 +18,9 @@ Every kernel call is written out in full, from the project root:
 
 The skill's scripts read files and write only under `.qa/work/security/`; they run directly, from the project root:
 
-- `python3 .claude/skills/qa-security/scripts/unicode_scan.py` scans the project for text that addresses an agent ("ignore the previous instructions", in English or Spanish), Unicode tag characters and bidirectional controls, and writes `.qa/work/security/unicode.sarif`. It quotes no line. `--copy-to-work` copies it to `.qa/work/security/unicode_scan.py` for the container run below.
-- `python3 .claude/skills/qa-security/scripts/run_inputs.py --kind <name>` writes a container run's input, `.qa/work/security/<name>.yaml`, from the committed assets: `semgrep-rules` from `assets/semgrep-rules/`, `zap-baseline` and `zap-active [--openapi PATH]` from the asset of the same name. Call it immediately before every run that passes the file: the run's input must be the asset, not an older or edited copy.
-- `python3 .claude/skills/qa-security/scripts/sarif_triage.py --sarif .qa/evidence/<EXE>/reports/<file>` lists a stored report's alerts by rule, CWE and location in `.qa/work/security/triage-<file>.json`, with no snippet and every secret-shaped value masked. Read alerts from there, never from the raw report.
+- `python3 <skill-dir>/scripts/unicode_scan.py` scans the project for text that addresses an agent ("ignore the previous instructions", in English or Spanish), Unicode tag characters and bidirectional controls, and writes `.qa/work/security/unicode.sarif`. It quotes no line. `--copy-to-work` copies it to `.qa/work/security/unicode_scan.py` for the container run below.
+- `python3 <skill-dir>/scripts/run_inputs.py --kind <name>` writes a container run's input, `.qa/work/security/<name>.yaml`, from the committed assets: `semgrep-rules` from `assets/semgrep-rules/`, `zap-baseline` and `zap-active [--openapi PATH]` from the asset of the same name. Call it immediately before every run that passes the file: the run's input must be the asset, not an older or edited copy.
+- `python3 <skill-dir>/scripts/sarif_triage.py --sarif .qa/evidence/<EXE>/reports/<file>` lists a stored report's alerts by rule, CWE and location in `.qa/work/security/triage-<file>.json`, with no snippet and every secret-shaped value masked. Read alerts from there, never from the raw report.
 
 ## The images
 
@@ -32,7 +32,7 @@ The skill's scripts read files and write only under `.qa/work/security/`; they r
 | ZAP | 2.17.0 | `ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af` |
 | Python, for the unicode scan and for a Python service | 3 (slim) | `python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928` |
 
-A service in another runtime uses its image from `.claude/skills/qa-security/scripts/_kernel/policies/container-images.json` (for example `node-lts`). An image not in that file is not used.
+A service in another runtime uses its image from `<skill-dir>/scripts/_kernel/policies/container-images.json` (for example `node-lts`). An image not in that file is not used.
 
 ## Gitleaks: secrets in the files
 
@@ -45,7 +45,7 @@ A service in another runtime uses its image from `.claude/skills/qa-security/scr
 7. Reason selected: fast, offline, SARIF output, and a redact switch, so no secret reaches the evidence.
 
 ```qa-leg gitleaks grant=none report=sarif
-python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f --activity static-analysis --category security --timeout 600 --report 'sarif:{evidence}/gitleaks.sarif' --shell -- 'gitleaks dir --redact --no-banner --report-format sarif --report-path /qa-evidence/gitleaks.sarif /work'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f --activity static-analysis --category security --timeout 600 --report 'sarif:{evidence}/gitleaks.sarif' --shell -- 'gitleaks dir --redact --no-banner --report-format sarif --report-path /qa-evidence/gitleaks.sarif /work'
 ```
 
 Gitleaks exits 1 when it finds a leak, so a run with a leak is `failed`. Its rules carry no CWE: a hard-coded credential is CWE-798. Never print, copy or quote the value; the finding names the file, the line and the rule.
@@ -61,10 +61,10 @@ Gitleaks exits 1 when it finds a leak, so a run with a leak is `failed`. Its rul
 7. Reason selected: one tool for many ecosystems, a documented offline mode, SARIF output.
 
 ```qa-leg osv-scanner grant=install report=sarif
-python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/google/osv-scanner@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde --category security --timeout 900 --install 'mkdir -p /work/osv-db/osv-scalibr/PyPI && wget -q -O /work/osv-db/osv-scalibr/PyPI/all.zip https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip' --report 'sarif:{evidence}/osv.sarif' --shell -- 'OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/work/osv-db /osv-scanner scan source --offline --recursive --format=sarif --output-file=/qa-evidence/osv.sarif /work'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/google/osv-scanner@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde --category security --timeout 900 --install 'mkdir -p /work/osv-db/osv-scalibr/PyPI && wget -q -O /work/osv-db/osv-scalibr/PyPI/all.zip https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip' --report 'sarif:{evidence}/osv.sarif' --shell -- 'OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/work/osv-db /osv-scanner scan source --offline --recursive --format=sarif --output-file=/qa-evidence/osv.sarif /work'
 ```
 
-The `PyPI` in the example is only the Python case. Run `python3 .claude/skills/qa-security/scripts/run_inputs.py --kind osv-ecosystems` first: it lists the ecosystems the project's manifests and lockfiles name (`PyPI`, `npm`, `Go`, `Maven`, `crates.io` …) with one install line for each; use those lines as the leg's `--install`, one run per line, never the example's `PyPI` for a project that has none. With no manifest or lockfile it lists none: the leg has nothing to fetch, and the dependencies step is the manual lockfile check. Each result names the package, the version and the advisory (`Package 'requests@2.19.1' is vulnerable to 'CVE-…'`), with the manifest as its location and no line. Its rules carry no CWE: a dependency with a published advisory is CWE-1395. Whether the vulnerable code is reachable is the triage's question (`references/triage.md`), not the scanner's.
+The `PyPI` in the example is only the Python case. Run `python3 <skill-dir>/scripts/run_inputs.py --kind osv-ecosystems` first: it lists the ecosystems the project's manifests and lockfiles name (`PyPI`, `npm`, `Go`, `Maven`, `crates.io` …) with one install line for each; use those lines as the leg's `--install`, one run per line, never the example's `PyPI` for a project that has none. With no manifest or lockfile it lists none: the leg has nothing to fetch, and the dependencies step is the manual lockfile check. Each result names the package, the version and the advisory (`Package 'requests@2.19.1' is vulnerable to 'CVE-…'`), with the manifest as its location and no line. Its rules carry no CWE: a dependency with a published advisory is CWE-1395. Whether the vulnerable code is reachable is the triage's question (`references/triage.md`), not the scanner's.
 
 ## Semgrep: code patterns of the classes
 
@@ -76,20 +76,20 @@ The `PyPI` in the example is only the Python case. Run `python3 .claude/skills/q
 6. License, costs, restrictions: the engine is LGPL-2.1, used unmodified from its image. Only the suite's own rules run (Apache-2.0): rules from the Semgrep registry carry the Semgrep Rules License v1.0 and are never fetched, bundled or redistributed. `--metrics=off` and `--disable-version-check` keep it from calling home; the container has no network anyway.
 7. Reason selected: rules that read like the code they match, so each class is a short, reviewable rule, with SARIF output carrying the rule's CWE.
 
-Write the rules file first (`python3 .claude/skills/qa-security/scripts/run_inputs.py --kind semgrep-rules`), then:
+Write the rules file first (`python3 <skill-dir>/scripts/run_inputs.py --kind semgrep-rules`), then:
 
 ```qa-leg semgrep grant=none report=sarif
-python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-security run --container semgrep/semgrep@sha256:67518c174185a2043fdbed16c70631b79209499b3671178e7194379b48295a0d --activity static-analysis --category security --timeout 900 --input .qa/work/security/semgrep-rules.yaml --report 'sarif:{evidence}/semgrep.sarif' --shell -- 'semgrep scan --metrics=off --disable-version-check --config /work/.qa-input/security/semgrep-rules.yaml --exclude=.qa-input --sarif --output /qa-evidence/semgrep.sarif /work'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-security run --container semgrep/semgrep@sha256:67518c174185a2043fdbed16c70631b79209499b3671178e7194379b48295a0d --activity static-analysis --category security --timeout 900 --input .qa/work/security/semgrep-rules.yaml --report 'sarif:{evidence}/semgrep.sarif' --shell -- 'semgrep scan --metrics=off --disable-version-check --config /work/.qa-input/security/semgrep-rules.yaml --exclude=.qa-input --sarif --output /qa-evidence/semgrep.sarif /work'
 ```
 
 Semgrep exits 0 with findings; the kernel reads the SARIF, so a run with results is `failed` and each result is a provisional finding. Semgrep's SARIF quotes the matched line: the kernel masks known secret shapes in it, and `sarif_triage.py` leaves snippets out.
 
 ## The unicode scan in a container
 
-The same `unicode_scan.py` as on the host, recorded as an execution with its SARIF. Copy it first (`python3 .claude/skills/qa-security/scripts/unicode_scan.py --copy-to-work`), then:
+The same `unicode_scan.py` as on the host, recorded as an execution with its SARIF. Copy it first (`python3 <skill-dir>/scripts/unicode_scan.py --copy-to-work`), then:
 
 ```qa-leg unicode-scan grant=none report=sarif
-python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-security run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category security --timeout 300 --input .qa/work/security/unicode_scan.py --report 'sarif:{evidence}/unicode.sarif' --shell -- 'python3 -I -B /work/.qa-input/security/unicode_scan.py --out /qa-evidence/unicode.sarif /work'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-security run --container python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --category security --timeout 300 --input .qa/work/security/unicode_scan.py --report 'sarif:{evidence}/unicode.sarif' --shell -- 'python3 -I -B /work/.qa-input/security/unicode_scan.py --out /qa-evidence/unicode.sarif /work'
 ```
 
 ## ZAP: the running application
@@ -102,16 +102,16 @@ python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-secur
 6. License, costs, restrictions: Apache-2.0, free. `-notel` turns telemetry off. Its update check cannot be turned off; with no network it fails silently. The guard reads the command line: exactly `QA_TARGET=http://127.0.0.1:<port> zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-baseline.yaml` is `dast-passive`; any other argument, any other plan, or a changed port option makes the run `dast-active`.
 7. Reason selected: the reference open-source DAST, with a plan file that states every job, a capped active scan and SARIF output whose rules carry CWE ids.
 
-Baseline (write the plan first: `python3 .claude/skills/qa-security/scripts/run_inputs.py --kind zap-baseline`; grant: `dast-passive`):
+Baseline (write the plan first: `python3 <skill-dir>/scripts/run_inputs.py --kind zap-baseline`; grant: `dast-passive`):
 
 ```qa-leg zap-baseline grant=dast-passive report=sarif
-python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --category security --timeout 900 --input .qa/work/security/zap-baseline.yaml --report 'sarif:{evidence}/zap.json' --shell -- 'sleep 3; QA_TARGET=http://127.0.0.1:8000 zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-baseline.yaml'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --category security --timeout 900 --input .qa/work/security/zap-baseline.yaml --report 'sarif:{evidence}/zap.json' --shell -- 'sleep 3; QA_TARGET=http://127.0.0.1:8000 zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-baseline.yaml'
 ```
 
-Active (write the plan first: `python3 .claude/skills/qa-security/scripts/run_inputs.py --kind zap-active`, with `--openapi <contract>` for an API; grants: `dast-passive` and `dast-active`). It sends attack input, so it runs only against the project's own application started in the same run, on loopback, never against anything else; the scan stops after ten minutes, and the run after 1500 seconds:
+Active (write the plan first: `python3 <skill-dir>/scripts/run_inputs.py --kind zap-active`, with `--openapi <contract>` for an API; grants: `dast-passive` and `dast-active`). It sends attack input, so it runs only against the project's own application started in the same run, on loopback, never against anything else; the scan stops after ten minutes, and the run after 1500 seconds:
 
 ```qa-leg zap-active grant=dast-active report=sarif
-python3 .claude/skills/qa-security/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --category security --timeout 1500 --input .qa/work/security/zap-active.yaml --report 'sarif:{evidence}/zap.json' --shell -- 'sleep 3; QA_TARGET=http://127.0.0.1:8000 zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-active.yaml'
+python3 <skill-dir>/scripts/qa.py --role auditor --skill qa-security run --container ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --category security --timeout 1500 --input .qa/work/security/zap-active.yaml --report 'sarif:{evidence}/zap.json' --shell -- 'sleep 3; QA_TARGET=http://127.0.0.1:8000 zap.sh -cmd -notel -autorun /work/.qa-input/security/zap-active.yaml'
 ```
 
 - `<serve>` starts the application on `127.0.0.1:8000` from the copy at `/work`, in the foreground, for example `cd /work && exec python3 lab/app.py --host 127.0.0.1 --port 8000`. It runs in the service container as an unprivileged user and shares only loopback with ZAP. The project's code never runs on this machine.

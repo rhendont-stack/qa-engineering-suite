@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-es-02
+description: "A request in Spanish that qa-api-testing owns, not qa-database."
+expected_outcome: "Claude does not load qa-database; it loads qa-api-testing."

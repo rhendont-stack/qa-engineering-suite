@@ -7,6 +7,10 @@ directory name, ``description`` is one line of at most 300 characters, every ``m
 has at most 500 lines and the twelve body sections in order, every relative link resolves to a file inside the skill, and
 no file is empty. No text under ``skills/`` (outside the vendored kernel) or ``agents/`` cites a ``§`` section number.
 
+In the frontmatter of every skill and every agent, no plain (unquoted) value holds ``": "`` or ``" #"``, which strict YAML
+reads as a nested mapping or a comment, and every double-quoted value keeps to the form the kernel decodes (``\\"`` and
+``\\\\`` as its only escapes, one closing quote at the end).
+
 The frontmatter is read with ``qa.catalog.parse_frontmatter``, the parser the kernel itself uses, so this check and the
 runtime cannot disagree about what a field holds. That parser ignores what it does not understand, so this script also
 reports every frontmatter line it would ignore.
@@ -53,6 +57,22 @@ def _frontmatter_lines(lines: List[str]) -> Optional[Tuple[List[str], int]]:
     return None
 
 
+def check_scalar(rel: str, key: str, raw: str) -> List[Problem]:
+    """A value the strict YAML of the reference validator and the host would not read as the kernel does."""
+    if raw[:1] == '"':
+        if catalog._unquote(raw) is None:
+            return [(rel, "bad_quoted_scalar", "%s is double-quoted with an escape other than \\\" or \\\\, a bare quote inside "
+                                               "or no closing quote at its end; the kernel ignores it" % key)]
+        return []
+    if not raw or raw[0] in "'|>[{":
+        return []
+    held = [mark for mark in (": ", " #") if mark in raw]
+    if held:
+        return [(rel, "plain_scalar_indicator", "%s is a plain scalar holding %s, which strict YAML reads as a mapping or a "
+                                                "comment; double-quote it" % (key, " and ".join(repr(m) for m in held)))]
+    return []
+
+
 def check_frontmatter(rel: str, directory: str, front: List[str]) -> List[Problem]:
     found: List[Problem] = []
     fields = catalog.parse_frontmatter("---\n" + "\n".join(front) + "\n---\n") or {}
@@ -66,6 +86,7 @@ def check_frontmatter(rel: str, directory: str, front: List[str]) -> List[Proble
             found.append((rel, "frontmatter_unparsed", "line is not `key: value` block style: %r" % line.strip()[:60]))
             continue
         key, raw = match.group(1), (match.group(2) or "").strip()
+        found += check_scalar(rel, ("metadata.%s" % key) if indented and in_metadata else key, raw)
         if indented:
             if not in_metadata:
                 found.append((rel, "frontmatter_unparsed", "nested line outside metadata: %r" % line.strip()[:60]))
@@ -217,6 +238,23 @@ def check_skill(root: Path, skill: Path) -> List[Problem]:
     return found
 
 
+def check_agent(root: Path, agent: Path) -> List[Problem]:
+    """The value rules of ``check_scalar`` on an agent's frontmatter; the agent's other fields are the host's."""
+    if agent.is_symlink() or not agent.is_file():
+        return []   # reported by check_files
+    try:
+        split = _frontmatter_lines(agent.read_text(encoding="utf-8").splitlines())
+    except UnicodeDecodeError:
+        return []
+    found: List[Problem] = []
+    rel = agent.relative_to(root).as_posix()
+    for line in split[0] if split else []:
+        match = KEY.match(line.strip())
+        if match and not line.lstrip().startswith("#"):
+            found += check_scalar(rel, match.group(1), (match.group(2) or "").strip())
+    return found
+
+
 def check(root: Path) -> Tuple[int, List[Problem]]:
     found: List[Problem] = []
     skills_dir = root / "skills"
@@ -226,6 +264,8 @@ def check(root: Path) -> Tuple[int, List[Problem]]:
     agents = root / "agents"
     if agents.is_dir():
         found += check_files(root, agents, skip_kernel=False)
+        for agent in sorted(agents.glob("*.md")):
+            found += check_agent(root, agent)
     return len(skills), sorted(set(found))
 
 

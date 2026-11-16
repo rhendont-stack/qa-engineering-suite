@@ -4,7 +4,7 @@ This skill installs nothing and downloads nothing. Every external tool runs only
 
 Every kernel call is written out in full, from the project root:
 
-`python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-api-testing <command>`
+`python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing <command>`
 
 ## Kernel commands used
 
@@ -26,7 +26,7 @@ Every kernel call is written out in full, from the project root:
 | Hurl | 8.1.0 | `ghcr.io/orange-opensource/hurl@sha256:f8aed33658ba793ed53c5a5b2e57cadd9ec9322c8b56c550652c1f4cbaa241c5` |
 | Service, Python API | 3 (slim) | `python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928` |
 
-A service in another runtime uses its image from `.claude/skills/qa-api-testing/scripts/_kernel/policies/container-images.json` (for example `node-lts`). An image not in that file is not used.
+A service in another runtime uses its image from `<skill-dir>/scripts/_kernel/policies/container-images.json` (for example `node-lts`). An image not in that file is not used.
 
 ## Spectral: lint the contract
 
@@ -38,10 +38,10 @@ A service in another runtime uses its image from `.claude/skills/qa-api-testing/
 6. License, costs, restrictions: Apache-2.0, free. The CLI may send anonymous usage data; `DO_NOT_TRACK=1 SCARF_NO_ANALYTICS=true` turns it off, and the container has no network anyway.
 7. Reason selected: the reference ruleset for OpenAPI, with SARIF output the kernel stores and turns into provisional findings.
 
-Copy the ruleset first (`python3 .claude/skills/qa-api-testing/scripts/endpoint_inventory.py assets`), then:
+Copy the ruleset first (`python3 <skill-dir>/scripts/endpoint_inventory.py assets`), then:
 
 ```qa-leg spectral grant=none report=sarif
-python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-api-testing run --container stoplight/spectral@sha256:3b05e6cd9d43375c454cc0c022e91b3285851043b05c3e738342ea3f84cde76d --timeout 300 --input .qa/work/api/spectral.yaml --report 'sarif:{evidence}/spectral.sarif' --shell -- 'DO_NOT_TRACK=1 SCARF_NO_ANALYTICS=true spectral lint --ruleset /work/.qa-input/api/spectral.yaml --format sarif --output /qa-evidence/spectral.sarif /work/<spec>'
+python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing run --container stoplight/spectral@sha256:3b05e6cd9d43375c454cc0c022e91b3285851043b05c3e738342ea3f84cde76d --timeout 300 --input .qa/work/api/spectral.yaml --report 'sarif:{evidence}/spectral.sarif' --shell -- 'DO_NOT_TRACK=1 SCARF_NO_ANALYTICS=true spectral lint --ruleset /work/.qa-input/api/spectral.yaml --format sarif --output /qa-evidence/spectral.sarif /work/<spec>'
 ```
 
 `<spec>` is the contract's path from the project root. Spectral exits 0 even with warnings; the kernel reads the SARIF, so a run with alerts is `failed` and each alert is a provisional finding. Quote rule ids and counts from the stored SARIF, never from memory.
@@ -61,13 +61,13 @@ The guard reads the command line: `--phases=examples,coverage` is `dast-passive`
 Baseline (copy `assets/schemathesis-baseline.toml` first; grant: `dast-passive`). The HAR file is not a report format the kernel keeps, so the run prints it as its own stdout, stored as the run's `stdout.log`:
 
 ```qa-leg schemathesis-baseline grant=dast-passive report=junit
-python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-api-testing run --container schemathesis/schemathesis@sha256:b6521357a7262c725cf10c6237fdf075b6d027219c0aca93c9930497d1824c85 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --timeout 600 --input .qa/work/api/schemathesis-baseline.toml --report 'junit:{evidence}/schemathesis.xml' --shell -- 'sleep 3; st --config-file /work/.qa-input/api/schemathesis-baseline.toml run /work/<spec> --url=http://127.0.0.1:8080 --phases=examples,coverage -H "Authorization: Bearer <token>" --report=junit,har --report-junit-path=/qa-evidence/schemathesis.xml --report-har-path=/qa-evidence/schemathesis.har 1>&2; status=$?; cat /qa-evidence/schemathesis.har; exit $status'
+python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing run --container schemathesis/schemathesis@sha256:b6521357a7262c725cf10c6237fdf075b6d027219c0aca93c9930497d1824c85 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --timeout 600 --input .qa/work/api/schemathesis-baseline.toml --report 'junit:{evidence}/schemathesis.xml' --shell -- 'sleep 3; st --config-file /work/.qa-input/api/schemathesis-baseline.toml run /work/<spec> --url=http://127.0.0.1:8080 --phases=examples,coverage -H "Authorization: Bearer <token>" --report=junit,har --report-junit-path=/qa-evidence/schemathesis.xml --report-har-path=/qa-evidence/schemathesis.har 1>&2; status=$?; cat /qa-evidence/schemathesis.har; exit $status'
 ```
 
 All phases (grant: `dast-passive` and `dast-active`):
 
 ```qa-leg schemathesis-active grant=dast-active report=junit
-python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-api-testing run --container schemathesis/schemathesis@sha256:b6521357a7262c725cf10c6237fdf075b6d027219c0aca93c9930497d1824c85 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --timeout 900 --report 'junit:{evidence}/schemathesis.xml' --shell -- 'sleep 3; st run /work/<spec> --url=http://127.0.0.1:8080 --phases=examples,coverage,fuzzing,stateful --max-examples=20 --rate-limit=10/s --max-failures=50 --request-timeout=5 -H "Authorization: Bearer <token>" --report=junit --report-junit-path=/qa-evidence/schemathesis.xml'
+python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing run --container schemathesis/schemathesis@sha256:b6521357a7262c725cf10c6237fdf075b6d027219c0aca93c9930497d1824c85 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --timeout 900 --report 'junit:{evidence}/schemathesis.xml' --shell -- 'sleep 3; st run /work/<spec> --url=http://127.0.0.1:8080 --phases=examples,coverage,fuzzing,stateful --max-examples=20 --rate-limit=10/s --max-failures=50 --request-timeout=5 -H "Authorization: Bearer <token>" --report=junit --report-junit-path=/qa-evidence/schemathesis.xml'
 ```
 
 - `<serve>` starts the API on `127.0.0.1:8080` from the copy of the project at `/work`, in the foreground, for example `cd /work && exec python3 -m <package>.server --host 127.0.0.1 --port 8080`. The service runs as an unprivileged user (`--service-user 65534:65534`) and shares only loopback with the tool.
@@ -85,7 +85,7 @@ python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-a
 7. Reason selected: a small static binary whose request files are readable evidence, with JUnit output the kernel stores.
 
 ```qa-leg hurl grant=none report=junit
-python3 .claude/skills/qa-api-testing/scripts/qa.py --role verifier --skill qa-api-testing run --container ghcr.io/orange-opensource/hurl@sha256:f8aed33658ba793ed53c5a5b2e57cadd9ec9322c8b56c550652c1f4cbaa241c5 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --timeout 300 --input .qa/work/api/smoke.hurl --report 'junit:{evidence}/hurl.xml' --shell -- 'sleep 3; hurl --test --report-junit /qa-evidence/hurl.xml --variable base=http://127.0.0.1:8080 /work/.qa-input/api/smoke.hurl'
+python3 <skill-dir>/scripts/qa.py --role verifier --skill qa-api-testing run --container ghcr.io/orange-opensource/hurl@sha256:f8aed33658ba793ed53c5a5b2e57cadd9ec9322c8b56c550652c1f4cbaa241c5 --service python@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 --service-run '<serve>' --service-user 65534:65534 --timeout 300 --input .qa/work/api/smoke.hurl --report 'junit:{evidence}/hurl.xml' --shell -- 'sleep 3; hurl --test --report-junit /qa-evidence/hurl.xml --variable base=http://127.0.0.1:8080 /work/.qa-input/api/smoke.hurl'
 ```
 
 ## When a tool cannot run

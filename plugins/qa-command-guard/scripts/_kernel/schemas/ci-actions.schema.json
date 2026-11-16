@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pinned GitHub Actions (shared/policies/ci-actions.json)",
+  "description": "The only actions a workflow written by qa ci generate uses, each pinned to the commit its release tag named when it was resolved. The workflow names the commit; the tag is kept only as a comment beside it, so it holds no character that could end that comment.",
+  "type": "object",
+  "properties": {
+    "version": {"const": 1},
+    "actions": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"enum": ["checkout", "upload-artifact"]},
+          "uses": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$"},
+          "tag": {"type": "string", "pattern": "^v[0-9]+(\\.[0-9]+)*$"},
+          "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        },
+        "required": ["id", "uses", "tag", "sha"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "actions"],
+  "additionalProperties": false
+}

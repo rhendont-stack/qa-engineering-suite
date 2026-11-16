@@ -157,8 +157,8 @@ def test_f11_files_load_and_deploy_to_nothing_but_reserved_example_domains():
 
 RELEASE = REPO / "skills" / "qa-release"
 RELEASE_TOOLS_MD = RELEASE / "references" / "tools.md"
-RELEASE_PREFIX = ["python3", ".claude/skills/qa-release/scripts/qa.py", "--role", "auditor", "--skill", "qa-release"]
-INSTALLED_SCRIPTS = ".claude/skills/qa-release/scripts/"
+RELEASE_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "auditor", "--skill", "qa-release"]
+INSTALLED_SCRIPTS = "<skill-dir>/scripts/"
 SCAN_RULES = {"F11-01": "unpinned-action", "F11-02": "pr-target-head-checkout", "F11-03": "expression-in-run",
               "F11-04": "tests-allowed-to-fail", "F11-05": "secret-echoed"}
 CHECK_RULES = {"F11-06": "rollback-documentation", "F11-07": "base-image-digest"}

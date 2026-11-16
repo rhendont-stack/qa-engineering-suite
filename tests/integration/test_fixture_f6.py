@@ -352,7 +352,7 @@ def test_f6_runs_as_a_service(live, tmp_path):  # noqa: F811
 
 SECURITY = REPO / "skills" / "qa-security"
 SECURITY_TOOLS_MD = SECURITY / "references" / "tools.md"
-SECURITY_PREFIX = ["python3", ".claude/skills/qa-security/scripts/qa.py", "--role", "auditor", "--skill", "qa-security"]
+SECURITY_PREFIX = ["python3", "<skill-dir>/scripts/qa.py", "--role", "auditor", "--skill", "qa-security"]
 LAB_SERVE = "cd /work && exec python3 lab/app.py --host 127.0.0.1 --port 8000"
 APPROVAL = "Hacer lo necesario para ejecutar el requerimiento, no me preguntes, ejecute de forma autonoma."
 ZAP_BASELINE_ENTRIES = ["F6-08", "F6-11"]  # what the passive baseline located, by endpoint and CWE, in the recorded leg runs

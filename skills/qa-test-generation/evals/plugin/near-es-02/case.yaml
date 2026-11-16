@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-es-02
+description: "A request in Spanish that qa-regression-guard owns, not qa-test-generation."
+expected_outcome: "Claude does not load qa-test-generation; it loads qa-regression-guard."

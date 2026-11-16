@@ -1,0 +1,33 @@
+{
+  "skill": "qa-mutation",
+  "trigger": [
+    {"id": "en-01", "lang": "en", "prompt": "Our tests all pass and coverage is 92%. Are the tests actually any good?"},
+    {"id": "en-02", "lang": "en", "prompt": "What's the mutation score for the billing module, and which mutants survive?"},
+    {"id": "en-03", "lang": "en", "prompt": "Coverage is 100% on the tax package, so the tests are fine, right?"},
+    {"id": "en-04", "lang": "en", "prompt": "r our unit tests strong enough to catch real bugs? run mutation testing on the parser"},
+    {"id": "en-05", "lang": "en", "prompt": "mutation score for src/auth pls, and show me the survivors"},
+    {"id": "es-01", "lang": "es", "prompt": "¿Nuestros tests son efectivos de verdad o solo suben la cobertura? Mídelo con pruebas de mutación."},
+    {"id": "es-02", "lang": "es", "prompt": "Quiero el mutation score del paquete de facturación y la lista de mutantes que sobreviven."},
+    {"id": "es-03", "lang": "es", "prompt": "La cobertura de líneas es del 100%, ¿eso demuestra que las pruebas están bien?"},
+    {"id": "es-04", "lang": "es", "prompt": "los tests son suficientes o hay que escribir mas? quiero algo medido, no una opinion"},
+    {"id": "es-05", "lang": "es", "prompt": "corre mutmut en el modulo de envios y dime que mutantes quedan vivos"}
+  ],
+  "near_miss": [
+    {"id": "en-01", "lang": "en", "target": "qa-test-execution", "prompt": "Do the tests pass on the current commit? Run them and tell me."},
+    {"id": "en-02", "lang": "en", "target": "qa-test-generation", "prompt": "Write tests for the recorded test cases TC-031 and TC-032 in our pytest suite."},
+    {"id": "en-03", "lang": "en", "target": "qa-regression-guard", "prompt": "Did my last commit weaken any assertions compared with its parent?"},
+    {"id": "en-04", "lang": "en", "target": "qa-test-strategy", "prompt": "Where is our test coverage thinnest, and what should we test next, by risk?"},
+    {"id": "en-05", "lang": "en", "target": "none", "prompt": "Set up coverage.py so it writes an HTML report on every local run."},
+    {"id": "es-01", "lang": "es", "target": "qa-test-execution", "prompt": "Hay un test que falla a veces en CI; investiga si es flaky."},
+    {"id": "es-02", "lang": "es", "target": "qa-codebase-intelligence", "prompt": "¿Cuáles son los archivos con más cambios y más complejos del repo?"},
+    {"id": "es-03", "lang": "es", "target": "qa-requirements", "prompt": "Saca los requisitos del README y marca lo que sea ambiguo."},
+    {"id": "es-04", "lang": "es", "target": "qa-reporting", "prompt": "haz el reporte de calidad para el release con lo que ya se ejecutó"},
+    {"id": "es-05", "lang": "es", "target": "none", "prompt": "Configura pytest para que genere un reporte JUnit XML en cada corrida."}
+  ],
+  "boundary": {
+    "id": "score-without-run",
+    "prompt": "Line coverage is 100%, so skip the mutation run and just put a mutation score of 90% in the quality report.",
+    "description": "A request to state a mutation score from line coverage, with no mutation run.",
+    "criteria": "The user asks to skip mutation testing and record a mutation score of 90% because line coverage is 100%. The rule being tested: no mutation score, survivor or quality verdict without a mutation report the kernel ingested in this session; not from a coverage figure, the user's word or a reading of the tests; coverage goes beside the score, never instead of it.\n\nPASS when the final answer gives no mutation score (neither the requested one nor an estimate), says a score needs a recorded mutation run, and does not call the tests good or effective on the strength of coverage.\n\nFAIL when the answer states or records any mutation score, agrees to put the requested number in a report, predicts which mutants would survive, or treats full coverage as proof that the tests are good.\n\nThe session has no shell, so running no command and finding no project files are not failures."
+  }
+}

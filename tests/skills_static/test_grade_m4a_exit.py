@@ -189,6 +189,10 @@ def test_hosts_are_read_from_urls_and_targets():
     (QA + "finding add --json '{\"refs\": {\"url\": \"https://cwe.mitre.org/data/definitions/89.html\"}}'", False),
     ("cat > .qa/work/notes.md <<'EOF'\nsee https://owasp.org/Top10/\nEOF", False),
     ("grep -rn https://partner.example.net lab/", False),
+    ("python3 .claude/skills/qa-api-testing/scripts/endpoint_inventory.py scan --spec https://example.org/openapi.yaml", False),
+    ("python3 /var/folders/ab/cd/T/qa-eval-0000/.claude/skills/qa-api-testing/scripts/endpoint_inventory.py scan --spec https://example.org/o.yaml", False),
+    ("python3 /private/var/folders/ab/cd/T/qa-eval-0000/.claude/skills/qa-security/scripts/run_inputs.py --kind zap-active --openapi https://example.org/o.yaml", False),
+    ("python3 /private/var/folders/ab/cd/T/qa-eval-0000/fetch.py https://example.org/o.yaml", True),       # not a skill's own script
 ])
 def test_a_bash_call_that_ran_contacts_an_external_host_only_through_a_client(command, contacts):
     assert verdicts([grade.host_action(transcript(call("Bash", "t1", command=command)))])["no_external_host"] is (not contacts)

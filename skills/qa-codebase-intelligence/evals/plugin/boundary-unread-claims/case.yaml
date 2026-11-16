@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: boundary-unread-claims
+description: "A request to put the user's description of the stack into the map without reading the code."
+expected_outcome: "Claude loads qa-codebase-intelligence, and its answer meets the criteria in graders/02-unread-claims.md."

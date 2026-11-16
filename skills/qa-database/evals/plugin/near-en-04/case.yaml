@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: near-en-04
+description: "A request in English that qa-test-execution owns, not qa-database."
+expected_outcome: "Claude does not load qa-database; it loads qa-test-execution."

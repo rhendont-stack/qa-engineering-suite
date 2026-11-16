@@ -1,0 +1,114 @@
+{
+  "name": "qa-engineering-suite",
+  "owner": {
+    "name": "rhendont-stack",
+    "url": "https://github.com/rhendont-stack"
+  },
+  "description": "QA engineering skills and agents for Claude Code: the full suite, two bundles that share no skills (both load the three agents) and an opt-in command guard.",
+  "plugins": [
+    {
+      "name": "qa-engineering-suite",
+      "source": "./",
+      "description": "The full QA engineering suite: 16 Agent Skills (orchestrator, core and specialist skills) and three fresh-context agents. Install this or the two bundles, not both.",
+      "version": "0.1.0-dev.1",
+      "author": {
+        "name": "rhendont-stack",
+        "url": "https://github.com/rhendont-stack"
+      },
+      "homepage": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "repository": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "license": "Apache-2.0",
+      "keywords": [
+        "qa",
+        "testing",
+        "agent-skills",
+        "quality-engineering"
+      ]
+    },
+    {
+      "name": "qa-core",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/qa-orchestrator",
+        "./skills/qa-requirements",
+        "./skills/qa-codebase-intelligence",
+        "./skills/qa-test-strategy",
+        "./skills/qa-test-generation",
+        "./skills/qa-test-execution",
+        "./skills/qa-regression-guard",
+        "./skills/qa-reporting"
+      ],
+      "agents": [
+        "./agents/qa-auditor.md",
+        "./agents/qa-evaluator.md",
+        "./agents/qa-verifier.md"
+      ],
+      "description": "Core bundle: the orchestrator and the seven core QA skills, plus the three agents. Shares no skill with qa-specialists, which loads the same three agents.",
+      "version": "0.1.0-dev.1",
+      "author": {
+        "name": "rhendont-stack",
+        "url": "https://github.com/rhendont-stack"
+      },
+      "homepage": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "repository": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "license": "Apache-2.0",
+      "keywords": [
+        "qa",
+        "testing",
+        "agent-skills",
+        "orchestration"
+      ]
+    },
+    {
+      "name": "qa-specialists",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/qa-api-testing",
+        "./skills/qa-database",
+        "./skills/qa-security",
+        "./skills/qa-performance",
+        "./skills/qa-frontend",
+        "./skills/qa-mobile",
+        "./skills/qa-mutation",
+        "./skills/qa-release"
+      ],
+      "description": "Specialist bundle: API, database, security, performance, frontend, mobile, mutation and release testing skills. Shares no skill with qa-core; the three agents load by default here too.",
+      "version": "0.1.0-dev.1",
+      "author": {
+        "name": "rhendont-stack",
+        "url": "https://github.com/rhendont-stack"
+      },
+      "homepage": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "repository": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "license": "Apache-2.0",
+      "keywords": [
+        "qa",
+        "testing",
+        "security",
+        "performance",
+        "mutation-testing"
+      ]
+    },
+    {
+      "name": "qa-command-guard",
+      "source": "./plugins/qa-command-guard",
+      "description": "Opt-in guard: a PreToolUse hook that checks every Bash command Claude Code is about to run while a QA workspace (.qa/config.json in the working directory or a parent) is active, with the suite's command guard; it denies or asks, never allows. Not part of the full suite or the bundles.",
+      "version": "0.1.0-dev.1",
+      "author": {
+        "name": "rhendont-stack",
+        "url": "https://github.com/rhendont-stack"
+      },
+      "homepage": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "repository": "https://github.com/rhendont-stack/qa-engineering-suite",
+      "license": "Apache-2.0",
+      "keywords": [
+        "qa",
+        "hooks",
+        "safety",
+        "guard"
+      ]
+    }
+  ]
+}
