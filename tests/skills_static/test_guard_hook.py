@@ -12,6 +12,7 @@ import json
 import shlex
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -108,17 +109,88 @@ def test_hook_unreadable_input_asks(hook, ws):
         assert verdict == "ask" and reason.startswith("qa-command-guard could not check this command: ")
 
     asks(hook.decide(payload(["pytest", "-q"], ws.root)))                    # a list, not a string
-    asks(hook.decide(payload("x" * (64 * 1024 + 1), ws.root)))               # one byte over the limit
+    asks(hook.decide(payload("x" * (hook.MAX_COMMAND_BYTES + 1), ws.root)))  # one byte over the limit
     asks(hook.decide({"tool_name": "Bash", "tool_input": {}, "cwd": str(ws.root)}))
     asks(hook.decide({"tool_name": "Bash", "tool_input": "pytest", "cwd": str(ws.root)}))
     asks(hook.decide(["not", "an", "object"]))
-    assert hook.decide(payload("# " + "x" * (64 * 1024 - 2), ws.root)) is None   # exactly the limit is read
+    asks(hook.decide({"tool_input": {"command": "ls"}, "cwd": str(ws.root)}))             # no tool name
+    for name in (None, 7, ["Bash"], {"Bash": 1}):                                         # a tool name that is not a string
+        asks(hook.decide({"tool_name": name, "tool_input": {"command": "ls"}, "cwd": str(ws.root)}))
+    assert hook.decide({"tool_name": "bash", "tool_input": {"command": "ls"}, "cwd": str(ws.root)}) is None  # a string that is not Bash
+    assert hook.decide(payload("# " + "x" * (hook.MAX_COMMAND_BYTES - 2), ws.root)) is None   # exactly the limit is read
+    assert hook.decide(payload("# " + "é" * ((hook.MAX_COMMAND_BYTES - 2) // 2), ws.root)) is None          # the limit counts bytes
+    asks(hook.decide(payload("# " + "é" * ((hook.MAX_COMMAND_BYTES - 2) // 2 + 1), ws.root)))
     for text in ("not json", "", "[1]", '{"tool_name": "Bash"', "\x00"):
         out = io.StringIO()
         assert hook.main(io.StringIO(text), out) == 0
         asks(json.loads(out.getvalue()))
     out = io.StringIO()
     assert hook.main(io.StringIO(json.dumps(payload("pytest -q", ws.root, tool="Read"))), out) == 0 and out.getvalue() == ""
+
+
+def test_hook_reads_its_input_as_exact_utf8_bytes(hook, ws):
+    def ask_for(raw):
+        source = io.TextIOWrapper(io.BytesIO(raw), encoding="latin-1")   # .buffer holds the bytes as sent
+        out = io.StringIO()
+        assert hook.main(source, out) == 0
+        return decision(json.loads(out.getvalue()))
+
+    good = json.dumps(payload("ls", ws.root)).encode()
+    verdict, reason = ask_for(good + b" " * hook.MAX_INPUT_BYTES)
+    assert verdict == "ask" and "InputTooLarge" in reason and str(hook.MAX_INPUT_BYTES) in reason
+    assert ask_for(b'{"tool_name": "Bash", "x": "\xff\xfe"}')[0] == "ask"      # not UTF-8
+    big = json.dumps(payload("ls", ws.root)).encode()
+    assert len(big) <= hook.MAX_INPUT_BYTES
+    out = io.StringIO()
+    assert hook.main(io.TextIOWrapper(io.BytesIO(big), encoding="utf-8"), out) == 0 and out.getvalue() == ""
+
+
+def test_hook_asks_when_the_check_outlasts_its_deadline(hook, ws, monkeypatch):
+    import signal
+
+    if not hasattr(signal, "SIGALRM"):
+        pytest.skip("no SIGALRM here: the size cap alone applies")
+
+    def slow(*args, **kwargs):
+        while True:   # busy, as the guard is on a command it takes long over
+            pass
+
+    monkeypatch.setattr(hook.guard, "classify", slow)
+    monkeypatch.setattr(hook, "DEADLINE_S", 0.3)
+    before = signal.getsignal(signal.SIGALRM)
+    out = io.StringIO()
+    start = time.monotonic()
+    assert hook.main(io.StringIO(json.dumps(payload("pytest -q", ws.root))), out) == 0
+    took = time.monotonic() - start
+    assert decision(json.loads(out.getvalue())) == ("ask", "qa-command-guard could not check this command: deadline")
+    assert took < 0.3 + 2.0, took
+    assert signal.getsignal(signal.SIGALRM) == before and signal.getitimer(signal.ITIMER_REAL)[0] == 0   # timer cleared, handler restored
+    monkeypatch.undo()
+    assert hook.decide(payload("git status", ws.root)) is None   # and the next call is unaffected
+
+
+@pytest.mark.parametrize("shape", ["and-chain", "semicolons", "pipes", "newlines", "one-long-argument"])
+def test_hook_answers_a_cap_sized_command_inside_its_deadline(hook, ws, shape):
+    unit, joiner = {"and-chain": ("ls a", " && "), "semicolons": ("ls a", "; "), "pipes": ("ls a", " | "),
+                    "newlines": ("ls a", "\n"), "one-long-argument": ("ls " + "a" * 400, " ")}[shape]
+    command = joiner.join([unit] * ((hook.MAX_COMMAND_BYTES - 8) // (len(unit) + len(joiner))))
+    assert hook.MAX_COMMAND_BYTES - 64 < len(command.encode()) <= hook.MAX_COMMAND_BYTES
+    start = time.monotonic()
+    code, out, err = run_hook(json.dumps(payload(command, ws.root)), ws.root)
+    took = time.monotonic() - start   # measured in this run, on this image
+    assert code == 0 and err == "" and took < hook.DEADLINE_S, took
+    if out:
+        assert decision(json.loads(out))[0] in ("ask", "deny")
+
+
+def test_hook_over_the_cap_asks_at_once(hook, ws):
+    command = "ls a; " * (hook.MAX_COMMAND_BYTES // 6 + 1)
+    assert len(command.encode()) > hook.MAX_COMMAND_BYTES
+    start = time.monotonic()
+    code, out, _ = run_hook(json.dumps(payload(command, ws.root)), ws.root)
+    took = time.monotonic() - start
+    verdict, reason = decision(json.loads(out))
+    assert code == 0 and verdict == "ask" and str(len(command.encode())) in reason and took < 2.0, (reason, took)
 
 
 def test_hook_unreadable_config_asks(hook, ws):
@@ -172,6 +244,15 @@ def test_hook_launcher_passthrough_needs_a_plain_launcher_call(hook, ws, launche
     wrapped = "%s $(%s)" % (plain, joined["command"])
     assert not hook.launcher_call(wrapped, ws.root)
     assert decision(hook.decide(payload(wrapped, ws.root)))[0] == "deny"
+    path = shlex.quote(str(launcher))
+    expanding = {"pattern-star": "python3 %s run" % path.replace("qa.py", "q*.py"),
+                 "pattern-question": "python3 %s run" % path.replace("qa.py", "q?.py"),
+                 "pattern-bracket": "python3 %s run" % path.replace("qa.py", "q[a].py"),
+                 "brace": "python3 %s run" % path.replace("qa.py", "q{a,b}.py"),
+                 "tilde": "python3 ~/scripts/qa.py run", "history-bang": "%s !" % plain,
+                 "comment-hash": "%s # note" % plain, "closing-bracket": "%s ]" % plain, "closing-brace": "%s }" % plain}
+    for name, command in expanding.items():
+        assert not hook.launcher_call(command, ws.root), name
     for command in ("%s `%s`" % (plain, joined["command"]), "%s > out" % plain, "%s < in" % plain, "%s (x)" % plain,
                     "%s $X" % plain):
         assert not hook.launcher_call(command, ws.root), command

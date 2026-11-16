@@ -25,6 +25,14 @@ activity shows up as a grant.
 A call of the suite's launcher (`python3 <skill-dir>/scripts/qa.py ...`) with no shell metacharacter gets no decision:
 `qa run` applies the same guard to what it runs.
 
+## Limits
+
+The guard's time on a command grows faster than the command's length, and the host gives the hook 10 seconds. Measured
+end to end on the two test interpreters, commands made of many short units took about 0.9 s at 4 KiB, 2.7 s at 8 KiB and
+10 s or more at 16 KiB, so the hook checks commands of at most 4096 bytes (counted in bytes) and asks for a larger one,
+naming its size. Where the platform has `SIGALRM`, the check also runs under a 5 second deadline and asks with the reason
+`deadline` when it expires. Where it does not (Windows), the size limit alone applies.
+
 If the hook cannot read its input, the workspace config or the guard's policy, or hits any other error, it asks
 (`qa-command-guard could not check this command: <error class>`). It always exits 0.
 
