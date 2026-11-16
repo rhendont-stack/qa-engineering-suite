@@ -1,0 +1,12 @@
+{
+  "name": "qa-command-guard",
+  "version": "0.1.0-dev.1",
+  "description": "Opt-in guard: a PreToolUse hook that checks shell commands a QA run is about to execute. Not part of the full suite or the bundles.",
+  "author": {
+    "name": "rhendont-stack",
+    "url": "https://github.com/rhendont-stack"
+  },
+  "homepage": "https://github.com/rhendont-stack/qa-engineering-suite",
+  "repository": "https://github.com/rhendont-stack/qa-engineering-suite",
+  "license": "Apache-2.0"
+}
